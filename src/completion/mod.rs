@@ -39,7 +39,7 @@ pub(crate) mod builder;
 pub(crate) mod catch_completion;
 pub(crate) mod class_completion;
 pub(crate) mod closure_resolution;
-pub(crate) mod comment_position;
+pub mod comment_position;
 pub(crate) mod conditional_resolution;
 pub(crate) mod foreach_resolution;
 pub(crate) mod handler;

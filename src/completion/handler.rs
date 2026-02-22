@@ -259,19 +259,67 @@ impl Backend {
                 return Ok(Some(response));
             }
 
+            // ── String context detection ────────────────────────────
+            // Classify once and use throughout the remaining pipeline.
+            let string_ctx =
+                crate::completion::comment_position::classify_string_context(&content, position);
+            use crate::completion::comment_position::StringContext;
+
             // ── Array shape key completion ───────────────────────────
-            if let Some(response) = self.try_array_shape_completion(&content, position, &ctx) {
+            // Runs before `InStringLiteral` suppression because in
+            // normal code `$arr['` puts the scanner inside a
+            // single-quoted string, yet array shape completion is
+            // designed to work there.  Skip only in simple
+            // interpolation: `"$arr['key']"` does NOT perform array
+            // access in PHP (only `"{$arr['key']}"` does).
+            if !matches!(string_ctx, StringContext::SimpleInterpolation)
+                && let Some(response) = self.try_array_shape_completion(&content, position, &ctx)
+            {
                 return Ok(Some(response));
+            }
+
+            if matches!(string_ctx, StringContext::InStringLiteral) {
+                return Ok(None);
             }
 
             // ── Member access completion (-> or ::) ─────────────────
             if let Some(response) = self.try_member_access_completion(&content, position, &ctx) {
+                // In simple interpolation (`"$var->"`), PHP only allows
+                // property access — method calls and constants are
+                // syntax errors.  Filter to properties only.
+                if matches!(string_ctx, StringContext::SimpleInterpolation) {
+                    let filtered = match response {
+                        CompletionResponse::Array(items) => items
+                            .into_iter()
+                            .filter(|i| i.kind == Some(CompletionItemKind::PROPERTY))
+                            .collect(),
+                        CompletionResponse::List(list) => list
+                            .items
+                            .into_iter()
+                            .filter(|i| i.kind == Some(CompletionItemKind::PROPERTY))
+                            .collect(),
+                    };
+                    return Ok(Some(CompletionResponse::Array(filtered)));
+                }
                 return Ok(Some(response));
             }
 
             // ── Variable name completion ────────────────────────────
+            // Placed before the interpolation guard so that `"$`
+            // and `"{$` both offer variable suggestions.
             if let Some(response) = Self::try_variable_name_completion(&content, position) {
                 return Ok(Some(response));
+            }
+
+            // Inside any interpolation context the only useful
+            // completions are variable names and member access (handled
+            // above).  Suppress the remaining completion strategies so
+            // class names, catch clauses, etc. don't leak into strings.
+            if matches!(
+                string_ctx,
+                StringContext::SimpleInterpolation | StringContext::BraceInterpolation
+            ) {
+                return Ok(None);
             }
 
             // ── Smart catch clause completion ───────────────────────

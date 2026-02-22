@@ -58,6 +58,18 @@ $user->hasPermission('x');   // @method magic
 $user->output;               // @property-read (Renderable interface)
 $user->render();             // @method (Renderable interface)
 
+
+// ── String Interpolation ────────────────────────────────────────────────────
+// Completion is suppressed inside plain string content but still works in
+// PHP interpolation contexts. Try: delete the property name after -> and
+// trigger completion to see members offered.
+
+$greeting = "Hello {$user->getProfile()->bio}";   // brace interpolation — completion works
+$info = "Name: $user->displayName";               // simple interpolation — completion works
+$nope = 'no $user-> here';                        // single-quoted — completion suppressed
+$plain = "just plain text";                       // no $ — completion suppressed
+
+
 // ── Parenthesized RHS Assignment ─────────────────────────────────────────────
 // Try completion after -> on $parenUser, which is assigned from a parenthesized expression.
 

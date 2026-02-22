@@ -30,19 +30,44 @@ target.
 
 ### Remaining by user need
 
-#### 27. No completion inside string interpolation
+#### 39. `@var` type annotation without variable name not resolved
 
-Inside double-quoted strings with variable interpolation, member access
-completion does not work. PHP supports `"Hello $user->name"` and
-`"Hello {$user->getName()}"`, but the completion handler has no
-string-interpolation awareness. The subject extraction may accidentally
-work in trivial cases but is not reliable because the surrounding quote
-characters can confuse offset calculation and the patched content.
+When a `@var` docblock includes the variable name, the type is picked up
+correctly. When the variable name is omitted (a common shorthand), the
+type is not applied to the next assignment.
 
 ```php
-$greeting = "Hello {$user->}";
-//                         ^ no completion
+// Works:
+/** @var User $red */
+$red = a();
+$red->  // ← completes User members
+
+// Does not work:
+/** @var User */
+$red = a();
+$red->  // ← no completion
 ```
+
+**Fix:** when `@var` has a type but no variable name, apply the type to
+the immediately following assignment statement.
+
+---
+
+#### 40. No nested key completion for literal array assignments
+
+When a variable is assigned a literal array with nested associative
+keys, completing the second-level key after `$arr['first']['` does not
+offer suggestions. It works when an `array{...}` shape docblock is
+present, but not for arrays inferred purely from the literal.
+
+```php
+$red = ['a' => ['b' => 1, 'c' => 2]];
+$red['a']['  // ← no completion for 'b' / 'c'
+```
+
+**Fix:** extend the array-shape inference in `array_shape.rs` to
+recursively extract nested literal array structures so that multi-level
+key completion works without a docblock annotation.
 
 ---
 
