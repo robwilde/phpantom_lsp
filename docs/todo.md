@@ -51,31 +51,6 @@ limitation.
 
 ---
 
-#### 33. Generator yield type not inferred inside generator bodies
-
-When a method is annotated `@return Generator<int, User>`, the yield
-value type (`User`) is correctly extracted when iterating the generator
-with `foreach`. However, *inside* the generator body itself, there is
-no inference from the declared return type back to the yielded values.
-
-```php
-class UserRepository {
-    /** @return \Generator<int, User> */
-    public function findAll(): \Generator {
-        // Inside this body, `$user` should be typed as User
-        // based on the Generator return annotation, but it isn't.
-        yield $user;
-        $user->  // ← no completion
-    }
-}
-```
-
-This is a niche scenario (the developer writing the generator usually
-knows the types), but it would help when the generator body grows large
-and variables are passed around before being yielded.
-
----
-
 ## Go-to-Implementation Gaps
 
 ### 5b. Short-name collisions in `find_implementors`

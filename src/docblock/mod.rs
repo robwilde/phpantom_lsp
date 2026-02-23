@@ -33,9 +33,9 @@ mod virtual_members;
 // Core tags
 pub use tags::{
     extract_mixin_tags, extract_param_raw_type, extract_return_type, extract_type_assertions,
-    extract_var_type, extract_var_type_with_name, find_inline_var_docblock,
-    find_iterable_raw_type_in_source, find_var_raw_type_in_source, get_docblock_text_for_node,
-    has_deprecated_tag, resolve_effective_type, should_override_type,
+    extract_var_type, extract_var_type_with_name, find_enclosing_return_type,
+    find_inline_var_docblock, find_iterable_raw_type_in_source, find_var_raw_type_in_source,
+    get_docblock_text_for_node, has_deprecated_tag, resolve_effective_type, should_override_type,
 };
 
 // Template / generics / type alias tags
@@ -53,7 +53,7 @@ pub use conditional::extract_conditional_return_type;
 // Type utilities
 pub use types::{
     base_class_name, clean_type, extract_array_shape_value_type, extract_callable_return_type,
-    extract_generic_key_type, extract_generic_value_type, extract_iterable_element_type,
-    extract_object_shape_property_type, is_object_shape, parse_array_shape, parse_object_shape,
-    split_intersection_depth0,
+    extract_generator_send_type, extract_generator_value_type_raw, extract_generic_key_type,
+    extract_generic_value_type, extract_iterable_element_type, extract_object_shape_property_type,
+    is_object_shape, parse_array_shape, parse_object_shape, split_intersection_depth0,
 };

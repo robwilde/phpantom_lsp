@@ -577,3 +577,273 @@ async fn test_foreach_iterable_param_annotation() {
         labels
     );
 }
+
+// ─── Generator yield type inference inside generator bodies ─────────────────
+
+/// When a method declares `@return Generator<int, User>` and the body
+/// contains `yield $var`, the variable `$var` should be inferred as `User`
+/// (the TValue type) even without an explicit assignment.
+#[tokio::test]
+async fn test_generator_yield_reverse_inference_tvalue() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///gen_yield_reverse.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class User {\n",
+        "    public string $name;\n",
+        "    public function getEmail(): string {}\n",
+        "}\n",
+        "class UserRepository {\n",
+        "    /** @return \\Generator<int, User> */\n",
+        "    public function findAll(): \\Generator {\n",
+        "        yield $user;\n",
+        "        $user->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let items = complete_at(&backend, &uri, text, 9, 15).await;
+    let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.iter().any(|l| l.starts_with("name")),
+        "Should include 'name' from User via reverse yield inference. Got: {:?}",
+        labels
+    );
+    assert!(
+        labels.iter().any(|l| l.starts_with("getEmail")),
+        "Should include 'getEmail' from User via reverse yield inference. Got: {:?}",
+        labels
+    );
+}
+
+/// Same as above but with four Generator type parameters.
+#[tokio::test]
+async fn test_generator_yield_reverse_inference_four_params() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///gen_yield_reverse4.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Order {\n",
+        "    public int $id;\n",
+        "    public function getTotal(): float {}\n",
+        "}\n",
+        "class OrderRepo {\n",
+        "    /** @return \\Generator<int, Order, mixed, void> */\n",
+        "    public function getOrders(): \\Generator {\n",
+        "        yield $order;\n",
+        "        $order->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let items = complete_at(&backend, &uri, text, 9, 16).await;
+    let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.iter().any(|l| l.starts_with("id")),
+        "Should include 'id' from Order (TValue of Generator<int, Order, mixed, void>). Got: {:?}",
+        labels
+    );
+}
+
+/// When `yield $key => $var` is used and the return type is
+/// `Generator<int, User>`, the value variable should resolve to User.
+#[tokio::test]
+async fn test_generator_yield_pair_reverse_inference() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///gen_yield_pair.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Product {\n",
+        "    public string $title;\n",
+        "}\n",
+        "class ProductLoader {\n",
+        "    /** @return \\Generator<int, Product> */\n",
+        "    public function loadAll(): \\Generator {\n",
+        "        yield 0 => $product;\n",
+        "        $product->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let items = complete_at(&backend, &uri, text, 8, 18).await;
+    let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.iter().any(|l| l.starts_with("title")),
+        "Should include 'title' from Product via yield pair reverse inference. Got: {:?}",
+        labels
+    );
+}
+
+/// When `$sent = yield $value`, the variable `$sent` should be typed as
+/// TSend (3rd parameter of Generator<TKey, TValue, TSend, TReturn>).
+#[tokio::test]
+async fn test_generator_yield_send_type() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///gen_yield_send.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Request {\n",
+        "    public string $url;\n",
+        "    public function getMethod(): string {}\n",
+        "}\n",
+        "class Processor {\n",
+        "    /** @return \\Generator<int, string, Request, void> */\n",
+        "    public function process(): \\Generator {\n",
+        "        $request = yield 'ready';\n",
+        "        $request->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let items = complete_at(&backend, &uri, text, 9, 19).await;
+    let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.iter().any(|l| l.starts_with("url")),
+        "Should include 'url' from Request via TSend type. Got: {:?}",
+        labels
+    );
+    assert!(
+        labels.iter().any(|l| l.starts_with("getMethod")),
+        "Should include 'getMethod' from Request via TSend type. Got: {:?}",
+        labels
+    );
+}
+
+/// When Generator has only two params, TSend is not available — yield
+/// assignment should produce no completions (no crash).
+#[tokio::test]
+async fn test_generator_yield_send_type_missing_tsend() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///gen_yield_send_no_tsend.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Emitter {\n",
+        "    /** @return \\Generator<int, string> */\n",
+        "    public function emit(): \\Generator {\n",
+        "        $sent = yield 'hello';\n",
+        "        $sent->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    // No TSend parameter → no completions, but no crash either.
+    let items = complete_at(&backend, &uri, text, 5, 15).await;
+    // Should be empty or at least not crash.
+    assert!(
+        items.is_empty() || !items.iter().any(|i| i.label.starts_with("url")),
+        "Should not produce completions when TSend is missing. Got: {:?}",
+        items.iter().map(|i| &i.label).collect::<Vec<_>>()
+    );
+}
+
+/// Reverse yield inference should work in top-level functions (not only methods).
+#[tokio::test]
+async fn test_generator_yield_reverse_inference_top_level_function() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///gen_yield_toplevel.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Customer {\n",
+        "    public string $name;\n",
+        "}\n",
+        "/** @return \\Generator<int, Customer> */\n",
+        "function generateCustomers(): \\Generator {\n",
+        "    yield $customer;\n",
+        "    $customer->\n",
+        "}\n",
+    );
+
+    let items = complete_at(&backend, &uri, text, 7, 16).await;
+    let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.iter().any(|l| l.starts_with("name")),
+        "Should include 'name' from Customer via reverse yield inference in top-level function. Got: {:?}",
+        labels
+    );
+}
+
+/// When a variable IS assigned (e.g. `$user = new User()`), the explicit
+/// assignment should take priority over generator yield inference.
+#[tokio::test]
+async fn test_generator_yield_explicit_assignment_takes_priority() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///gen_yield_priority.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class User {\n",
+        "    public string $name;\n",
+        "}\n",
+        "class Admin {\n",
+        "    public string $role;\n",
+        "}\n",
+        "class Service {\n",
+        "    /** @return \\Generator<int, User> */\n",
+        "    public function findAll(): \\Generator {\n",
+        "        $admin = new Admin();\n",
+        "        yield $admin;\n",
+        "        $admin->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let items = complete_at(&backend, &uri, text, 12, 16).await;
+    let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+    // The explicit `new Admin()` assignment should win over the
+    // Generator<int, User> yield inference.
+    assert!(
+        labels.iter().any(|l| l.starts_with("role")),
+        "Explicit assignment to Admin should take priority. Got: {:?}",
+        labels
+    );
+    assert!(
+        !labels.iter().any(|l| l.starts_with("name")),
+        "Should NOT include 'name' from User when Admin is explicitly assigned. Got: {:?}",
+        labels
+    );
+}
+
+/// Cross-file generator yield inference: the yielded type is defined in
+/// another file loaded via PSR-4.
+#[tokio::test]
+async fn test_generator_yield_reverse_inference_cross_file() {
+    let (backend, _dir) = create_psr4_workspace(
+        r#"{ "autoload": { "psr-4": { "App\\": "src/" } } }"#,
+        &[(
+            "src/Models/Invoice.php",
+            concat!(
+                "<?php\n",
+                "namespace App\\Models;\n",
+                "class Invoice {\n",
+                "    public int $number;\n",
+                "    public function getAmount(): float {}\n",
+                "}\n",
+            ),
+        )],
+    );
+
+    let uri = Url::parse("file:///gen_yield_cross.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "use App\\Models\\Invoice;\n",
+        "class InvoiceGenerator {\n",
+        "    /** @return \\Generator<int, Invoice> */\n",
+        "    public function generate(): \\Generator {\n",
+        "        yield $invoice;\n",
+        "        $invoice->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let items = complete_at(&backend, &uri, text, 6, 19).await;
+    let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.iter().any(|l| l.starts_with("number")),
+        "Should include 'number' from Invoice via cross-file yield inference. Got: {:?}",
+        labels
+    );
+    assert!(
+        labels.iter().any(|l| l.starts_with("getAmount")),
+        "Should include 'getAmount' from Invoice via cross-file yield inference. Got: {:?}",
+        labels
+    );
+}

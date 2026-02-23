@@ -1032,6 +1032,35 @@ class GeneratorDemo
 }
 
 
+// ── Generator Yield Type Inference Inside Bodies ────────────────────────────
+
+class GeneratorYieldDemo
+{
+    /** @return \Generator<int, User> */
+    public function findAll(): \Generator
+    {
+        // Reverse yield inference: since the return type declares
+        // Generator<int, User>, variables that appear in `yield $var`
+        // are inferred as User (TValue = 2nd param).
+        yield $user;
+        $user->getEmail();                // resolves to User
+
+        // Also works with key => value yields:
+        yield 0 => $anotherUser;
+        $anotherUser->getName();          // resolves to User
+    }
+
+    /** @return \Generator<int, string, Request, void> */
+    public function coroutine(): \Generator
+    {
+        // TSend inference: `$var = yield $expr` assigns the TSend type
+        // (3rd param) to $var. Here TSend is Request.
+        $request = yield 'ready';
+        $request->getUri();               // resolves to Request
+    }
+}
+
+
 // ── Array & Object Shapes in Methods ────────────────────────────────────────
 
 class ShapeDemo

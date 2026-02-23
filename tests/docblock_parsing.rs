@@ -1615,3 +1615,253 @@ fn generic_key_type_generator_fqn_prefix() {
         Some("Request".to_string())
     );
 }
+
+// ─── extract_generator_send_type ────────────────────────────────────────────
+
+#[test]
+fn generator_send_type_four_params() {
+    assert_eq!(
+        extract_generator_send_type("Generator<int, User, Request, void>"),
+        Some("Request".to_string())
+    );
+}
+
+#[test]
+fn generator_send_type_three_params() {
+    assert_eq!(
+        extract_generator_send_type("Generator<int, string, Request>"),
+        Some("Request".to_string())
+    );
+}
+
+#[test]
+fn generator_send_type_two_params_returns_none() {
+    assert_eq!(extract_generator_send_type("Generator<int, User>"), None);
+}
+
+#[test]
+fn generator_send_type_single_param_returns_none() {
+    assert_eq!(extract_generator_send_type("Generator<User>"), None);
+}
+
+#[test]
+fn generator_send_type_not_generator() {
+    assert_eq!(
+        extract_generator_send_type("Collection<int, User, Request>"),
+        None
+    );
+}
+
+#[test]
+fn generator_send_type_fqn_prefix() {
+    assert_eq!(
+        extract_generator_send_type("\\Generator<int, string, Request, void>"),
+        Some("Request".to_string())
+    );
+}
+
+#[test]
+fn generator_send_type_nullable() {
+    assert_eq!(
+        extract_generator_send_type("?Generator<int, string, Request, void>"),
+        Some("Request".to_string())
+    );
+}
+
+#[test]
+fn generator_send_type_scalar_send_returns_none() {
+    // `mixed` is not in SCALAR_TYPES (it can hold objects), so it passes through.
+    // Use a true scalar like `int` to test the filter.
+    assert_eq!(
+        extract_generator_send_type("Generator<int, User, int, void>"),
+        None
+    );
+}
+
+#[test]
+fn generator_send_type_fqn_send() {
+    // clean_type preserves the leading `\` by design (marks FQN).
+    assert_eq!(
+        extract_generator_send_type("Generator<int, string, \\App\\Request, void>"),
+        Some("\\App\\Request".to_string())
+    );
+}
+
+// ─── extract_generator_value_type_raw ───────────────────────────────────────
+
+#[test]
+fn generator_value_type_raw_two_params() {
+    assert_eq!(
+        extract_generator_value_type_raw("Generator<int, User>"),
+        Some("User".to_string())
+    );
+}
+
+#[test]
+fn generator_value_type_raw_single_param() {
+    assert_eq!(
+        extract_generator_value_type_raw("Generator<User>"),
+        Some("User".to_string())
+    );
+}
+
+#[test]
+fn generator_value_type_raw_four_params() {
+    assert_eq!(
+        extract_generator_value_type_raw("Generator<int, User, mixed, void>"),
+        Some("User".to_string())
+    );
+}
+
+#[test]
+fn generator_value_type_raw_scalar_value() {
+    // Unlike extract_generic_value_type, the raw variant returns scalars.
+    assert_eq!(
+        extract_generator_value_type_raw("Generator<int, string>"),
+        Some("string".to_string())
+    );
+}
+
+#[test]
+fn generator_value_type_raw_fqn_prefix() {
+    assert_eq!(
+        extract_generator_value_type_raw("\\Generator<int, User>"),
+        Some("User".to_string())
+    );
+}
+
+#[test]
+fn generator_value_type_raw_nullable() {
+    assert_eq!(
+        extract_generator_value_type_raw("?Generator<int, User>"),
+        Some("User".to_string())
+    );
+}
+
+#[test]
+fn generator_value_type_raw_not_generator() {
+    assert_eq!(
+        extract_generator_value_type_raw("Collection<int, User>"),
+        None
+    );
+}
+
+#[test]
+fn generator_value_type_raw_nested_generic() {
+    assert_eq!(
+        extract_generator_value_type_raw("Generator<int, Collection<string, User>>"),
+        Some("Collection<string, User>".to_string())
+    );
+}
+
+// ─── find_enclosing_return_type ─────────────────────────────────────────────
+
+#[test]
+fn enclosing_return_type_method() {
+    let content = concat!(
+        "<?php\n",
+        "class Foo {\n",
+        "    /** @return \\Generator<int, User> */\n",
+        "    public function bar(): \\Generator {\n",
+        "        yield $x;\n",
+        "        $x->\n",
+        "    }\n",
+        "}\n",
+    );
+    // Cursor inside the method body, after `yield $x;\n`.
+    let cursor = content.find("$x->").unwrap() + 2;
+    assert_eq!(
+        find_enclosing_return_type(content, cursor),
+        Some("\\Generator<int, User>".to_string())
+    );
+}
+
+#[test]
+fn enclosing_return_type_top_level_function() {
+    let content = concat!(
+        "<?php\n",
+        "/** @return \\Generator<int, Order> */\n",
+        "function gen(): \\Generator {\n",
+        "    yield $o;\n",
+        "    $o->\n",
+        "}\n",
+    );
+    let cursor = content.find("$o->").unwrap() + 2;
+    assert_eq!(
+        find_enclosing_return_type(content, cursor),
+        Some("\\Generator<int, Order>".to_string())
+    );
+}
+
+#[test]
+fn enclosing_return_type_no_docblock() {
+    let content = concat!(
+        "<?php\n",
+        "function gen(): \\Generator {\n",
+        "    yield $x;\n",
+        "    $x->\n",
+        "}\n",
+    );
+    let cursor = content.find("$x->").unwrap() + 2;
+    assert_eq!(find_enclosing_return_type(content, cursor), None);
+}
+
+#[test]
+fn enclosing_return_type_static_method() {
+    let content = concat!(
+        "<?php\n",
+        "class Svc {\n",
+        "    /** @return \\Generator<int, User> */\n",
+        "    public static function run(): \\Generator {\n",
+        "        yield $u;\n",
+        "        $u->\n",
+        "    }\n",
+        "}\n",
+    );
+    let cursor = content.find("$u->").unwrap() + 2;
+    assert_eq!(
+        find_enclosing_return_type(content, cursor),
+        Some("\\Generator<int, User>".to_string())
+    );
+}
+
+#[test]
+fn enclosing_return_type_abstract_protected() {
+    let content = concat!(
+        "<?php\n",
+        "class Base {\n",
+        "    /** @return \\Generator<string, Item> */\n",
+        "    protected function items(): \\Generator {\n",
+        "        yield $i;\n",
+        "        $i->\n",
+        "    }\n",
+        "}\n",
+    );
+    let cursor = content.find("$i->").unwrap() + 2;
+    assert_eq!(
+        find_enclosing_return_type(content, cursor),
+        Some("\\Generator<string, Item>".to_string())
+    );
+}
+
+#[test]
+fn enclosing_return_type_skips_nested_braces() {
+    let content = concat!(
+        "<?php\n",
+        "class Repo {\n",
+        "    /** @return \\Generator<int, User> */\n",
+        "    public function find(): \\Generator {\n",
+        "        if (true) {\n",
+        "            $x = 1;\n",
+        "        }\n",
+        "        yield $u;\n",
+        "        $u->\n",
+        "    }\n",
+        "}\n",
+    );
+    let cursor = content.find("$u->").unwrap() + 2;
+    assert_eq!(
+        find_enclosing_return_type(content, cursor),
+        Some("\\Generator<int, User>".to_string())
+    );
+}

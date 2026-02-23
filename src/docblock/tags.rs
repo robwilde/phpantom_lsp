@@ -485,6 +485,121 @@ pub fn find_iterable_raw_type_in_source(
     None
 }
 
+/// Find the `@return` type annotation of the enclosing function or method.
+///
+/// Scans backward from `cursor_offset` through `content`, crossing the
+/// opening `{` of the enclosing function body, to locate the docblock
+/// that immediately precedes the function/method declaration.  If a
+/// `@return` tag is found, its type string is returned.
+///
+/// This is used inside generator bodies to reverse-infer variable types
+/// from the declared `@return Generator<TKey, TValue, TSend, TReturn>`.
+///
+/// Returns `None` when no enclosing function docblock or `@return` tag
+/// can be found.
+pub fn find_enclosing_return_type(content: &str, cursor_offset: usize) -> Option<String> {
+    let search_area = content.get(..cursor_offset)?;
+
+    // Walk backward, tracking brace depth.  We start inside a function
+    // body (depth 0).  When we cross the opening `{` (depth goes to -1),
+    // we have exited the function body and are in the function signature
+    // region.  From there, look for the docblock above.
+    let mut brace_depth = 0i32;
+
+    // Find the byte offset of the opening `{` of the enclosing function.
+    let mut func_open_brace: Option<usize> = None;
+    for (i, ch) in search_area.char_indices().rev() {
+        match ch {
+            '}' => brace_depth += 1,
+            '{' => {
+                brace_depth -= 1;
+                if brace_depth < 0 {
+                    func_open_brace = Some(i);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let brace_pos = func_open_brace?;
+
+    // The region before the `{` should contain the function signature
+    // and (optionally) the docblock above it.
+    let before_brace = content.get(..brace_pos)?;
+
+    // Find the `*/` that ends the docblock.  It must appear in the
+    // region before the opening brace.  We search for the last `*/`
+    // before the `function` keyword.
+    //
+    // First, locate the `function` keyword so we know where the
+    // signature starts.
+    let sig_start = before_brace.len().saturating_sub(2000);
+    let sig_region = &before_brace[sig_start..];
+    let func_kw_rel = sig_region.rfind("function")?;
+    let func_kw_pos = sig_start + func_kw_rel;
+
+    // Everything before `function` (after trimming whitespace and
+    // modifiers) should end with the docblock.
+    let before_func = content.get(..func_kw_pos)?;
+
+    // Scan backward over modifier keywords and whitespace.
+    let trimmed = before_func.trim_end();
+    let after_mods = strip_trailing_modifiers(trimmed);
+
+    if !after_mods.ends_with("*/") {
+        return None;
+    }
+
+    let open_pos = after_mods.rfind("/**")?;
+    let docblock = &after_mods[open_pos..];
+
+    extract_return_type(docblock)
+}
+
+/// Strip trailing PHP visibility/modifier keywords from a string.
+///
+/// Given a string like `"  /** ... */\n    public static"`, returns
+/// `"  /** ... */"` (after stripping `static` and `public`).
+///
+/// Recognised modifiers: `public`, `protected`, `private`, `static`,
+/// `abstract`, `final`.
+fn strip_trailing_modifiers(s: &str) -> &str {
+    const MODIFIERS: &[&str] = &[
+        "public",
+        "protected",
+        "private",
+        "static",
+        "abstract",
+        "final",
+    ];
+
+    let mut current = s;
+    loop {
+        let trimmed = current.trim_end();
+        let mut found = false;
+        for &modifier in MODIFIERS {
+            if let Some(before) = trimmed.strip_suffix(modifier) {
+                // Make sure the modifier is preceded by whitespace or
+                // start of string (not part of a longer identifier).
+                let before_trimmed = before.trim_end();
+                if before.len() == before_trimmed.len() && !before.is_empty() {
+                    // No whitespace before the modifier — it could be
+                    // part of an identifier.  Skip.
+                    continue;
+                }
+                current = before;
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            break;
+        }
+    }
+    current.trim_end()
+}
+
 // ─── Type Override Logic ────────────────────────────────────────────────────
 
 /// Decide whether a docblock type should override a native type hint.

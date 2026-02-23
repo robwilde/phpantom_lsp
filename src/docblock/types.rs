@@ -1001,3 +1001,90 @@ pub fn extract_object_shape_property_type(type_str: &str, prop: &str) -> Option<
         .find(|e| e.key == prop)
         .map(|e| e.value_type)
 }
+
+/// Extract the TSend type from a `Generator<TKey, TValue, TSend, TReturn>`
+/// type annotation.
+///
+/// PHP's `Generator` class has four generic parameters:
+///   - TKey (index 0): the key type yielded by `yield $key => $value`
+///   - TValue (index 1): the value type yielded by `yield $value`
+///   - TSend (index 2): the type received by `$var = yield $expr`
+///   - TReturn (index 3): the type returned by `return $expr`
+///
+/// This function extracts the **third** parameter (TSend, index 2).
+/// When the type is not a `Generator` or has fewer than 3 parameters,
+/// returns `None`.
+///
+/// # Examples
+///
+/// - `Generator<int, User, Request, void>` → `Some("Request")`
+/// - `Generator<int, User, mixed>`         → `Some("mixed")`
+/// - `Generator<int, User>`                → `None` (only 2 params)
+/// - `Generator<User>`                     → `None` (only 1 param)
+/// - `Collection<int, User>`               → `None` (not Generator)
+pub fn extract_generator_send_type(raw_type: &str) -> Option<String> {
+    let s = raw_type.strip_prefix('\\').unwrap_or(raw_type);
+    let s = s.strip_prefix('?').unwrap_or(s);
+
+    let angle_pos = s.find('<')?;
+    let base_type = &s[..angle_pos];
+    if base_type != "Generator" {
+        return None;
+    }
+
+    let inner = s.get(angle_pos + 1..)?.strip_suffix('>')?.trim();
+    if inner.is_empty() {
+        return None;
+    }
+
+    let args = split_generic_args(inner);
+    // TSend is the 3rd parameter (index 2).
+    let send_part = args.get(2)?;
+    let cleaned = clean_type(send_part.trim());
+    let base_name = strip_generics(&cleaned);
+
+    if base_name.is_empty() || is_scalar(&base_name) {
+        return None;
+    }
+    Some(cleaned)
+}
+
+/// Extract the TValue type from a `Generator<TKey, TValue, …>` annotation,
+/// returning the raw type string even when it is a scalar.
+///
+/// Unlike [`extract_generic_value_type`] which skips scalar element types,
+/// this function returns the raw TValue string regardless.  This is needed
+/// for reverse yield inference where we may want to propagate the type
+/// even if it is scalar (so that the caller can decide whether to resolve
+/// it).
+///
+/// Returns `None` when the type is not a `Generator` generic.
+///
+/// # Examples
+///
+/// - `Generator<int, User>`                → `Some("User")`
+/// - `Generator<int, string>`              → `Some("string")`
+/// - `Generator<User>`                     → `Some("User")` (single param treated as TValue)
+/// - `Generator<int, User, mixed, void>`   → `Some("User")`
+/// - `Collection<int, User>`               → `None` (not Generator)
+pub fn extract_generator_value_type_raw(raw_type: &str) -> Option<String> {
+    let s = raw_type.strip_prefix('\\').unwrap_or(raw_type);
+    let s = s.strip_prefix('?').unwrap_or(s);
+
+    let angle_pos = s.find('<')?;
+    let base_type = &s[..angle_pos];
+    if base_type != "Generator" {
+        return None;
+    }
+
+    let inner = s.get(angle_pos + 1..)?.strip_suffix('>')?.trim();
+    if inner.is_empty() {
+        return None;
+    }
+
+    let args = split_generic_args(inner);
+    // TValue is the 2nd parameter (index 1).  When only one param is
+    // given, treat it as TValue (consistent with single-param behaviour).
+    let value_part = args.get(1).or(args.last()).copied()?;
+    Some(clean_type(value_part.trim()))
+}

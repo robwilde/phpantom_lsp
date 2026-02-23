@@ -100,6 +100,10 @@ pub(super) struct VarResolutionCtx<'a> {
     pub cursor_offset: u32,
     pub class_loader: &'a dyn Fn(&str) -> Option<ClassInfo>,
     pub function_loader: FunctionLoaderFn<'a>,
+    /// The `@return` type annotation of the enclosing function/method,
+    /// if known.  Used inside generator bodies to reverse-infer variable
+    /// types from `Generator<TKey, TValue, TSend, TReturn>`.
+    pub enclosing_return_type: Option<String>,
 }
 
 impl<'a> VarResolutionCtx<'a> {

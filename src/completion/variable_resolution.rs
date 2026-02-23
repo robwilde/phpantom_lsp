@@ -99,6 +99,7 @@ impl Backend {
                 cursor_offset,
                 class_loader,
                 function_loader,
+                enclosing_return_type: None,
             };
 
             // Walk top-level (and namespace-nested) statements to find the
@@ -137,6 +138,7 @@ impl Backend {
                     cursor_offset,
                     class_loader,
                     function_loader: None,
+                    enclosing_return_type: None,
                 };
                 Self::resolve_class_string_in_statements(program.statements.iter(), &ctx)
             },
@@ -377,17 +379,50 @@ impl Backend {
                     let body_start = func.body.left_brace.start.offset;
                     let body_end = func.body.right_brace.end.offset;
                     if ctx.cursor_offset >= body_start && ctx.cursor_offset <= body_end {
+                        // Extract the enclosing function's @return type
+                        // for generator yield inference inside the body.
+                        // Use cursor_offset (inside the body) rather than
+                        // body_start (the `{` itself) so the opening
+                        // brace is included in the backward scan.
+                        let enclosing_ret = crate::docblock::find_enclosing_return_type(
+                            ctx.content,
+                            ctx.cursor_offset as usize,
+                        );
+                        let body_ctx = VarResolutionCtx {
+                            var_name: ctx.var_name,
+                            current_class: ctx.current_class,
+                            all_classes: ctx.all_classes,
+                            content: ctx.content,
+                            cursor_offset: ctx.cursor_offset,
+                            class_loader: ctx.class_loader,
+                            function_loader: ctx.function_loader,
+                            enclosing_return_type: enclosing_ret,
+                        };
                         // The cursor is inside this function body.  PHP
                         // function scopes are isolated, so return the
                         // result directly (even if empty after `unset`).
                         let mut results: Vec<ClassInfo> = Vec::new();
-                        Self::resolve_closure_params(&func.parameter_list, ctx, &mut results);
+                        Self::resolve_closure_params(&func.parameter_list, &body_ctx, &mut results);
                         Self::walk_statements_for_assignments(
                             func.body.statements.iter(),
-                            ctx,
+                            &body_ctx,
                             &mut results,
                             false,
                         );
+                        if !results.is_empty() {
+                            return results;
+                        }
+
+                        // Generator yield reverse inference for
+                        // top-level functions.
+                        if let Some(ref ret_type) = body_ctx.enclosing_return_type {
+                            let yield_results =
+                                Self::try_infer_from_generator_yield(ret_type, &body_ctx);
+                            if !yield_results.is_empty() {
+                                return yield_results;
+                            }
+                        }
+
                         return results;
                     }
                 }
@@ -474,18 +509,51 @@ impl Backend {
                     let blk_start = block.left_brace.start.offset;
                     let blk_end = block.right_brace.end.offset;
                     if ctx.cursor_offset >= blk_start && ctx.cursor_offset <= blk_end {
+                        // Extract the enclosing method's @return type for
+                        // generator yield inference inside the body.
+                        // Use cursor_offset (inside the body) rather than
+                        // blk_start (the `{` itself) so the opening brace
+                        // is included in the backward scan.
+                        let enclosing_ret = crate::docblock::find_enclosing_return_type(
+                            ctx.content,
+                            ctx.cursor_offset as usize,
+                        );
+                        let body_ctx = VarResolutionCtx {
+                            var_name: ctx.var_name,
+                            current_class: ctx.current_class,
+                            all_classes: ctx.all_classes,
+                            content: ctx.content,
+                            cursor_offset: ctx.cursor_offset,
+                            class_loader: ctx.class_loader,
+                            function_loader: ctx.function_loader,
+                            enclosing_return_type: enclosing_ret,
+                        };
                         // Seed the result set with the parameter type hint
                         // (if any) so that instanceof narrowing and
                         // unconditional reassignments can refine it.
                         let mut results = param_results.clone();
                         Self::walk_statements_for_assignments(
                             block.statements.iter(),
-                            ctx,
+                            &body_ctx,
                             &mut results,
                             false,
                         );
                         if !results.is_empty() {
                             return results;
+                        }
+
+                        // ── Generator yield reverse inference ──
+                        // If no type was found through normal resolution
+                        // and the enclosing method returns a Generator,
+                        // check whether our variable appears as the
+                        // operand of a `yield` statement and infer its
+                        // type from the Generator's TValue parameter.
+                        if let Some(ref ret_type) = body_ctx.enclosing_return_type {
+                            let yield_results =
+                                Self::try_infer_from_generator_yield(ret_type, &body_ctx);
+                            if !yield_results.is_empty() {
+                                return yield_results;
+                            }
                         }
                     } else {
                         // Cursor is not inside this method's body —
@@ -1261,6 +1329,7 @@ impl Backend {
                 cursor_offset: assignment.span().start.offset,
                 class_loader: ctx.class_loader,
                 function_loader: ctx.function_loader,
+                enclosing_return_type: ctx.enclosing_return_type.clone(),
             };
             let resolved = Self::resolve_rhs_expression(assignment.rhs, &rhs_ctx);
             push_results(results, resolved, conditional);
@@ -1341,6 +1410,22 @@ impl Backend {
                     ctx.all_classes,
                     ctx.class_loader,
                 )
+            }
+            // ── Generator yield-assignment: `$var = yield $expr` ──
+            // The value of a yield expression is the TSend type from
+            // the enclosing function's `@return Generator<K, V, TSend, R>`.
+            Expression::Yield(_) => {
+                if let Some(ref ret_type) = ctx.enclosing_return_type
+                    && let Some(send_type) = crate::docblock::extract_generator_send_type(ret_type)
+                {
+                    return Self::type_hint_to_classes(
+                        &send_type,
+                        &ctx.current_class.name,
+                        ctx.all_classes,
+                        ctx.class_loader,
+                    );
+                }
+                vec![]
             }
             _ => vec![],
         }
@@ -2030,5 +2115,107 @@ impl Backend {
         let arr_expr = Self::nth_arg_expr(args, 1)?;
         let raw = Self::resolve_arg_raw_type(arr_expr, ctx)?;
         docblock::types::extract_generic_value_type(&raw)
+    }
+
+    /// Reverse-infer a variable's type from `yield $var` statements when
+    /// the enclosing function declares `@return Generator<TKey, TValue, …>`.
+    ///
+    /// Scans the source text around the cursor for `yield $varName`
+    /// patterns within the enclosing function body.  When found, extracts
+    /// the TValue (2nd generic parameter) from the Generator return type
+    /// and resolves it to `ClassInfo`.
+    ///
+    /// This is a fallback used only when normal assignment-based resolution
+    /// produced no results — the developer is inside a generator body and
+    /// using a variable that is yielded but was not explicitly typed via
+    /// an assignment or parameter.
+    fn try_infer_from_generator_yield(
+        return_type: &str,
+        ctx: &VarResolutionCtx<'_>,
+    ) -> Vec<ClassInfo> {
+        // Only applies to Generator return types.
+        let value_type = match crate::docblock::extract_generator_value_type_raw(return_type) {
+            Some(vt) => vt,
+            None => return vec![],
+        };
+
+        // Scan the source text for `yield $varName` or `yield $varName;`
+        // within a reasonable window around the cursor.  We look at the
+        // enclosing function body (everything between the outermost `{`
+        // and `}` that contains the cursor).
+        let var_name = ctx.var_name;
+        let content = ctx.content;
+        let cursor = ctx.cursor_offset as usize;
+
+        // Find the enclosing function body boundaries by scanning backward
+        // for the opening `{`.
+        let search_before = content.get(..cursor).unwrap_or("");
+        let mut brace_depth = 0i32;
+        let mut body_start = None;
+        for (i, ch) in search_before.char_indices().rev() {
+            match ch {
+                '}' => brace_depth += 1,
+                '{' => {
+                    brace_depth -= 1;
+                    if brace_depth < 0 {
+                        body_start = Some(i + 1);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let start = match body_start {
+            Some(s) => s,
+            None => return vec![],
+        };
+
+        // Find the matching closing `}` by scanning forward from the
+        // opening brace.
+        let after_open = content.get(start..).unwrap_or("");
+        let mut depth = 0i32;
+        let mut body_end = content.len();
+        for (i, ch) in after_open.char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth < 0 {
+                        body_end = start + i;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let body = content.get(start..body_end).unwrap_or("");
+
+        // Look for `yield $varName` (not `yield from` or `yield $key => $varName`).
+        // We check for simple patterns:
+        //   - `yield $varName;`
+        //   - `yield $varName `  (before semicolon or end of expression)
+        let yield_pattern = format!("yield {}", var_name);
+        let has_yield = body.contains(&yield_pattern);
+
+        // Also check for `yield $key => $varName` pattern — the variable
+        // is the value part in a key-value yield.
+        let yield_pair_needle = format!("=> {}", var_name);
+        let has_yield_pair = body.lines().any(|line| {
+            let trimmed = line.trim();
+            trimmed.contains("yield ") && trimmed.contains(&yield_pair_needle)
+        });
+
+        if !has_yield && !has_yield_pair {
+            return vec![];
+        }
+
+        Self::type_hint_to_classes(
+            &value_type,
+            &ctx.current_class.name,
+            ctx.all_classes,
+            ctx.class_loader,
+        )
     }
 }
