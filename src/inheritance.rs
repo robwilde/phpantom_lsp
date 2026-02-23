@@ -195,15 +195,19 @@ impl Backend {
     ///
     /// Resolves inheritance for `class`, finds the method named
     /// `method_name`, and returns its `return_type`.  This is a
-    /// convenience wrapper around [`resolve_class_with_inheritance`]
+    /// convenience wrapper around [`resolve_class_fully`](Self::resolve_class_fully)
     /// that eliminates the repeated merge → find → extract pattern
     /// used across many modules.
+    ///
+    /// Uses full resolution (base inheritance + virtual member providers)
+    /// so that virtual methods from `@method` tags, `@mixin` classes,
+    /// and framework providers are included.
     pub(crate) fn resolve_method_return_type(
         class: &ClassInfo,
         method_name: &str,
         class_loader: &dyn Fn(&str) -> Option<ClassInfo>,
     ) -> Option<String> {
-        let merged = Self::resolve_class_with_inheritance(class, class_loader);
+        let merged = Self::resolve_class_fully(class, class_loader);
         merged
             .methods
             .iter()
@@ -215,15 +219,19 @@ impl Backend {
     ///
     /// Resolves inheritance for `class`, finds the property named
     /// `prop_name`, and returns its `type_hint`.  This is a
-    /// convenience wrapper around [`resolve_class_with_inheritance`]
+    /// convenience wrapper around [`resolve_class_fully`](Self::resolve_class_fully)
     /// that eliminates the repeated merge → find → extract pattern
     /// used across many modules.
+    ///
+    /// Uses full resolution (base inheritance + virtual member providers)
+    /// so that virtual properties from `@property` tags, `@mixin` classes,
+    /// and framework providers are included.
     pub(crate) fn resolve_property_type_hint(
         class: &ClassInfo,
         prop_name: &str,
         class_loader: &dyn Fn(&str) -> Option<ClassInfo>,
     ) -> Option<String> {
-        let merged = Self::resolve_class_with_inheritance(class, class_loader);
+        let merged = Self::resolve_class_fully(class, class_loader);
         merged
             .properties
             .iter()

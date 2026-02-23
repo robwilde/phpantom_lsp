@@ -11,8 +11,12 @@
 //!   to feature-specific modules)
 //! - `util` — Utility helpers (position conversion, class lookup, logging)
 //! - `definition` — Go-to-definition support for classes, members, and functions
-//! - `inheritance` — Class inheritance resolution. Merges members from parent
+//! - `inheritance` — Base class inheritance resolution. Merges members from parent
 //!   classes, traits, and `@mixin` classes into a unified `ClassInfo`
+//! - `virtual_members` — Virtual member provider abstraction. Defines the
+//!   [`VirtualMemberProvider`](virtual_members::VirtualMemberProvider) trait and
+//!   merge logic for members synthesized from `@method`/`@property` tags,
+//!   `@mixin` classes, and framework-specific patterns (e.g. Laravel)
 //! - `resolution` — Class and function lookup / name resolution (multi-phase:
 //!   class_index → ast_map → classmap → PSR-4 → stubs)
 //! - `subject_extraction` — Shared helpers for extracting the left-hand side of
@@ -47,6 +51,7 @@ pub mod stubs;
 pub(crate) mod subject_extraction;
 pub mod types;
 mod util;
+pub(crate) mod virtual_members;
 
 // ─── Re-exports ─────────────────────────────────────────────────────────────
 
@@ -71,7 +76,9 @@ pub use types::{
 /// - `server` — `impl LanguageServer` (initialize, completion, did_open, …)
 /// - `resolution` — `find_or_load_class`, `find_or_load_function`, `resolve_class_name`,
 ///   `resolve_function_name`
-/// - `inheritance` — `resolve_class_with_inheritance`, trait/mixin/parent merging
+/// - `inheritance` — `resolve_class_with_inheritance` (base resolution), trait/mixin/parent merging
+/// - `virtual_members` — `resolve_class_fully` (base resolution + virtual member providers),
+///   `VirtualMemberProvider` trait, merge logic, provider registry
 /// - `subject_extraction` — Shared subject extraction helpers for `->`, `?->`, `::` operators
 /// - `util` — `position_to_offset`, `find_class_at_offset`, `log`, `get_classes_for_uri`
 /// - `definition` — `resolve_definition`, member resolution, function resolution

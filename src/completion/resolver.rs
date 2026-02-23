@@ -674,7 +674,7 @@ impl Backend {
         }
 
         // Walk up the inheritance chain
-        let merged = Self::resolve_class_with_inheritance(class_info, class_loader);
+        let merged = Self::resolve_class_fully(class_info, class_loader);
         if let Some(method) = merged.methods.iter().find(|m| m.name == method_name) {
             return resolve_method(method);
         }
@@ -705,7 +705,7 @@ impl Backend {
             .find(|m| m.name == method_name)
             .cloned()
             .or_else(|| {
-                let merged = Self::resolve_class_with_inheritance(class_info, class_loader);
+                let merged = Self::resolve_class_fully(class_info, class_loader);
                 merged.methods.into_iter().find(|m| m.name == method_name)
             });
 

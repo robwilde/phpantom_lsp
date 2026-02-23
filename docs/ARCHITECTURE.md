@@ -207,7 +207,15 @@ If the stubs aren't installed (e.g. `composer install` hasn't been run), `build.
 
 ## Inheritance Resolution
 
-When building completion items or resolving definitions, PHPantom merges members from the full inheritance chain via `resolve_class_with_inheritance`:
+When building completion items or resolving definitions, PHPantom merges members from the full inheritance chain. Resolution proceeds in two phases:
+
+1. **Base resolution** (`resolve_class_with_inheritance` in `inheritance.rs`): merges own members, trait members, and parent chain members with generic type substitution. Also merges `@mixin` classes at lowest precedence.
+
+2. **Virtual member providers** (`resolve_class_fully` in `virtual_members/mod.rs`): queries registered providers in priority order and merges their contributions. Virtual members never overwrite real declared members or contributions from higher-priority providers.
+
+All completion and go-to-definition call sites use `resolve_class_fully`, which is the primary entry point for full resolution.
+
+### Base Resolution
 
 ```
 ClassInfo (own members)
@@ -222,12 +230,43 @@ ClassInfo (own members)
     └── Resolved with full inheritance, only public members
 ```
 
+### Virtual Member Providers
+
+After base resolution, `resolve_class_fully` applies registered virtual member providers. These are implementations of the `VirtualMemberProvider` trait (defined in `src/virtual_members/mod.rs`) that synthesize methods and properties not present in the PHP source code.
+
+Each provider implements two methods:
+
+- `applies_to(class, class_loader) -> bool`: cheap pre-check to skip providers early.
+- `provide(class, class_loader) -> VirtualMembers`: produce the virtual methods and properties.
+
+Providers receive the base-resolved class (own + traits + parents) but without other providers' contributions. This prevents circular loading.
+
+```
+resolve_class_fully(class)
+│
+├── 1. resolve_class_with_inheritance(class)
+│   └── Returns base-resolved ClassInfo
+│
+└── 2. For each provider (in priority order):
+    └── if applies_to(class): merge provide(class) into result
+        └── Skips members that already exist (no overwrites)
+```
+
+Provider priority order (highest first):
+
+1. **Framework provider** (e.g. Laravel): richest type info
+2. **PHPDoc provider**: `@method`, `@property`, `@property-read`, `@property-write`
+3. **Mixin provider**: `@mixin` class members
+
+Currently no providers are registered. As they are implemented they will be added to `default_providers()` in `virtual_members/mod.rs`.
+
 ### Precedence Rules
 
 - **Class own members** always win.
 - **Trait members** override inherited members but not own members.
 - **Parent members** fill in anything not already present.
-- **Mixin members** have the lowest precedence.
+- **Mixin members** have the lowest precedence within base resolution.
+- **Virtual members** from providers sit below all real declared members (own, trait, parent). Higher-priority providers shadow lower-priority ones.
 - **Private members** are never inherited from parents (but trait private members are copied, matching PHP semantics).
 
 ### Interface Inheritance in Traits/Used Interfaces

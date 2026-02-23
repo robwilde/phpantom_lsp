@@ -104,7 +104,7 @@ impl Backend {
         };
 
         for cls in &iterable_classes {
-            let merged = Self::resolve_class_with_inheritance(cls, ctx.class_loader);
+            let merged = Self::resolve_class_fully(cls, ctx.class_loader);
             if let Some(value_type) = Self::extract_iterable_element_type_from_class(&merged) {
                 Self::push_foreach_resolved_types(&value_type, ctx, results, conditional);
                 return;
@@ -186,7 +186,7 @@ impl Backend {
         };
 
         for cls in &iterable_classes {
-            let merged = Self::resolve_class_with_inheritance(cls, ctx.class_loader);
+            let merged = Self::resolve_class_fully(cls, ctx.class_loader);
             if let Some(key_type) = Self::extract_iterable_key_type_from_class(&merged) {
                 Self::push_foreach_resolved_types(&key_type, ctx, results, conditional);
                 return;

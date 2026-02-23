@@ -690,7 +690,7 @@ impl Backend {
             let mut occurrence_count: HashMap<String, usize> = HashMap::new();
             let current_class_name = current_class.map(|cc| cc.name.as_str());
             for target_class in &candidates {
-                let merged = Self::resolve_class_with_inheritance(target_class, &class_loader);
+                let merged = Self::resolve_class_fully(target_class, &class_loader);
 
                 // Determine whether the cursor is inside the target
                 // class itself or inside a (transitive) subclass.
@@ -1179,7 +1179,7 @@ impl Backend {
         if let Some(class_name) = expr.strip_prefix("new ") {
             let class_name = class_name.trim();
             if let Some(ci) = class_loader(class_name) {
-                let merged = Self::resolve_class_with_inheritance(&ci, &class_loader);
+                let merged = Self::resolve_class_fully(&ci, &class_loader);
                 if let Some(ctor) = merged.methods.iter().find(|m| m.name == "__construct") {
                     return ctor.parameters.clone();
                 }
@@ -1217,7 +1217,7 @@ impl Backend {
             };
 
             for owner in &owner_classes {
-                let merged = Self::resolve_class_with_inheritance(owner, &class_loader);
+                let merged = Self::resolve_class_fully(owner, &class_loader);
                 if let Some(method) = merged.methods.iter().find(|m| m.name == method_name) {
                     return method.parameters.clone();
                 }
@@ -1245,7 +1245,7 @@ impl Backend {
             };
 
             if let Some(ref owner) = owner_class {
-                let merged = Self::resolve_class_with_inheritance(owner, &class_loader);
+                let merged = Self::resolve_class_fully(owner, &class_loader);
                 if let Some(method) = merged.methods.iter().find(|m| m.name == method_name) {
                     return method.parameters.clone();
                 }

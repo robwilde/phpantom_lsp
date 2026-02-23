@@ -156,7 +156,7 @@ impl Backend {
 
             // Verify the method exists on this interface/abstract class
             // (directly or inherited).
-            let merged = Self::resolve_class_with_inheritance(candidate, &class_loader);
+            let merged = Self::resolve_class_fully(candidate, &class_loader);
             let has_method = merged.methods.iter().any(|m| m.name == member_name);
             let has_property = merged.properties.iter().any(|p| p.name == member_name);
 
@@ -179,7 +179,7 @@ impl Backend {
 
             for imp in &implementors {
                 // Check that the implementor actually has this member.
-                let imp_merged = Self::resolve_class_with_inheritance(imp, &class_loader);
+                let imp_merged = Self::resolve_class_fully(imp, &class_loader);
                 let imp_has = match member_kind {
                     MemberKind::Method => imp_merged.methods.iter().any(|m| m.name == member_name),
                     MemberKind::Property => {
