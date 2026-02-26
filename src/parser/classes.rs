@@ -2,7 +2,9 @@ use std::collections::HashMap;
 
 use mago_span::HasSpan;
 use mago_syntax::ast::attribute::AttributeList;
+use mago_syntax::ast::class_like::member::ClassLikeMember;
 use mago_syntax::ast::class_like::method::{Method, MethodBody};
+use mago_syntax::ast::class_like::property::{Property, PropertyItem};
 use mago_syntax::ast::class_like::trait_use::{
     TraitUseAdaptation, TraitUseMethodReference, TraitUseSpecification,
 };
@@ -197,6 +199,382 @@ fn extract_custom_collection_from_new_collection(methods: &[MethodInfo]) -> Opti
     Some(base.to_string())
 }
 
+/// Extract Eloquent cast definitions from a class's members.
+///
+/// Scans the class members for:
+/// 1. A `$casts` property with an array initializer (`protected $casts = [...]`)
+/// 2. A `casts()` method whose body contains a `return [...]` statement
+///
+/// Returns a list of `(column_name, cast_type)` pairs extracted from the
+/// array literal text.  Both sources are merged: entries from the
+/// `casts()` method take priority over `$casts` property entries when
+/// the same column appears in both.  This matches Laravel's runtime
+/// behaviour where `Model::casts()` overrides `$casts`.
+fn extract_casts_definitions<'a>(
+    members: impl Iterator<Item = &'a ClassLikeMember<'a>>,
+    content: &str,
+) -> Vec<(String, String)> {
+    let mut property_text: Option<String> = None;
+    let mut method_text: Option<String> = None;
+
+    for member in members {
+        match member {
+            ClassLikeMember::Property(Property::Plain(plain)) => {
+                for item in plain.items.iter() {
+                    let var_name = item.variable().name.to_string();
+                    let stripped = var_name.strip_prefix('$').unwrap_or(&var_name);
+                    if stripped != "casts" {
+                        continue;
+                    }
+                    if let PropertyItem::Concrete(concrete) = item {
+                        let span = concrete.value.span();
+                        let start = span.start.offset as usize;
+                        let end = span.end.offset as usize;
+                        if let Some(text) = content.get(start..end) {
+                            property_text = Some(text.to_string());
+                        }
+                    }
+                }
+            }
+            ClassLikeMember::Method(method) if method.name.value == "casts" => {
+                if let MethodBody::Concrete(block) = &method.body {
+                    let start = block.left_brace.start.offset as usize;
+                    let end = block.right_brace.end.offset as usize;
+                    if let Some(text) = content.get(start..end) {
+                        method_text = Some(text.to_string());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Start with $casts property entries as the base.
+    let mut merged: Vec<(String, String)> = Vec::new();
+
+    if let Some(ref text) = property_text {
+        merged = parse_casts_array(text);
+    }
+
+    // Merge casts() method entries on top — method entries override
+    // property entries for the same column, matching Laravel's runtime
+    // behaviour.
+    if let Some(ref text) = method_text
+        && let Some(arr_start) = text.find("return")
+    {
+        let after_return = &text[arr_start + 6..];
+        if let Some(bracket_pos) = after_return.find('[') {
+            let array_text = &after_return[bracket_pos..];
+            let method_defs = parse_casts_array(array_text);
+            for (key, value) in method_defs {
+                if let Some(existing) = merged.iter_mut().find(|(k, _)| *k == key) {
+                    existing.1 = value;
+                } else {
+                    merged.push((key, value));
+                }
+            }
+        }
+    }
+
+    merged
+}
+
+/// Parse key-value pairs from a PHP array literal text.
+///
+/// Accepts text starting with `[` and extracts `'key' => 'value'` pairs.
+/// Both single-quoted and double-quoted strings are supported for keys
+/// and values.  Handles multi-line arrays and trailing commas.
+///
+/// Returns a list of `(key, value)` string pairs.
+fn parse_casts_array(text: &str) -> Vec<(String, String)> {
+    let mut results = Vec::new();
+    let trimmed = text.trim();
+
+    // Must start with `[`
+    let inner = if let Some(s) = trimmed.strip_prefix('[') {
+        // Strip trailing `]` if present
+        s.strip_suffix(']').unwrap_or(s)
+    } else {
+        return results;
+    };
+
+    // Split on commas, handling each `'key' => 'value'` pair.
+    // This simple approach works because cast arrays contain only
+    // string literals — no nested arrays or complex expressions.
+    for segment in inner.split(',') {
+        let segment = segment.trim();
+        if segment.is_empty() {
+            continue;
+        }
+
+        // Look for the `=>` arrow.
+        let Some(arrow_pos) = segment.find("=>") else {
+            continue;
+        };
+
+        let key_part = segment[..arrow_pos].trim();
+        let value_part = segment[arrow_pos + 2..].trim();
+
+        let key = extract_string_literal(key_part);
+        let value = extract_string_literal(value_part);
+
+        if let (Some(k), Some(v)) = (key, value)
+            && !k.is_empty()
+            && !v.is_empty()
+        {
+            results.push((k, v));
+        }
+    }
+
+    results
+}
+
+/// Extract the string content from a PHP string literal.
+///
+/// Strips surrounding quotes (single or double) and returns the inner
+/// text.  Returns `None` if the text is not a quoted string.
+///
+/// Also handles:
+/// - `SomeCast::class` — returns `"SomeCast"`
+/// - `Address::class.':argument'` — strips the concatenated argument
+///   suffix and returns `"Address"`
+fn extract_string_literal(text: &str) -> Option<String> {
+    let t = text.trim();
+    if ((t.starts_with('\'') && t.ends_with('\'')) || (t.starts_with('"') && t.ends_with('"')))
+        && t.len() >= 2
+    {
+        return Some(t[1..t.len() - 1].to_string());
+    }
+    // For class-string cast values like `SomeCast::class` or
+    // `SomeCast::class.':argument'`, extract the class name.
+    // First, strip any `.':...'` or `.":...."` concatenation suffix.
+    let without_concat = if let Some(dot_pos) = t.find(".'") {
+        t[..dot_pos].trim()
+    } else if let Some(dot_pos) = t.find(".\"") {
+        t[..dot_pos].trim()
+    } else {
+        t
+    };
+    if let Some(before) = without_concat.strip_suffix("::class") {
+        let name = before.trim().strip_prefix('\\').unwrap_or(before.trim());
+        if !name.is_empty() {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
+/// Extract Eloquent attribute defaults from a class's `$attributes` property.
+///
+/// Scans the class members for a `$attributes` property with an array
+/// initializer (`protected $attributes = [...]`) and infers PHP types
+/// from the literal default values.
+///
+/// Returns a list of `(column_name, php_type)` pairs.  For example,
+/// `'role' => 'user'` produces `("role", "string")` and
+/// `'is_active' => true` produces `("is_active", "bool")`.
+fn extract_attributes_definitions<'a>(
+    members: impl Iterator<Item = &'a ClassLikeMember<'a>>,
+    content: &str,
+) -> Vec<(String, String)> {
+    for member in members {
+        if let ClassLikeMember::Property(Property::Plain(plain)) = member {
+            for item in plain.items.iter() {
+                let var_name = item.variable().name.to_string();
+                let stripped = var_name.strip_prefix('$').unwrap_or(&var_name);
+                if stripped != "attributes" {
+                    continue;
+                }
+                if let PropertyItem::Concrete(concrete) = item {
+                    let span = concrete.value.span();
+                    let start = span.start.offset as usize;
+                    let end = span.end.offset as usize;
+                    if let Some(text) = content.get(start..end) {
+                        return parse_attributes_array(text);
+                    }
+                }
+            }
+        }
+    }
+    Vec::new()
+}
+
+/// Parse key-value pairs from a PHP `$attributes` array literal and
+/// infer types from the default values.
+///
+/// Accepts text starting with `[` and extracts `'key' => value` pairs
+/// where `value` is a PHP literal (`true`, `false`, `null`, integer,
+/// float, or string).
+///
+/// Returns a list of `(column_name, php_type)` pairs.
+fn parse_attributes_array(text: &str) -> Vec<(String, String)> {
+    let mut results = Vec::new();
+    let trimmed = text.trim();
+
+    let inner = if let Some(s) = trimmed.strip_prefix('[') {
+        s.strip_suffix(']').unwrap_or(s)
+    } else {
+        return results;
+    };
+
+    for segment in inner.split(',') {
+        let segment = segment.trim();
+        if segment.is_empty() {
+            continue;
+        }
+
+        let Some(arrow_pos) = segment.find("=>") else {
+            continue;
+        };
+
+        let key_part = segment[..arrow_pos].trim();
+        let value_part = segment[arrow_pos + 2..].trim();
+
+        let Some(key) = extract_string_literal(key_part) else {
+            continue;
+        };
+        if key.is_empty() {
+            continue;
+        }
+
+        if let Some(php_type) = infer_type_from_literal(value_part) {
+            results.push((key, php_type));
+        }
+    }
+
+    results
+}
+
+/// Infer a PHP type from a literal value in source text.
+///
+/// Recognises:
+/// - `true` / `false` → `"bool"`
+/// - `null` → `"null"`
+/// - Integer literals (e.g. `0`, `-42`) → `"int"`
+/// - Float literals (e.g. `1.5`, `-0.1`) → `"float"`
+/// - Single- or double-quoted strings → `"string"`
+/// - Array literals `[...]` → `"array"`
+///
+/// Returns `None` for unrecognised expressions (function calls,
+/// constants, variables, etc.).
+fn infer_type_from_literal(value: &str) -> Option<String> {
+    let v = value.trim();
+    if v.is_empty() {
+        return None;
+    }
+
+    let lower = v.to_lowercase();
+
+    // Boolean literals
+    if lower == "true" || lower == "false" {
+        return Some("bool".to_string());
+    }
+
+    // Null literal
+    if lower == "null" {
+        return Some("null".to_string());
+    }
+
+    // String literals (single or double quoted)
+    if (v.starts_with('\'') && v.ends_with('\'')) || (v.starts_with('"') && v.ends_with('"')) {
+        return Some("string".to_string());
+    }
+
+    // Array literal
+    if v.starts_with('[') {
+        return Some("array".to_string());
+    }
+
+    // Numeric literals — try float first (contains `.`), then int.
+    // Strip optional leading `-` for negative numbers.
+    let numeric = v.strip_prefix('-').unwrap_or(v).trim();
+    if !numeric.is_empty() && numeric.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
+        if numeric.contains('.') {
+            return Some("float".to_string());
+        }
+        return Some("int".to_string());
+    }
+
+    None
+}
+
+/// Extract column names from `$fillable`, `$guarded`, and `$hidden` arrays.
+///
+/// These properties contain simple string lists of column names without
+/// type information.  The `LaravelModelProvider` uses them as a
+/// last-resort fallback, synthesizing `mixed`-typed virtual properties
+/// for columns not already covered by `$casts` or `$attributes`.
+///
+/// All three arrays are merged; duplicates are removed (first occurrence
+/// wins).
+fn extract_column_names<'a>(
+    members: impl Iterator<Item = &'a ClassLikeMember<'a>>,
+    content: &str,
+) -> Vec<String> {
+    let mut names = Vec::new();
+    let targets = ["fillable", "guarded", "hidden"];
+
+    for member in members {
+        if let ClassLikeMember::Property(Property::Plain(plain)) = member {
+            for item in plain.items.iter() {
+                let var_name = item.variable().name.to_string();
+                let stripped = var_name.strip_prefix('$').unwrap_or(&var_name);
+                if !targets.contains(&stripped) {
+                    continue;
+                }
+                if let PropertyItem::Concrete(concrete) = item {
+                    let span = concrete.value.span();
+                    let start = span.start.offset as usize;
+                    let end = span.end.offset as usize;
+                    if let Some(text) = content.get(start..end) {
+                        for name in parse_string_list(text) {
+                            if !names.contains(&name) {
+                                names.push(name);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    names
+}
+
+/// Parse a PHP array literal containing only string values.
+///
+/// Accepts text starting with `[` and extracts bare string values
+/// (no `=>` keys).  For example, `['name', 'email', 'password']`
+/// returns `["name", "email", "password"]`.
+fn parse_string_list(text: &str) -> Vec<String> {
+    let mut results = Vec::new();
+    let trimmed = text.trim();
+
+    let inner = if let Some(s) = trimmed.strip_prefix('[') {
+        s.strip_suffix(']').unwrap_or(s)
+    } else {
+        return results;
+    };
+
+    for segment in inner.split(',') {
+        let segment = segment.trim();
+        if segment.is_empty() {
+            continue;
+        }
+        // Skip key-value pairs (these belong to a different kind of array).
+        if segment.contains("=>") {
+            continue;
+        }
+        if let Some(s) = extract_string_literal(segment)
+            && !s.is_empty()
+        {
+            results.push(s);
+        }
+    }
+
+    results
+}
+
 /// Try to infer an Eloquent relationship return type from a method's body.
 ///
 /// When a method has no `@return` annotation and no native return type
@@ -282,6 +660,14 @@ impl Backend {
                         content,
                     );
 
+                    let casts_definitions =
+                        extract_casts_definitions(class.members.iter(), content);
+
+                    let attributes_definitions =
+                        extract_attributes_definitions(class.members.iter(), content);
+
+                    let column_names = extract_column_names(class.members.iter(), content);
+
                     classes.push(ClassInfo {
                         kind: ClassLikeKind::Class,
                         name: class_name,
@@ -308,6 +694,9 @@ impl Backend {
                         class_docblock: doc_info.raw_docblock,
                         file_namespace: None,
                         custom_collection,
+                        casts_definitions,
+                        attributes_definitions,
+                        column_names,
                     });
 
                     // Walk method bodies for anonymous classes.
@@ -379,6 +768,9 @@ impl Backend {
                         class_docblock: doc_info.raw_docblock,
                         file_namespace: None,
                         custom_collection: None,
+                        casts_definitions: Vec::new(),
+                        attributes_definitions: Vec::new(),
+                        column_names: Vec::new(),
                     });
 
                     // Walk method bodies for anonymous classes.
@@ -432,6 +824,9 @@ impl Backend {
                         class_docblock: doc_info.raw_docblock,
                         file_namespace: None,
                         custom_collection: None,
+                        casts_definitions: Vec::new(),
+                        attributes_definitions: Vec::new(),
+                        column_names: Vec::new(),
                     });
 
                     // Walk method bodies for anonymous classes.
@@ -503,6 +898,9 @@ impl Backend {
                         class_docblock: doc_info.raw_docblock,
                         file_namespace: None,
                         custom_collection: None,
+                        casts_definitions: Vec::new(),
+                        attributes_definitions: Vec::new(),
+                        column_names: Vec::new(),
                     });
 
                     // Walk method bodies for anonymous classes.
@@ -586,6 +984,9 @@ impl Backend {
             class_docblock: None,
             file_namespace: None,
             custom_collection: None,
+            casts_definitions: Vec::new(),
+            attributes_definitions: Vec::new(),
+            column_names: Vec::new(),
         }
     }
 

@@ -814,62 +814,56 @@ class SwitchDemo
 
 
 // ── Laravel Eloquent Virtual Members ────────────────────────────────────────
-// Methods returning Eloquent relationship types (HasMany, HasOne, BelongsTo, etc.)
-// automatically produce virtual properties. Accessing $author->posts resolves to a
-// Collection<BlogPost>, while $author->profile resolves directly to AuthorProfile.
-// Relationships work with explicit @return annotations (Larastan-style) and also
-// without them: when no annotation is present, the method body is scanned for
-// patterns like $this->hasMany(Post::class) to infer the relationship type.
-//
-// Methods starting with "scope" (e.g. scopeActive) produce virtual methods with
-// the prefix stripped and first letter lowercased (e.g. active). The $query
-// parameter is removed. Scopes are available as both static and instance methods.
-//
-// Eloquent Builder methods are forwarded as static methods on model classes.
-// User::where('active', true)->orderBy('name')->get() resolves end-to-end.
-// Return types are mapped: Builder chain methods return Builder<ConcreteModel>,
-// and TModel parameters resolve to the concrete model class. Methods from
-// Query\Builder (via @mixin) are included as well.
+// Eloquent models gather virtual properties from many sources: $fillable,
+// $guarded, $hidden column names, $casts property and casts() method,
+// $attributes defaults, legacy and modern accessors, relationship methods
+// (with @return annotations or body-inferred), and query scopes. Builder
+// methods are also forwarded as static calls on the model class.
+// See BlogAuthor in the scaffolding section for the full model definition.
 
-class BlogAuthor extends \Illuminate\Database\Eloquent\Model
+class EloquentVirtualMemberDemo
 {
-    /** @return \Illuminate\Database\Eloquent\Relations\HasMany<BlogPost, $this> */
-    public function posts(): mixed
-    {
-        return $this->hasMany(BlogPost::class);
-    }
-
-    /** @return \Illuminate\Database\Eloquent\Relations\HasOne<AuthorProfile, $this> */
-    public function profile(): mixed
-    {
-        return $this->hasOne(AuthorProfile::class);
-    }
-
-    /** @return \Illuminate\Database\Eloquent\Relations\BelongsToMany<BlogTag, $this> */
-    public function tags(): mixed
-    {
-        return $this->belongsToMany(BlogTag::class);
-    }
-
-    public function scopeActive(\Illuminate\Database\Eloquent\Builder $query): void
-    {
-        $query->where('active', true);
-    }
-
-    public function scopeOfGenre(\Illuminate\Database\Eloquent\Builder $query, string $genre): void
-    {
-        $query->where('genre', $genre);
-    }
-
     public function demo(): void
     {
         $author = new BlogAuthor();
 
-        // Relationship virtual properties
+        // Column name properties ($fillable / $guarded / $hidden → mixed)
+        $author->name;                    // virtual property → mixed (from $fillable)
+        $author->email;                   // virtual property → mixed (from $fillable)
+        $author->password;                // virtual property → mixed (from $hidden)
+        $author->id;                      // virtual property → mixed (from $guarded)
+
+        // $casts property — built-in cast types
+        $author->is_admin;                // virtual property → bool (from $casts, not $attributes)
+        $author->created_at;              // virtual property → \Carbon\Carbon
+        $author->options;                 // virtual property → array
+        $author->score;                   // virtual property → float
+        $author->balance;                 // virtual property → float (decimal:2)
+
+        // Enum cast — resolves to the enum class
+        $author->status;                  // virtual property → \Demo\OrderStatus
+
+        // Custom cast class — type resolved from get() return type
+        $author->description->toHtml();   // Try: toHtml(), isEmpty()
+
+        // casts() method — overrides / extends the $casts property
+        $author->verified_at;             // virtual property → \Carbon\Carbon
+
+        // Attribute defaults — types inferred from literal values
+        $author->role;                    // virtual property → string
+        $author->is_active;               // virtual property → bool
+        $author->login_count;             // virtual property → int
+        $author->rating;                  // virtual property → float
+        $author->bio;                     // virtual property → null
+
+        // Relationship virtual properties (with @return annotations)
         $author->posts;                   // virtual property → Collection<BlogPost>
         $author->profile;                 // virtual property → AuthorProfile
         $author->profile->getBio();       // chains to AuthorProfile methods
         $author->tags;                    // virtual property → Collection<BlogTag>
+
+        // Body-inferred relationship (no @return annotation needed)
+        $author->commentable;             // virtual property → Model (morphTo)
 
         // Scope methods — instance access
         $author->active();                // virtual method from scopeActive
@@ -879,6 +873,12 @@ class BlogAuthor extends \Illuminate\Database\Eloquent\Model
         BlogAuthor::active();             // also available as static
         BlogAuthor::ofGenre('fiction');    // $genre parameter preserved, $query stripped
 
+        // Legacy accessor: getDisplayNameAttribute() → $display_name
+        $author->display_name;            // virtual property → string
+
+        // Modern accessor: avatarUrl() returning Attribute → $avatar_url
+        $author->avatar_url;              // virtual property → mixed
+
         // Builder-as-static forwarding
         BlogAuthor::where('active', true);         // returns Builder<BlogAuthor>
         BlogAuthor::where('active', 1)->get();     // returns Collection<BlogAuthor>
@@ -886,50 +886,10 @@ class BlogAuthor extends \Illuminate\Database\Eloquent\Model
         BlogAuthor::orderBy('name')->limit(10)->get(); // full chain resolution
         // Query\Builder methods (@mixin) are also forwarded:
         BlogAuthor::whereIn('id', [1, 2])->groupBy('genre')->get();
-        // Compleation for relations after a query
+        // Completion for relations after a query
         BlogAuthor::where('active', 1)->first()->profile->getBio();
     }
 }
-
-
-// ── Body-Inferred Relationships (no @return annotation) ─────────────────────
-// Many Laravel projects don't use Larastan-style @return annotations on their
-// relationship methods. PHPantom scans the method body for patterns like
-// $this->hasMany(Post::class) and infers the relationship type automatically.
-
-class BodyInferredRelationshipDemo extends \Illuminate\Database\Eloquent\Model
-{
-    // No @return annotation — inferred from $this->hasMany(BlogPost::class)
-    public function posts()
-    {
-        return $this->hasMany(BlogPost::class);
-    }
-
-    // No @return annotation — inferred from $this->hasOne(AuthorProfile::class)
-    public function profile()
-    {
-        return $this->hasOne(AuthorProfile::class);
-    }
-
-    // No @return annotation — inferred from $this->morphTo()
-    public function commentable()
-    {
-        return $this->morphTo();
-    }
-
-    public function demo(): void
-    {
-        $m = new BodyInferredRelationshipDemo();
-
-        // Body-inferred relationship properties
-        $m->posts;                    // virtual property → Collection<BlogPost>
-        $m->posts->first();           // chains to Collection methods
-        $m->profile;                  // virtual property → AuthorProfile
-        $m->profile->getBio();        // chains to AuthorProfile methods
-        $m->commentable;              // virtual property → Model (morphTo)
-    }
-}
-
 
 // ── Custom Eloquent Collections ─────────────────────────────────────────────
 // Models with #[CollectedBy(CustomCollection::class)],
@@ -939,56 +899,17 @@ class BodyInferredRelationshipDemo extends \Illuminate\Database\Eloquent\Model
 // Illuminate\Database\Eloquent\Collection. This means custom methods
 // like topRated() and averageRating() appear in completions after ->get().
 
-class CustomCollectionDemo
-{
-    public function demo(): void
-    {
-        // Builder chain → custom collection (via #[CollectedBy] on Review)
-        $reviews = Review::where('published', true)->get();
-        $reviews->topRated();        // custom method from ReviewCollection
-        $reviews->averageRating();   // custom method from ReviewCollection
-        $reviews->count();           // inherited from standard Collection
-        $reviews->first();           // inherited — returns Review|null
+// Builder chain → custom collection (via #[CollectedBy] on Review)
+$reviews = Review::where('published', true)->get();
+$reviews->topRated();        // custom method from ReviewCollection
+$reviews->averageRating();   // custom method from ReviewCollection
+$reviews->count();           // inherited from standard Collection
+$reviews->first();           // inherited — returns Review|null
 
-        // Relationship properties also use the custom collection
-        $review = new Review();
-        $review->replies->topRated();       // HasMany<Review> → ReviewCollection
-        $review->replies->averageRating();  // ReviewCollection method
-    }
-}
-
-
-// ── Eloquent Accessors & Mutators ───────────────────────────────────────────
-// Legacy accessors (getXAttribute) and modern accessors (Laravel 9+ Attribute
-// cast) produce virtual properties on the model. The property name is derived
-// by converting the method name to snake_case.
-
-class AccessorDemo extends \Illuminate\Database\Eloquent\Model
-{
-    // Legacy accessor — produces virtual property $display_name
-    public function getDisplayNameAttribute(): string
-    {
-        return 'display';
-    }
-
-    // Modern accessor (Laravel 9+) — produces virtual property $avatar_url
-    protected function avatarUrl(): \Illuminate\Database\Eloquent\Casts\Attribute
-    {
-        return new \Illuminate\Database\Eloquent\Casts\Attribute();
-    }
-
-    public function demo(): void
-    {
-        $model = new AccessorDemo();
-
-        // Legacy accessor: getDisplayNameAttribute() → $display_name
-        $model->display_name;             // virtual property → string
-
-        // Modern accessor: avatarUrl() returning Attribute → $avatar_url
-        $model->avatar_url;               // virtual property → mixed
-    }
-}
-
+// Relationship properties also use the custom collection
+$review = new Review();
+$review->replies->topRated();       // HasMany<Review> → ReviewCollection
+$review->replies->averageRating();  // ReviewCollection method
 
 // ── Match Class-String Forwarding to Conditional Return Types ───────────────
 // When a variable holds a ::class value from a match expression and is then
@@ -2684,6 +2605,114 @@ final class UserEloquentCollection extends EloquentCollection {}
 
 // ── Laravel Relationship Demo Models ────────────────────────────────────────
 
+class BlogAuthor extends \Illuminate\Database\Eloquent\Model
+{
+    // ── Column Name Arrays ──────────────────────────────────────────────────
+    // $fillable, $guarded, and $hidden list column names. Each string
+    // produces a mixed-typed virtual property as a last-resort fallback.
+    // Columns covered by $casts or $attributes are superseded by those.
+    protected $fillable = [
+        'name',
+        'email',
+        'genre',
+    ];
+
+    protected $guarded = [
+        'id',
+    ];
+
+    protected $hidden = [
+        'password',
+        'remember_token',
+    ];
+
+    // ── Casts ───────────────────────────────────────────────────────────────
+    // Cast type strings are mapped to PHP types: 'datetime' → Carbon,
+    // 'boolean' → bool, 'array' → array, 'decimal:N' → float, etc.
+    // Enum casts resolve to the enum class. Custom cast classes resolve
+    // their type from the get() return type.
+    protected $casts = [
+        'is_admin' => 'boolean',
+        'created_at' => 'datetime',
+        'options' => 'array',
+        'score' => 'float',
+        'balance' => 'decimal:2',
+        'status' => OrderStatus::class,
+        'description' => HtmlCast::class,
+    ];
+
+    // casts() method — entries here override $casts for the same column
+    protected function casts(): array
+    {
+        return [
+            'verified_at' => 'datetime',
+        ];
+    }
+
+    // ── Attribute Defaults ──────────────────────────────────────────────────
+    // Types are inferred from the literal values. Columns already in $casts
+    // are skipped (casts take priority).
+    protected $attributes = [
+        'role' => 'user',
+        'is_active' => true,
+        'login_count' => 0,
+        'rating' => 0.0,
+        'bio' => null,
+        'is_admin' => 1,
+    ];
+
+    // ── Relationships (with @return annotations) ────────────────────────────
+    /** @return \Illuminate\Database\Eloquent\Relations\HasMany<BlogPost, $this> */
+    public function posts(): mixed
+    {
+        return $this->hasMany(BlogPost::class);
+    }
+
+    /** @return \Illuminate\Database\Eloquent\Relations\HasOne<AuthorProfile, $this> */
+    public function profile(): mixed
+    {
+        return $this->hasOne(AuthorProfile::class);
+    }
+
+    /** @return \Illuminate\Database\Eloquent\Relations\BelongsToMany<BlogTag, $this> */
+    public function tags(): mixed
+    {
+        return $this->belongsToMany(BlogTag::class);
+    }
+
+    // ── Body-Inferred Relationship (no @return annotation) ──────────────────
+    // When no @return is present, the method body is scanned for patterns
+    // like $this->morphTo() to infer the relationship type automatically.
+    public function commentable()
+    {
+        return $this->morphTo();
+    }
+
+    // ── Scopes ──────────────────────────────────────────────────────────────
+    public function scopeActive(\Illuminate\Database\Eloquent\Builder $query): void
+    {
+        $query->where('active', true);
+    }
+
+    public function scopeOfGenre(\Illuminate\Database\Eloquent\Builder $query, string $genre): void
+    {
+        $query->where('genre', $genre);
+    }
+
+    // ── Accessors ───────────────────────────────────────────────────────────
+    // Legacy accessor — produces virtual property $display_name
+    public function getDisplayNameAttribute(): string
+    {
+        return 'display';
+    }
+
+    // Modern accessor (Laravel 9+) — produces virtual property $avatar_url
+    protected function avatarUrl(): \Illuminate\Database\Eloquent\Casts\Attribute
+    {
+        return new \Illuminate\Database\Eloquent\Casts\Attribute();
+    }
+}
+
 class BlogPost extends \Illuminate\Database\Eloquent\Model
 {
     public function getTitle(): string { return ''; }
@@ -2725,6 +2754,37 @@ class Review extends \Illuminate\Database\Eloquent\Model
 
     /** @return \Illuminate\Database\Eloquent\Relations\HasMany<Review, $this> */
     public function replies(): mixed { return $this->hasMany(Review::class); }
+}
+
+class HtmlString
+{
+    public function __construct(private string $html = '') {}
+    public function toHtml(): string { return $this->html; }
+    public function isEmpty(): bool { return $this->html === ''; }
+    public function __toString(): string { return $this->html; }
+}
+
+/**
+ * Custom cast class. The get() method's return type determines the property type.
+ * When the get() method has no return type, the @implements generic argument is used.
+ */
+class HtmlCast
+{
+    public function get($model, string $key, mixed $value, array $attributes): ?HtmlString
+    {
+        return new HtmlString((string) $value);
+    }
+}
+
+enum OrderStatus: string
+{
+    case Pending = 'pending';
+    case Processing = 'processing';
+    case Completed = 'completed';
+    case Cancelled = 'cancelled';
+
+    public function label(): string { return $this->value; }
+    public function isPending(): bool { return $this === self::Pending; }
 }
 
 } // end namespace Demo

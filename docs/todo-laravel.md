@@ -8,58 +8,6 @@ virtual member provider design, see `ARCHITECTURE.md`.
 
 ---
 
-## Current state
-
-The `LaravelModelProvider` in `src/virtual_members/laravel.rs` is the
-highest-priority virtual member provider. It synthesizes virtual members
-for classes that extend `Illuminate\Database\Eloquent\Model`:
-
-1. **Relationship properties.** All 10 relationship types (`HasOne`,
-   `HasMany`, `BelongsTo`, `BelongsToMany`, `MorphOne`, `MorphMany`,
-   `MorphTo`, `MorphToMany`, `HasManyThrough`, `HasOneThrough`).
-   Supports Larastan-style `@return HasMany<Post, $this>` annotations
-   and body-inferred relationships: when no `@return` annotation is
-   present, the method body is scanned for patterns like
-   `$this->hasMany(Post::class)` to infer the relationship type
-   automatically. Chaining through relationship properties resolves
-   end-to-end. Collection-type relationship properties use the
-   *related* model's custom collection (not the owning model's).
-
-2. **Scope methods.** `scopeActive(Builder $query)` produces `active()`
-   as both static and instance virtual methods. The `$query` parameter is
-   stripped, extra parameters are preserved, return types default to
-   `Builder<static>` when absent or `void`.
-
-3. **Builder-as-static forwarding.** `User::where('active', true)->
-   orderBy('name')->get()` resolves the full chain. Template parameters
-   (`TModel`) are substituted to the concrete model class.
-   `Query\Builder` methods are included via `@mixin`. `BuildsQueries`
-   trait methods (`first()`, `firstOrFail()`, `sole()`) work through
-   `@use` generics.
-
-4. **Custom Eloquent collections.** Three detection mechanisms:
-   `#[CollectedBy]`, `@use HasCollection<X>`, and `newCollection()`
-   method override. Custom collection methods appear after `->get()`,
-   after static `Model::get()`, and on collection-type relationship
-   properties. Priority order: attribute > trait > method override.
-
-5. **Go-to-definition.** Jumps to `Builder::where()`,
-   `Query\Builder::orderBy()`, `BuildsQueries::first()`, and scope
-   methods all work through `find_builder_forwarded_method`.
-
-6. **Accessors and mutators.** Legacy accessors (`getFullNameAttribute()`)
-   and modern Laravel 9+ accessors (methods returning
-   `Illuminate\Database\Eloquent\Casts\Attribute`) produce virtual
-   properties. The property name is derived by converting the method
-   name portion to snake_case (`getFullNameAttribute` → `full_name`,
-   `avatarUrl()` → `avatar_url`). Legacy accessors use the method's
-   return type; modern accessors use `mixed`.
-
-Test coverage: 154 unit tests in `laravel.rs`, 85 integration tests in
-`completion_laravel.rs`, 15 integration tests in `definition_laravel.rs`.
-
----
-
 ## Known gaps (documented in tests)
 
 ### 1. Variable assignment from builder-forwarded static method in GTD
@@ -78,29 +26,7 @@ needs the source location).
 
 ## Missing features
 
-### 2. Eloquent casts
-
-Properties defined in the `$casts` array (or `casts()` method) should
-produce typed virtual properties. For example:
-
-```php
-protected $casts = [
-    'created_at' => 'datetime',    // → Carbon
-    'options' => 'array',          // → array
-    'is_admin' => 'boolean',       // → bool
-];
-```
-
-This requires parsing the `$casts` property initializer or `casts()`
-method body to extract key-value pairs, then mapping cast type strings
-to PHP types. Common mappings: `datetime` → `Carbon\Carbon`,
-`array`/`json` → `array`, `boolean`/`bool` → `bool`,
-`integer`/`int` → `int`, `float`/`double`/`real`/`decimal:*` → `float`,
-`string` → `string`, `collection` →
-`Illuminate\Support\Collection`, custom cast classes → inspect
-their `get()` return type.
-
-### 3. Factory support
+### 2. Factory support
 
 `User::factory()->create()` is ubiquitous in Laravel test code. The
 `factory()` static method returns a `HasFactory` trait method that
@@ -114,14 +40,14 @@ produces a factory instance. Resolving the chain requires:
 This is medium complexity because it involves a naming convention
 (model name → factory name) and cross-file resolution.
 
-### 4. Closure parameter inference in collection pipelines
+### 3. Closure parameter inference in collection pipelines
 
 `$users->map(fn($u) => $u->...)` does not infer `$u` as the
 collection's element type. This is a general generics/callable
 inference problem, not Laravel-specific, but Laravel collection
 pipelines are the most common place users encounter it.
 
-### 5. Query scope chaining on Builder instances
+### 4. Query scope chaining on Builder instances
 
 Inside a scope method body, `$query->verified()` (calling another
 scope) does not offer scope method completions. Scope methods are
@@ -157,8 +83,8 @@ Builder instances, not just Model classes.
 - **No SQL/migration parsing.** Model column types are not inferred from
   database schemas or migration files.
 - **Larastan-style hints preferred.** We expect relationship methods to be
-  annotated in the style that Larastan expects. Fallback heuristics (item 3
-  above) are best-effort.
+  annotated in the style that Larastan expects. Fallback heuristics
+  are best-effort.
 - **Facades fall back to `@method`.** Facades whose `getFacadeAccessor()`
   returns a string alias cannot be resolved. `@method` tags on facade
   classes provide completion without template intelligence.

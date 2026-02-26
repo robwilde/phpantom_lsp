@@ -239,6 +239,9 @@ mod tests {
             class_docblock: None,
             file_namespace: None,
             custom_collection: None,
+            casts_definitions: Vec::new(),
+            attributes_definitions: Vec::new(),
+            column_names: Vec::new(),
         }
     }
 

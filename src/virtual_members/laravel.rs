@@ -32,6 +32,31 @@
 //!   and template parameters like `TModel` resolve to the concrete
 //!   model class.  This makes `User::where(...)->orderBy(...)->get()`
 //!   resolve end-to-end.
+//!
+//! - **Cast properties.** Entries in the `$casts` property array or
+//!   `casts()` method body produce typed virtual properties.  Cast type
+//!   strings are mapped to PHP types (e.g. `datetime` → `\Carbon\Carbon`,
+//!   `boolean` → `bool`, `decimal:2` → `float`).  Custom cast classes
+//!   are resolved by loading the class and inspecting the `get()`
+//!   method's return type.  When the `get()` method has no return type,
+//!   the resolver falls back to the first generic argument from an
+//!   `@implements CastsAttributes<TGet, TSet>` annotation on the cast
+//!   class.  Enum casts resolve to the enum class itself.  Classes
+//!   implementing `Castable` also resolve to themselves.  A `:argument`
+//!   suffix (e.g. `Address::class.':nullable'`) is stripped before
+//!   resolution.
+//!
+//! - **Attribute default properties.** Entries in the `$attributes`
+//!   property array produce typed virtual properties as a fallback.
+//!   Types are inferred from the literal default values: strings,
+//!   booleans, integers, floats, `null`, and arrays.  Columns that
+//!   already have a `$casts` entry are skipped, so casts always take
+//!   priority.
+//!
+//! - **Column name properties.** Column names from `$fillable`,
+//!   `$guarded`, and `$hidden` produce `mixed`-typed virtual
+//!   properties as a last-resort fallback.  Columns already covered
+//!   by `$casts` or `$attributes` are skipped.
 
 use std::collections::HashMap;
 
@@ -39,7 +64,9 @@ use crate::Backend;
 use crate::docblock::types::parse_generic_args;
 use crate::inheritance::{apply_substitution, apply_substitution_to_conditional};
 use crate::types::ELOQUENT_COLLECTION_FQN;
-use crate::types::{ClassInfo, MAX_INHERITANCE_DEPTH, MethodInfo, PropertyInfo, Visibility};
+use crate::types::{
+    ClassInfo, ClassLikeKind, MAX_INHERITANCE_DEPTH, MethodInfo, PropertyInfo, Visibility,
+};
 
 use super::{VirtualMemberProvider, VirtualMembers};
 
@@ -91,6 +118,171 @@ const DEFAULT_SCOPE_RETURN_TYPE: &str = "\\Illuminate\\Database\\Eloquent\\Build
 
 /// The fully-qualified name of the Eloquent Builder class.
 pub const ELOQUENT_BUILDER_FQN: &str = "Illuminate\\Database\\Eloquent\\Builder";
+
+/// The short name of the `CastsAttributes` interface, used to look up
+/// `@implements` generic arguments on custom cast classes.
+const CASTS_ATTRIBUTES_SHORT: &str = "CastsAttributes";
+
+/// The fully-qualified name of the `CastsAttributes` interface.
+const CASTS_ATTRIBUTES_FQN: &str = "Illuminate\\Contracts\\Database\\Eloquent\\CastsAttributes";
+
+/// Maps Eloquent cast type strings to their corresponding PHP types.
+///
+/// When a model declares `protected $casts = ['col' => 'datetime']`, the
+/// column is treated as `\Carbon\Carbon` in completions.  This table
+/// covers all built-in Laravel cast types.
+const CAST_TYPE_MAP: &[(&str, &str)] = &[
+    ("datetime", "\\Carbon\\Carbon"),
+    ("date", "\\Carbon\\Carbon"),
+    ("timestamp", "int"),
+    ("immutable_datetime", "\\Carbon\\CarbonImmutable"),
+    ("immutable_date", "\\Carbon\\CarbonImmutable"),
+    ("boolean", "bool"),
+    ("bool", "bool"),
+    ("integer", "int"),
+    ("int", "int"),
+    ("float", "float"),
+    ("double", "float"),
+    ("real", "float"),
+    ("string", "string"),
+    ("array", "array"),
+    ("json", "array"),
+    ("object", "object"),
+    ("collection", "\\Illuminate\\Support\\Collection"),
+    ("encrypted", "string"),
+    ("encrypted:array", "array"),
+    ("encrypted:collection", "\\Illuminate\\Support\\Collection"),
+    ("encrypted:object", "object"),
+    ("hashed", "string"),
+];
+
+/// The fully-qualified name of the `Castable` contract.
+const CASTABLE_FQN: &str = "Illuminate\\Contracts\\Database\\Eloquent\\Castable";
+
+/// Map an Eloquent cast type string to a PHP type.
+///
+/// Handles built-in cast strings (`datetime`, `boolean`, `array`, etc.),
+/// `decimal:N` variants (e.g. `decimal:2` → `float`), custom cast
+/// classes (inspects the `get()` return type), enum classes (the
+/// property type is the enum itself), and `Castable` implementations
+/// (the property type is the class itself).
+///
+/// When a custom cast class's `get()` method has no return type (native
+/// or docblock), the resolver falls back to the first generic argument
+/// from an `@implements CastsAttributes<TGet, TSet>` annotation on the
+/// cast class.
+///
+/// Class-based cast types may carry a `:argument` suffix (e.g.
+/// `Address::class.':nullable'`).  The suffix is stripped before
+/// resolving the class.
+fn cast_type_to_php_type(
+    cast_type: &str,
+    class_loader: &dyn Fn(&str) -> Option<ClassInfo>,
+) -> String {
+    // 1. Check the built-in mapping table.
+    let lower = cast_type.to_lowercase();
+    for &(key, php_type) in CAST_TYPE_MAP {
+        if lower == key {
+            return php_type.to_string();
+        }
+    }
+
+    // 2. Handle `decimal:N` variants (e.g. `decimal:2`, `decimal:8`).
+    if lower.starts_with("decimal:") || lower == "decimal" {
+        return "float".to_string();
+    }
+
+    // 3. Handle `datetime:format` variants (e.g. `datetime:Y-m-d`).
+    if lower.starts_with("datetime:") {
+        return "\\Carbon\\Carbon".to_string();
+    }
+
+    // 4. Handle `date:format` variants.
+    if lower.starts_with("date:") {
+        return "\\Carbon\\Carbon".to_string();
+    }
+
+    // 5. Handle `immutable_datetime:format` variants.
+    if lower.starts_with("immutable_datetime:") {
+        return "\\Carbon\\CarbonImmutable".to_string();
+    }
+
+    // 6. Handle `immutable_date:format` variants.
+    if lower.starts_with("immutable_date:") {
+        return "\\Carbon\\CarbonImmutable".to_string();
+    }
+
+    // 7. Assume it's a class-based cast.  Strip any `:argument` suffix
+    //    (e.g. `App\Casts\Address:nullable` → `App\Casts\Address`).
+    let class_name = cast_type.split(':').next().unwrap_or(cast_type);
+    let clean = class_name.strip_prefix('\\').unwrap_or(class_name);
+
+    if let Some(cast_class) = class_loader(clean) {
+        // 7a. Enums — the property type is the enum itself.
+        if cast_class.kind == ClassLikeKind::Enum {
+            return format!("\\{clean}");
+        }
+
+        // 7b. Castable implementations — the property type is the
+        //     class itself.  Castable classes declare `castUsing()`
+        //     which returns a CastsAttributes instance, but the
+        //     developer-facing type is the Castable class.
+        if is_castable(&cast_class) {
+            return format!("\\{clean}");
+        }
+
+        // 7c. CastsAttributes / custom cast class — inspect `get()`.
+        if let Some(get_method) = cast_class.methods.iter().find(|m| m.name == "get")
+            && let Some(ref rt) = get_method.return_type
+        {
+            return rt.clone();
+        }
+
+        // 7d. Fallback: extract TGet from `@implements CastsAttributes<TGet, TSet>`.
+        //     When the `get()` method has no return type (native or docblock),
+        //     the type may be declared via the class-level `@implements`
+        //     annotation on the `CastsAttributes` interface.  The first
+        //     generic argument corresponds to `TGet`.
+        if let Some(tget) = extract_tget_from_implements_generics(&cast_class) {
+            return tget;
+        }
+    }
+
+    // 8. Fallback: unknown cast type.
+    "mixed".to_string()
+}
+
+/// Extract the `TGet` type from a cast class's `@implements CastsAttributes<TGet, TSet>`.
+///
+/// Returns the first generic argument if the class declares an
+/// `@implements` annotation for `CastsAttributes` (matched by short
+/// name or FQN, with or without leading backslash).
+fn extract_tget_from_implements_generics(class: &ClassInfo) -> Option<String> {
+    for (name, args) in &class.implements_generics {
+        let stripped = name.strip_prefix('\\').unwrap_or(name);
+        if (stripped == CASTS_ATTRIBUTES_FQN
+            || stripped == CASTS_ATTRIBUTES_SHORT
+            || extract_short_name(stripped) == CASTS_ATTRIBUTES_SHORT)
+            && let Some(tget) = args.first()
+            && !tget.is_empty()
+        {
+            return Some(tget.clone());
+        }
+    }
+    None
+}
+
+/// Check whether a class implements the `Castable` contract.
+///
+/// Looks for `Illuminate\Contracts\Database\Eloquent\Castable` in the
+/// class's `interfaces` list (with or without leading backslash, and
+/// also matches the short name `Castable`).
+fn is_castable(class: &ClassInfo) -> bool {
+    class.interfaces.iter().any(|iface| {
+        let stripped = iface.strip_prefix('\\').unwrap_or(iface);
+        stripped == CASTABLE_FQN || stripped == "Castable"
+    })
+}
 
 /// Virtual member provider for Laravel Eloquent models.
 ///
@@ -297,7 +489,7 @@ fn is_modern_accessor(method: &MethodInfo) -> bool {
 /// `FullName` → `full_name`
 /// `firstName` → `first_name`
 /// `isAdmin` → `is_admin`
-fn camel_to_snake(s: &str) -> String {
+pub(crate) fn camel_to_snake(s: &str) -> String {
     let mut result = String::with_capacity(s.len() + 4);
     let chars: Vec<char> = s.chars().collect();
     for (i, &c) in chars.iter().enumerate() {
@@ -325,6 +517,74 @@ fn camel_to_snake(s: &str) -> String {
         }
     }
     result
+}
+
+/// Convert a snake_case string to camelCase.
+///
+/// `full_name` → `fullName`
+/// `avatar_url` → `avatarUrl`
+/// `name` → `name`
+pub(crate) fn snake_to_camel(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut capitalize_next = false;
+    for c in s.chars() {
+        if c == '_' {
+            capitalize_next = true;
+        } else if capitalize_next {
+            for uc in c.to_uppercase() {
+                result.push(uc);
+            }
+            capitalize_next = false;
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
+/// Convert a snake_case string to PascalCase.
+///
+/// `full_name` → `FullName`
+/// `avatar_url` → `AvatarUrl`
+/// `name` → `Name`
+fn snake_to_pascal(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut capitalize_next = true;
+    for c in s.chars() {
+        if c == '_' {
+            capitalize_next = true;
+        } else if capitalize_next {
+            for uc in c.to_uppercase() {
+                result.push(uc);
+            }
+            capitalize_next = false;
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
+/// Build the legacy accessor method name from a virtual property name.
+///
+/// `display_name` → `getDisplayNameAttribute`
+/// `name` → `getNameAttribute`
+pub(crate) fn legacy_accessor_method_name(property_name: &str) -> String {
+    let pascal = snake_to_pascal(property_name);
+    format!("get{pascal}Attribute")
+}
+
+/// Return candidate accessor method names for a virtual property name.
+///
+/// Go-to-definition uses this to map a snake_case virtual property back
+/// to the method that produces it.  Returns both the legacy
+/// (`getDisplayNameAttribute`) and modern (`displayName`) forms so the
+/// caller can try each one.
+pub(crate) fn accessor_method_candidates(property_name: &str) -> Vec<String> {
+    vec![
+        legacy_accessor_method_name(property_name),
+        snake_to_camel(property_name),
+    ]
 }
 
 /// Infer a relationship return type from a method's body text.
@@ -611,7 +871,9 @@ impl VirtualMemberProvider for LaravelModelProvider {
     }
 
     /// Scan the class's methods for Eloquent relationship return types,
-    /// scope methods, and Builder-as-static forwarded methods.
+    /// scope methods, Builder-as-static forwarded methods, `$casts`
+    /// definitions, `$attributes` defaults, and `$fillable`/`$guarded`/
+    /// `$hidden` column names.
     fn provide(
         &self,
         class: &ClassInfo,
@@ -619,6 +881,49 @@ impl VirtualMemberProvider for LaravelModelProvider {
     ) -> VirtualMembers {
         let mut properties = Vec::new();
         let mut methods = Vec::new();
+
+        // ── Cast properties ─────────────────────────────────────────
+        for (column, cast_type) in &class.casts_definitions {
+            let php_type = cast_type_to_php_type(cast_type, class_loader);
+            properties.push(PropertyInfo {
+                name: column.clone(),
+                type_hint: Some(php_type),
+                is_static: false,
+                visibility: Visibility::Public,
+                is_deprecated: false,
+            });
+        }
+
+        // ── Attribute default properties (fallback) ─────────────────
+        // Only add properties for columns not already covered by $casts.
+        for (column, php_type) in &class.attributes_definitions {
+            if properties.iter().any(|p| p.name == *column) {
+                continue;
+            }
+            properties.push(PropertyInfo {
+                name: column.clone(),
+                type_hint: Some(php_type.clone()),
+                is_static: false,
+                visibility: Visibility::Public,
+                is_deprecated: false,
+            });
+        }
+
+        // ── Column name properties (last-resort fallback) ───────────
+        // $fillable, $guarded, and $hidden provide column names without
+        // type information.  Only add for columns not already covered.
+        for column in &class.column_names {
+            if properties.iter().any(|p| p.name == *column) {
+                continue;
+            }
+            properties.push(PropertyInfo {
+                name: column.clone(),
+                type_hint: Some("mixed".to_string()),
+                is_static: false,
+                visibility: Visibility::Public,
+                is_deprecated: false,
+            });
+        }
 
         for method in &class.methods {
             // ── Scope methods ───────────────────────────────────────
@@ -749,6 +1054,9 @@ mod tests {
             class_docblock: None,
             file_namespace: None,
             custom_collection: None,
+            casts_definitions: Vec::new(),
+            attributes_definitions: Vec::new(),
+            column_names: Vec::new(),
         }
     }
 
@@ -2933,5 +3241,1047 @@ mod tests {
             prop.is_some(),
             "Body-inferred MorphTo should produce a 'commentable' property"
         );
+    }
+
+    // ── Cast type mapping tests ─────────────────────────────────────────
+
+    #[test]
+    fn cast_datetime_maps_to_carbon() {
+        assert_eq!(
+            cast_type_to_php_type("datetime", &no_loader),
+            "\\Carbon\\Carbon"
+        );
+    }
+
+    #[test]
+    fn cast_date_maps_to_carbon() {
+        assert_eq!(
+            cast_type_to_php_type("date", &no_loader),
+            "\\Carbon\\Carbon"
+        );
+    }
+
+    #[test]
+    fn cast_timestamp_maps_to_int() {
+        assert_eq!(cast_type_to_php_type("timestamp", &no_loader), "int");
+    }
+
+    #[test]
+    fn cast_immutable_datetime_maps_to_carbon_immutable() {
+        assert_eq!(
+            cast_type_to_php_type("immutable_datetime", &no_loader),
+            "\\Carbon\\CarbonImmutable"
+        );
+    }
+
+    #[test]
+    fn cast_immutable_date_maps_to_carbon_immutable() {
+        assert_eq!(
+            cast_type_to_php_type("immutable_date", &no_loader),
+            "\\Carbon\\CarbonImmutable"
+        );
+    }
+
+    #[test]
+    fn cast_boolean_maps_to_bool() {
+        assert_eq!(cast_type_to_php_type("boolean", &no_loader), "bool");
+    }
+
+    #[test]
+    fn cast_bool_maps_to_bool() {
+        assert_eq!(cast_type_to_php_type("bool", &no_loader), "bool");
+    }
+
+    #[test]
+    fn cast_integer_maps_to_int() {
+        assert_eq!(cast_type_to_php_type("integer", &no_loader), "int");
+    }
+
+    #[test]
+    fn cast_int_maps_to_int() {
+        assert_eq!(cast_type_to_php_type("int", &no_loader), "int");
+    }
+
+    #[test]
+    fn cast_float_maps_to_float() {
+        assert_eq!(cast_type_to_php_type("float", &no_loader), "float");
+    }
+
+    #[test]
+    fn cast_double_maps_to_float() {
+        assert_eq!(cast_type_to_php_type("double", &no_loader), "float");
+    }
+
+    #[test]
+    fn cast_real_maps_to_float() {
+        assert_eq!(cast_type_to_php_type("real", &no_loader), "float");
+    }
+
+    #[test]
+    fn cast_string_maps_to_string() {
+        assert_eq!(cast_type_to_php_type("string", &no_loader), "string");
+    }
+
+    #[test]
+    fn cast_array_maps_to_array() {
+        assert_eq!(cast_type_to_php_type("array", &no_loader), "array");
+    }
+
+    #[test]
+    fn cast_json_maps_to_array() {
+        assert_eq!(cast_type_to_php_type("json", &no_loader), "array");
+    }
+
+    #[test]
+    fn cast_object_maps_to_object() {
+        assert_eq!(cast_type_to_php_type("object", &no_loader), "object");
+    }
+
+    #[test]
+    fn cast_collection_maps_to_illuminate_collection() {
+        assert_eq!(
+            cast_type_to_php_type("collection", &no_loader),
+            "\\Illuminate\\Support\\Collection"
+        );
+    }
+
+    #[test]
+    fn cast_encrypted_maps_to_string() {
+        assert_eq!(cast_type_to_php_type("encrypted", &no_loader), "string");
+    }
+
+    #[test]
+    fn cast_encrypted_array_maps_to_array() {
+        assert_eq!(
+            cast_type_to_php_type("encrypted:array", &no_loader),
+            "array"
+        );
+    }
+
+    #[test]
+    fn cast_encrypted_collection_maps_to_collection() {
+        assert_eq!(
+            cast_type_to_php_type("encrypted:collection", &no_loader),
+            "\\Illuminate\\Support\\Collection"
+        );
+    }
+
+    #[test]
+    fn cast_encrypted_object_maps_to_object() {
+        assert_eq!(
+            cast_type_to_php_type("encrypted:object", &no_loader),
+            "object"
+        );
+    }
+
+    #[test]
+    fn cast_hashed_maps_to_string() {
+        assert_eq!(cast_type_to_php_type("hashed", &no_loader), "string");
+    }
+
+    #[test]
+    fn cast_decimal_with_precision_maps_to_float() {
+        assert_eq!(cast_type_to_php_type("decimal:2", &no_loader), "float");
+    }
+
+    #[test]
+    fn cast_decimal_bare_maps_to_float() {
+        assert_eq!(cast_type_to_php_type("decimal", &no_loader), "float");
+    }
+
+    #[test]
+    fn cast_datetime_with_format_maps_to_carbon() {
+        assert_eq!(
+            cast_type_to_php_type("datetime:Y-m-d", &no_loader),
+            "\\Carbon\\Carbon"
+        );
+    }
+
+    #[test]
+    fn cast_date_with_format_maps_to_carbon() {
+        assert_eq!(
+            cast_type_to_php_type("date:Y-m-d", &no_loader),
+            "\\Carbon\\Carbon"
+        );
+    }
+
+    #[test]
+    fn cast_immutable_datetime_with_format() {
+        assert_eq!(
+            cast_type_to_php_type("immutable_datetime:Y-m-d H:i:s", &no_loader),
+            "\\Carbon\\CarbonImmutable"
+        );
+    }
+
+    #[test]
+    fn cast_immutable_date_with_format() {
+        assert_eq!(
+            cast_type_to_php_type("immutable_date:Y-m-d", &no_loader),
+            "\\Carbon\\CarbonImmutable"
+        );
+    }
+
+    #[test]
+    fn cast_case_insensitive() {
+        assert_eq!(cast_type_to_php_type("Boolean", &no_loader), "bool");
+        assert_eq!(
+            cast_type_to_php_type("DATETIME", &no_loader),
+            "\\Carbon\\Carbon"
+        );
+        assert_eq!(cast_type_to_php_type("Integer", &no_loader), "int");
+    }
+
+    #[test]
+    fn cast_unknown_type_falls_back_to_mixed() {
+        assert_eq!(cast_type_to_php_type("unknown_cast", &no_loader), "mixed");
+    }
+
+    #[test]
+    fn cast_custom_class_with_get_method() {
+        let loader = |name: &str| -> Option<ClassInfo> {
+            if name == "App\\Casts\\MoneyCast" {
+                let mut cast_class = make_class("MoneyCast");
+                cast_class
+                    .methods
+                    .push(make_method("get", Some("\\App\\Money")));
+                Some(cast_class)
+            } else {
+                None
+            }
+        };
+        assert_eq!(
+            cast_type_to_php_type("App\\Casts\\MoneyCast", &loader),
+            "\\App\\Money"
+        );
+    }
+
+    #[test]
+    fn cast_custom_class_with_leading_backslash() {
+        let loader = |name: &str| -> Option<ClassInfo> {
+            if name == "App\\Casts\\MoneyCast" {
+                let mut cast_class = make_class("MoneyCast");
+                cast_class
+                    .methods
+                    .push(make_method("get", Some("\\App\\Money")));
+                Some(cast_class)
+            } else {
+                None
+            }
+        };
+        assert_eq!(
+            cast_type_to_php_type("\\App\\Casts\\MoneyCast", &loader),
+            "\\App\\Money"
+        );
+    }
+
+    #[test]
+    fn cast_custom_class_without_get_returns_mixed() {
+        let loader = |name: &str| -> Option<ClassInfo> {
+            if name == "App\\Casts\\WeirdCast" {
+                Some(make_class("WeirdCast"))
+            } else {
+                None
+            }
+        };
+        assert_eq!(
+            cast_type_to_php_type("App\\Casts\\WeirdCast", &loader),
+            "mixed"
+        );
+    }
+
+    #[test]
+    fn cast_enum_resolves_to_enum_class() {
+        let loader = |name: &str| -> Option<ClassInfo> {
+            if name == "App\\Enums\\Status" {
+                let mut e = make_class("Status");
+                e.kind = ClassLikeKind::Enum;
+                Some(e)
+            } else {
+                None
+            }
+        };
+        assert_eq!(
+            cast_type_to_php_type("App\\Enums\\Status", &loader),
+            "\\App\\Enums\\Status"
+        );
+    }
+
+    #[test]
+    fn cast_enum_with_leading_backslash() {
+        let loader = |name: &str| -> Option<ClassInfo> {
+            if name == "App\\Enums\\Status" {
+                let mut e = make_class("Status");
+                e.kind = ClassLikeKind::Enum;
+                Some(e)
+            } else {
+                None
+            }
+        };
+        assert_eq!(
+            cast_type_to_php_type("\\App\\Enums\\Status", &loader),
+            "\\App\\Enums\\Status"
+        );
+    }
+
+    #[test]
+    fn cast_castable_resolves_to_class_itself() {
+        let loader = |name: &str| -> Option<ClassInfo> {
+            if name == "App\\Casts\\Address" {
+                let mut c = make_class("Address");
+                c.interfaces = vec![CASTABLE_FQN.to_string()];
+                Some(c)
+            } else {
+                None
+            }
+        };
+        assert_eq!(
+            cast_type_to_php_type("App\\Casts\\Address", &loader),
+            "\\App\\Casts\\Address"
+        );
+    }
+
+    #[test]
+    fn cast_castable_with_leading_backslash_interface() {
+        let loader = |name: &str| -> Option<ClassInfo> {
+            if name == "App\\Casts\\Address" {
+                let mut c = make_class("Address");
+                c.interfaces = vec![format!("\\{CASTABLE_FQN}")];
+                Some(c)
+            } else {
+                None
+            }
+        };
+        assert_eq!(
+            cast_type_to_php_type("App\\Casts\\Address", &loader),
+            "\\App\\Casts\\Address"
+        );
+    }
+
+    #[test]
+    fn cast_castable_short_interface_name() {
+        let loader = |name: &str| -> Option<ClassInfo> {
+            if name == "App\\Casts\\Address" {
+                let mut c = make_class("Address");
+                c.interfaces = vec!["Castable".to_string()];
+                Some(c)
+            } else {
+                None
+            }
+        };
+        assert_eq!(
+            cast_type_to_php_type("App\\Casts\\Address", &loader),
+            "\\App\\Casts\\Address"
+        );
+    }
+
+    #[test]
+    fn cast_class_with_colon_argument_suffix() {
+        let loader = |name: &str| -> Option<ClassInfo> {
+            if name == "App\\Casts\\Address" {
+                let mut c = make_class("Address");
+                c.interfaces = vec![CASTABLE_FQN.to_string()];
+                Some(c)
+            } else {
+                None
+            }
+        };
+        assert_eq!(
+            cast_type_to_php_type("App\\Casts\\Address:nullable", &loader),
+            "\\App\\Casts\\Address"
+        );
+    }
+
+    #[test]
+    fn cast_enum_with_colon_argument_suffix() {
+        let loader = |name: &str| -> Option<ClassInfo> {
+            if name == "App\\Enums\\Status" {
+                let mut e = make_class("Status");
+                e.kind = ClassLikeKind::Enum;
+                Some(e)
+            } else {
+                None
+            }
+        };
+        assert_eq!(
+            cast_type_to_php_type("App\\Enums\\Status:force", &loader),
+            "\\App\\Enums\\Status"
+        );
+    }
+
+    #[test]
+    fn cast_custom_class_with_colon_argument_and_get() {
+        let loader = |name: &str| -> Option<ClassInfo> {
+            if name == "App\\Casts\\MoneyCast" {
+                let mut cast_class = make_class("MoneyCast");
+                cast_class
+                    .methods
+                    .push(make_method("get", Some("\\App\\Money")));
+                Some(cast_class)
+            } else {
+                None
+            }
+        };
+        assert_eq!(
+            cast_type_to_php_type("App\\Casts\\MoneyCast:precision,2", &loader),
+            "\\App\\Money"
+        );
+    }
+
+    #[test]
+    fn is_castable_with_fqn() {
+        let mut c = make_class("Address");
+        c.interfaces = vec![CASTABLE_FQN.to_string()];
+        assert!(is_castable(&c));
+    }
+
+    #[test]
+    fn is_castable_with_leading_backslash() {
+        let mut c = make_class("Address");
+        c.interfaces = vec![format!("\\{CASTABLE_FQN}")];
+        assert!(is_castable(&c));
+    }
+
+    #[test]
+    fn is_castable_with_short_name() {
+        let mut c = make_class("Address");
+        c.interfaces = vec!["Castable".to_string()];
+        assert!(is_castable(&c));
+    }
+
+    #[test]
+    fn is_not_castable() {
+        let c = make_class("SomePlainClass");
+        assert!(!is_castable(&c));
+    }
+
+    // ── extract_tget_from_implements_generics tests ─────────────────────
+
+    #[test]
+    fn tget_from_casts_attributes_short_name() {
+        let mut c = make_class("App\\Casts\\HtmlCast");
+        c.implements_generics = vec![(
+            "CastsAttributes".to_string(),
+            vec!["HtmlString".to_string(), "HtmlString".to_string()],
+        )];
+        assert_eq!(
+            extract_tget_from_implements_generics(&c),
+            Some("HtmlString".to_string())
+        );
+    }
+
+    #[test]
+    fn tget_from_casts_attributes_fqn() {
+        let mut c = make_class("App\\Casts\\HtmlCast");
+        c.implements_generics = vec![(
+            CASTS_ATTRIBUTES_FQN.to_string(),
+            vec![
+                "\\Illuminate\\Support\\HtmlString".to_string(),
+                "string".to_string(),
+            ],
+        )];
+        assert_eq!(
+            extract_tget_from_implements_generics(&c),
+            Some("\\Illuminate\\Support\\HtmlString".to_string())
+        );
+    }
+
+    #[test]
+    fn tget_from_casts_attributes_with_leading_backslash() {
+        let mut c = make_class("App\\Casts\\HtmlCast");
+        c.implements_generics = vec![(
+            format!("\\{CASTS_ATTRIBUTES_FQN}"),
+            vec!["HtmlString".to_string(), "HtmlString".to_string()],
+        )];
+        assert_eq!(
+            extract_tget_from_implements_generics(&c),
+            Some("HtmlString".to_string())
+        );
+    }
+
+    #[test]
+    fn tget_returns_none_when_no_implements_generics() {
+        let c = make_class("App\\Casts\\HtmlCast");
+        assert_eq!(extract_tget_from_implements_generics(&c), None);
+    }
+
+    #[test]
+    fn tget_returns_none_for_unrelated_interface() {
+        let mut c = make_class("App\\Casts\\HtmlCast");
+        c.implements_generics = vec![("SomeOtherInterface".to_string(), vec!["Foo".to_string()])];
+        assert_eq!(extract_tget_from_implements_generics(&c), None);
+    }
+
+    #[test]
+    fn tget_returns_none_for_empty_args() {
+        let mut c = make_class("App\\Casts\\HtmlCast");
+        c.implements_generics = vec![("CastsAttributes".to_string(), vec![])];
+        assert_eq!(extract_tget_from_implements_generics(&c), None);
+    }
+
+    #[test]
+    fn tget_skips_empty_string_arg() {
+        let mut c = make_class("App\\Casts\\HtmlCast");
+        c.implements_generics = vec![(
+            "CastsAttributes".to_string(),
+            vec!["".to_string(), "HtmlString".to_string()],
+        )];
+        assert_eq!(extract_tget_from_implements_generics(&c), None);
+    }
+
+    #[test]
+    fn cast_custom_class_falls_back_to_implements_generics() {
+        let loader = |name: &str| -> Option<ClassInfo> {
+            if name == "App\\Casts\\HtmlCast" {
+                let mut cast_class = make_class("HtmlCast");
+                // get() has no return type — mimics the real scenario.
+                cast_class.methods.push(make_method("get", None));
+                cast_class.implements_generics = vec![(
+                    "CastsAttributes".to_string(),
+                    vec!["HtmlString".to_string(), "HtmlString".to_string()],
+                )];
+                Some(cast_class)
+            } else {
+                None
+            }
+        };
+        assert_eq!(
+            cast_type_to_php_type("App\\Casts\\HtmlCast", &loader),
+            "HtmlString"
+        );
+    }
+
+    #[test]
+    fn cast_custom_class_get_return_type_takes_priority_over_implements() {
+        let loader = |name: &str| -> Option<ClassInfo> {
+            if name == "App\\Casts\\HtmlCast" {
+                let mut cast_class = make_class("HtmlCast");
+                cast_class
+                    .methods
+                    .push(make_method("get", Some("?HtmlString")));
+                cast_class.implements_generics = vec![(
+                    "CastsAttributes".to_string(),
+                    vec!["DifferentType".to_string(), "DifferentType".to_string()],
+                )];
+                Some(cast_class)
+            } else {
+                None
+            }
+        };
+        assert_eq!(
+            cast_type_to_php_type("App\\Casts\\HtmlCast", &loader),
+            "?HtmlString"
+        );
+    }
+
+    // ── Cast property synthesis tests ───────────────────────────────────
+
+    #[test]
+    fn synthesizes_cast_properties() {
+        let provider = LaravelModelProvider;
+        let mut user = make_class(ELOQUENT_MODEL_FQN);
+        user.name = "User".to_string();
+        user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+        user.casts_definitions = vec![
+            ("is_admin".to_string(), "boolean".to_string()),
+            ("created_at".to_string(), "datetime".to_string()),
+            ("options".to_string(), "array".to_string()),
+        ];
+
+        let result = provider.provide(&user, &no_loader);
+
+        let is_admin = result.properties.iter().find(|p| p.name == "is_admin");
+        assert!(is_admin.is_some(), "should produce is_admin property");
+        assert_eq!(is_admin.unwrap().type_hint.as_deref(), Some("bool"));
+
+        let created_at = result.properties.iter().find(|p| p.name == "created_at");
+        assert!(created_at.is_some(), "should produce created_at property");
+        assert_eq!(
+            created_at.unwrap().type_hint.as_deref(),
+            Some("\\Carbon\\Carbon")
+        );
+
+        let options = result.properties.iter().find(|p| p.name == "options");
+        assert!(options.is_some(), "should produce options property");
+        assert_eq!(options.unwrap().type_hint.as_deref(), Some("array"));
+    }
+
+    #[test]
+    fn cast_properties_are_public_and_not_static() {
+        let provider = LaravelModelProvider;
+        let mut user = make_class(ELOQUENT_MODEL_FQN);
+        user.name = "User".to_string();
+        user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+        user.casts_definitions = vec![("is_admin".to_string(), "boolean".to_string())];
+
+        let result = provider.provide(&user, &no_loader);
+        let prop = result
+            .properties
+            .iter()
+            .find(|p| p.name == "is_admin")
+            .unwrap();
+        assert_eq!(prop.visibility, Visibility::Public);
+        assert!(!prop.is_static);
+        assert!(!prop.is_deprecated);
+    }
+
+    #[test]
+    fn cast_properties_coexist_with_relationships_and_scopes() {
+        let provider = LaravelModelProvider;
+        let mut user = make_class(ELOQUENT_MODEL_FQN);
+        user.name = "User".to_string();
+        user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+        user.casts_definitions = vec![("is_admin".to_string(), "boolean".to_string())];
+        user.methods
+            .push(make_method("posts", Some("HasMany<Post, $this>")));
+        user.methods.push(make_method_with_params(
+            "scopeActive",
+            Some("void"),
+            vec![make_param("$query", Some("Builder"), true)],
+        ));
+
+        let result = provider.provide(&user, &no_loader);
+
+        // Cast property
+        assert!(result.properties.iter().any(|p| p.name == "is_admin"));
+        // Relationship property
+        assert!(result.properties.iter().any(|p| p.name == "posts"));
+        // Scope methods
+        assert!(
+            result
+                .methods
+                .iter()
+                .any(|m| m.name == "active" && !m.is_static)
+        );
+        assert!(
+            result
+                .methods
+                .iter()
+                .any(|m| m.name == "active" && m.is_static)
+        );
+    }
+
+    #[test]
+    fn cast_properties_coexist_with_accessors() {
+        let provider = LaravelModelProvider;
+        let mut user = make_class(ELOQUENT_MODEL_FQN);
+        user.name = "User".to_string();
+        user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+        user.casts_definitions = vec![("is_admin".to_string(), "boolean".to_string())];
+        user.methods
+            .push(make_method("getFullNameAttribute", Some("string")));
+        user.methods.push(make_method(
+            "avatarUrl",
+            Some("Illuminate\\Database\\Eloquent\\Casts\\Attribute"),
+        ));
+
+        let result = provider.provide(&user, &no_loader);
+
+        // Cast property
+        assert!(result.properties.iter().any(|p| p.name == "is_admin"));
+        // Legacy accessor
+        assert!(result.properties.iter().any(|p| p.name == "full_name"));
+        // Modern accessor
+        assert!(result.properties.iter().any(|p| p.name == "avatar_url"));
+    }
+
+    #[test]
+    fn empty_casts_produces_no_properties() {
+        let provider = LaravelModelProvider;
+        let mut user = make_class(ELOQUENT_MODEL_FQN);
+        user.name = "User".to_string();
+        user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+        user.casts_definitions = Vec::new();
+
+        let result = provider.provide(&user, &no_loader);
+        assert!(result.properties.is_empty());
+    }
+
+    #[test]
+    fn cast_decimal_with_precision_synthesizes_float() {
+        let provider = LaravelModelProvider;
+        let mut user = make_class(ELOQUENT_MODEL_FQN);
+        user.name = "User".to_string();
+        user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+        user.casts_definitions = vec![("price".to_string(), "decimal:2".to_string())];
+
+        let result = provider.provide(&user, &no_loader);
+        let prop = result
+            .properties
+            .iter()
+            .find(|p| p.name == "price")
+            .unwrap();
+        assert_eq!(prop.type_hint.as_deref(), Some("float"));
+    }
+
+    // ── Attribute default property synthesis tests ───────────────────────
+
+    #[test]
+    fn synthesizes_attribute_default_properties() {
+        let provider = LaravelModelProvider;
+        let mut user = make_class(ELOQUENT_MODEL_FQN);
+        user.name = "User".to_string();
+        user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+        user.attributes_definitions = vec![
+            ("role".to_string(), "string".to_string()),
+            ("is_active".to_string(), "bool".to_string()),
+            ("login_count".to_string(), "int".to_string()),
+        ];
+
+        let result = provider.provide(&user, &no_loader);
+
+        let role = result.properties.iter().find(|p| p.name == "role");
+        assert!(role.is_some(), "should produce role property");
+        assert_eq!(role.unwrap().type_hint.as_deref(), Some("string"));
+
+        let is_active = result.properties.iter().find(|p| p.name == "is_active");
+        assert!(is_active.is_some(), "should produce is_active property");
+        assert_eq!(is_active.unwrap().type_hint.as_deref(), Some("bool"));
+
+        let login_count = result.properties.iter().find(|p| p.name == "login_count");
+        assert!(login_count.is_some(), "should produce login_count property");
+        assert_eq!(login_count.unwrap().type_hint.as_deref(), Some("int"));
+    }
+
+    #[test]
+    fn attribute_defaults_are_public_and_not_static() {
+        let provider = LaravelModelProvider;
+        let mut user = make_class(ELOQUENT_MODEL_FQN);
+        user.name = "User".to_string();
+        user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+        user.attributes_definitions = vec![("role".to_string(), "string".to_string())];
+
+        let result = provider.provide(&user, &no_loader);
+        let prop = result.properties.iter().find(|p| p.name == "role").unwrap();
+        assert_eq!(prop.visibility, Visibility::Public);
+        assert!(!prop.is_static);
+        assert!(!prop.is_deprecated);
+    }
+
+    #[test]
+    fn casts_take_priority_over_attribute_defaults() {
+        let provider = LaravelModelProvider;
+        let mut user = make_class(ELOQUENT_MODEL_FQN);
+        user.name = "User".to_string();
+        user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+        // Both $casts and $attributes define is_active
+        user.casts_definitions = vec![("is_active".to_string(), "boolean".to_string())];
+        user.attributes_definitions = vec![("is_active".to_string(), "int".to_string())];
+
+        let result = provider.provide(&user, &no_loader);
+
+        // Should only have one is_active property (from casts)
+        let matching: Vec<_> = result
+            .properties
+            .iter()
+            .filter(|p| p.name == "is_active")
+            .collect();
+        assert_eq!(
+            matching.len(),
+            1,
+            "should have exactly one is_active property"
+        );
+        assert_eq!(
+            matching[0].type_hint.as_deref(),
+            Some("bool"),
+            "casts type should win over attributes type"
+        );
+    }
+
+    #[test]
+    fn attribute_defaults_coexist_with_casts_for_different_columns() {
+        let provider = LaravelModelProvider;
+        let mut user = make_class(ELOQUENT_MODEL_FQN);
+        user.name = "User".to_string();
+        user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+        user.casts_definitions = vec![("is_admin".to_string(), "boolean".to_string())];
+        user.attributes_definitions = vec![("role".to_string(), "string".to_string())];
+
+        let result = provider.provide(&user, &no_loader);
+
+        assert!(
+            result.properties.iter().any(|p| p.name == "is_admin"),
+            "cast property should be present"
+        );
+        assert!(
+            result.properties.iter().any(|p| p.name == "role"),
+            "attribute default property should be present"
+        );
+    }
+
+    #[test]
+    fn attribute_defaults_coexist_with_relationships_and_scopes() {
+        let provider = LaravelModelProvider;
+        let mut user = make_class(ELOQUENT_MODEL_FQN);
+        user.name = "User".to_string();
+        user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+        user.attributes_definitions = vec![("role".to_string(), "string".to_string())];
+        user.methods
+            .push(make_method("posts", Some("HasMany<Post, $this>")));
+        user.methods.push(make_method_with_params(
+            "scopeActive",
+            Some("void"),
+            vec![make_param("$query", Some("Builder"), true)],
+        ));
+
+        let result = provider.provide(&user, &no_loader);
+
+        assert!(
+            result.properties.iter().any(|p| p.name == "role"),
+            "attribute default property"
+        );
+        assert!(
+            result.properties.iter().any(|p| p.name == "posts"),
+            "relationship property"
+        );
+        assert!(
+            result
+                .methods
+                .iter()
+                .any(|m| m.name == "active" && !m.is_static),
+            "scope instance method"
+        );
+    }
+
+    #[test]
+    fn empty_attributes_produces_no_properties() {
+        let provider = LaravelModelProvider;
+        let mut user = make_class(ELOQUENT_MODEL_FQN);
+        user.name = "User".to_string();
+        user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+        user.attributes_definitions = Vec::new();
+
+        let result = provider.provide(&user, &no_loader);
+        assert!(result.properties.is_empty());
+    }
+
+    #[test]
+    fn attribute_default_float_type() {
+        let provider = LaravelModelProvider;
+        let mut user = make_class(ELOQUENT_MODEL_FQN);
+        user.name = "User".to_string();
+        user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+        user.attributes_definitions = vec![("rating".to_string(), "float".to_string())];
+
+        let result = provider.provide(&user, &no_loader);
+        let prop = result
+            .properties
+            .iter()
+            .find(|p| p.name == "rating")
+            .unwrap();
+        assert_eq!(prop.type_hint.as_deref(), Some("float"));
+    }
+
+    #[test]
+    fn attribute_default_null_type() {
+        let provider = LaravelModelProvider;
+        let mut user = make_class(ELOQUENT_MODEL_FQN);
+        user.name = "User".to_string();
+        user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+        user.attributes_definitions = vec![("bio".to_string(), "null".to_string())];
+
+        let result = provider.provide(&user, &no_loader);
+        let prop = result.properties.iter().find(|p| p.name == "bio").unwrap();
+        assert_eq!(prop.type_hint.as_deref(), Some("null"));
+    }
+
+    #[test]
+    fn attribute_default_array_type() {
+        let provider = LaravelModelProvider;
+        let mut user = make_class(ELOQUENT_MODEL_FQN);
+        user.name = "User".to_string();
+        user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+        user.attributes_definitions = vec![("settings".to_string(), "array".to_string())];
+
+        let result = provider.provide(&user, &no_loader);
+        let prop = result
+            .properties
+            .iter()
+            .find(|p| p.name == "settings")
+            .unwrap();
+        assert_eq!(prop.type_hint.as_deref(), Some("array"));
+    }
+
+    // ── Column name property synthesis tests ($fillable/$guarded/$hidden) ──
+
+    #[test]
+    fn synthesizes_column_name_properties_as_mixed() {
+        let provider = LaravelModelProvider;
+        let mut user = make_class(ELOQUENT_MODEL_FQN);
+        user.name = "User".to_string();
+        user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+        user.column_names = vec![
+            "name".to_string(),
+            "email".to_string(),
+            "password".to_string(),
+        ];
+
+        let result = provider.provide(&user, &no_loader);
+
+        let name = result.properties.iter().find(|p| p.name == "name");
+        assert!(name.is_some(), "should produce name property");
+        assert_eq!(name.unwrap().type_hint.as_deref(), Some("mixed"));
+
+        let email = result.properties.iter().find(|p| p.name == "email");
+        assert!(email.is_some(), "should produce email property");
+        assert_eq!(email.unwrap().type_hint.as_deref(), Some("mixed"));
+
+        let password = result.properties.iter().find(|p| p.name == "password");
+        assert!(password.is_some(), "should produce password property");
+        assert_eq!(password.unwrap().type_hint.as_deref(), Some("mixed"));
+    }
+
+    #[test]
+    fn column_name_properties_are_public_and_not_static() {
+        let provider = LaravelModelProvider;
+        let mut user = make_class(ELOQUENT_MODEL_FQN);
+        user.name = "User".to_string();
+        user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+        user.column_names = vec!["name".to_string()];
+
+        let result = provider.provide(&user, &no_loader);
+        let prop = result.properties.iter().find(|p| p.name == "name").unwrap();
+        assert_eq!(prop.visibility, Visibility::Public);
+        assert!(!prop.is_static);
+        assert!(!prop.is_deprecated);
+    }
+
+    #[test]
+    fn casts_take_priority_over_column_names() {
+        let provider = LaravelModelProvider;
+        let mut user = make_class(ELOQUENT_MODEL_FQN);
+        user.name = "User".to_string();
+        user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+        user.casts_definitions = vec![("is_admin".to_string(), "boolean".to_string())];
+        user.column_names = vec!["is_admin".to_string(), "name".to_string()];
+
+        let result = provider.provide(&user, &no_loader);
+
+        let matching: Vec<_> = result
+            .properties
+            .iter()
+            .filter(|p| p.name == "is_admin")
+            .collect();
+        assert_eq!(matching.len(), 1, "should have exactly one is_admin");
+        assert_eq!(
+            matching[0].type_hint.as_deref(),
+            Some("bool"),
+            "casts type should win over column name mixed"
+        );
+
+        let name = result.properties.iter().find(|p| p.name == "name");
+        assert!(name.is_some(), "column-only name should still appear");
+        assert_eq!(name.unwrap().type_hint.as_deref(), Some("mixed"));
+    }
+
+    #[test]
+    fn attributes_take_priority_over_column_names() {
+        let provider = LaravelModelProvider;
+        let mut user = make_class(ELOQUENT_MODEL_FQN);
+        user.name = "User".to_string();
+        user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+        user.attributes_definitions = vec![("role".to_string(), "string".to_string())];
+        user.column_names = vec!["role".to_string(), "email".to_string()];
+
+        let result = provider.provide(&user, &no_loader);
+
+        let matching: Vec<_> = result
+            .properties
+            .iter()
+            .filter(|p| p.name == "role")
+            .collect();
+        assert_eq!(matching.len(), 1, "should have exactly one role");
+        assert_eq!(
+            matching[0].type_hint.as_deref(),
+            Some("string"),
+            "attributes type should win over column name mixed"
+        );
+
+        let email = result.properties.iter().find(|p| p.name == "email");
+        assert!(email.is_some(), "column-only email should still appear");
+        assert_eq!(email.unwrap().type_hint.as_deref(), Some("mixed"));
+    }
+
+    #[test]
+    fn all_three_sources_coexist() {
+        let provider = LaravelModelProvider;
+        let mut user = make_class(ELOQUENT_MODEL_FQN);
+        user.name = "User".to_string();
+        user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+        user.casts_definitions = vec![("is_admin".to_string(), "boolean".to_string())];
+        user.attributes_definitions = vec![("role".to_string(), "string".to_string())];
+        user.column_names = vec![
+            "is_admin".to_string(),
+            "role".to_string(),
+            "email".to_string(),
+        ];
+
+        let result = provider.provide(&user, &no_loader);
+
+        let is_admin = result
+            .properties
+            .iter()
+            .find(|p| p.name == "is_admin")
+            .unwrap();
+        assert_eq!(is_admin.type_hint.as_deref(), Some("bool"), "from casts");
+
+        let role = result.properties.iter().find(|p| p.name == "role").unwrap();
+        assert_eq!(role.type_hint.as_deref(), Some("string"), "from attributes");
+
+        let email = result
+            .properties
+            .iter()
+            .find(|p| p.name == "email")
+            .unwrap();
+        assert_eq!(
+            email.type_hint.as_deref(),
+            Some("mixed"),
+            "from column_names"
+        );
+    }
+
+    #[test]
+    fn column_names_coexist_with_relationships_and_scopes() {
+        let provider = LaravelModelProvider;
+        let mut user = make_class(ELOQUENT_MODEL_FQN);
+        user.name = "User".to_string();
+        user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+        user.column_names = vec!["email".to_string()];
+        user.methods
+            .push(make_method("posts", Some("HasMany<Post, $this>")));
+        user.methods.push(make_method_with_params(
+            "scopeActive",
+            Some("void"),
+            vec![make_param("$query", Some("Builder"), true)],
+        ));
+
+        let result = provider.provide(&user, &no_loader);
+
+        assert!(
+            result.properties.iter().any(|p| p.name == "email"),
+            "column name property"
+        );
+        assert!(
+            result.properties.iter().any(|p| p.name == "posts"),
+            "relationship property"
+        );
+        assert!(
+            result
+                .methods
+                .iter()
+                .any(|m| m.name == "active" && !m.is_static),
+            "scope instance method"
+        );
+    }
+
+    #[test]
+    fn empty_column_names_produces_no_extra_properties() {
+        let provider = LaravelModelProvider;
+        let mut user = make_class(ELOQUENT_MODEL_FQN);
+        user.name = "User".to_string();
+        user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+        user.column_names = Vec::new();
+
+        let result = provider.provide(&user, &no_loader);
+        assert!(result.properties.is_empty());
     }
 }

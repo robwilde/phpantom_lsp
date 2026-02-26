@@ -3855,11 +3855,11 @@ async fn test_accessor_on_variable_with_real_example_php() {
     )
     .expect("example.php should exist");
 
-    // Find the line "$model->display_name;" and replace it with "$model->"
+    // Find the line "$author->display_name;" and replace it with "$author->"
     // to create a completion trigger point.
-    let trigger_line = "        $model->";
+    let trigger_line = "        $author->";
     let text = original.replace(
-        "        $model->display_name;             // virtual property → string",
+        "        $author->display_name;            // virtual property → string",
         trigger_line,
     );
 
@@ -3908,13 +3908,13 @@ async fn test_accessor_on_variable_with_real_example_php() {
 
     assert!(
         props.contains(&"display_name"),
-        "Legacy accessor should produce display_name on $model-> in example.php, got props: {:?}, methods: {:?}",
+        "Legacy accessor should produce display_name on $author-> in example.php, got props: {:?}, methods: {:?}",
         props,
         methods
     );
     assert!(
         props.contains(&"avatar_url"),
-        "Modern accessor should produce avatar_url on $model-> in example.php, got props: {:?}",
+        "Modern accessor should produce avatar_url on $author-> in example.php, got props: {:?}",
         props
     );
 }
@@ -5095,6 +5095,2382 @@ class Event extends Model {
     assert!(
         methods.contains(&"upcoming"),
         "FQN return type on newCollection() should be detected, got: {:?}",
+        methods
+    );
+}
+
+// ── Eloquent Casts ──────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_casts_property_produces_typed_virtual_properties() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected $casts = [
+        'is_admin' => 'boolean',
+        'created_at' => 'datetime',
+        'options' => 'array',
+    ];
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 11, 15).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"is_admin"),
+        "Cast 'boolean' should produce is_admin property, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"created_at"),
+        "Cast 'datetime' should produce created_at property, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"options"),
+        "Cast 'array' should produce options property, got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_casts_boolean_type_hint() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected $casts = [
+        'is_admin' => 'boolean',
+    ];
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 9, 15).await;
+    let prop = items
+        .iter()
+        .find(|i| i.kind == Some(CompletionItemKind::PROPERTY) && i.label == "is_admin");
+    assert!(prop.is_some(), "should find is_admin property");
+    assert!(
+        prop.unwrap()
+            .detail
+            .as_deref()
+            .unwrap_or("")
+            .contains("bool"),
+        "is_admin should show bool in detail, got: {:?}",
+        prop.unwrap().detail
+    );
+}
+
+#[tokio::test]
+async fn test_casts_integer_and_float() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected $casts = [
+        'age' => 'integer',
+        'score' => 'float',
+        'price' => 'decimal:2',
+    ];
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 11, 15).await;
+    let props = property_names(&items);
+
+    assert!(props.contains(&"age"), "integer cast, got: {:?}", props);
+    assert!(props.contains(&"score"), "float cast, got: {:?}", props);
+    assert!(props.contains(&"price"), "decimal:2 cast, got: {:?}", props);
+}
+
+#[tokio::test]
+async fn test_casts_string_and_encrypted() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected $casts = [
+        'name' => 'string',
+        'secret' => 'encrypted',
+        'hashed_val' => 'hashed',
+    ];
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 11, 15).await;
+    let props = property_names(&items);
+
+    assert!(props.contains(&"name"), "string cast, got: {:?}", props);
+    assert!(
+        props.contains(&"secret"),
+        "encrypted cast, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"hashed_val"),
+        "hashed cast, got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_casts_object_and_collection() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected $casts = [
+        'metadata' => 'object',
+        'tags' => 'collection',
+    ];
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 10, 15).await;
+    let props = property_names(&items);
+
+    assert!(props.contains(&"metadata"), "object cast, got: {:?}", props);
+    assert!(props.contains(&"tags"), "collection cast, got: {:?}", props);
+}
+
+#[tokio::test]
+async fn test_casts_method_produces_typed_virtual_properties() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected function casts(): array {
+        return [
+            'is_admin' => 'boolean',
+            'created_at' => 'datetime',
+        ];
+    }
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 12, 15).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"is_admin"),
+        "casts() method should produce is_admin, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"created_at"),
+        "casts() method should produce created_at, got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_casts_coexist_with_relationships_and_scopes() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected $casts = [
+        'is_admin' => 'boolean',
+    ];
+    /** @return \\Illuminate\\Database\\Eloquent\\Relations\\HasMany<\\App\\Models\\Post, $this> */
+    public function posts(): mixed { return $this->hasMany(Post::class); }
+    public function scopeActive(\\Illuminate\\Database\\Eloquent\\Builder $query): void {}
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let post_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class Post extends Model {
+    public function getTitle(): string { return ''; }
+}
+";
+    let (backend, dir) = make_workspace(&[
+        ("src/Models/User.php", user_php),
+        ("src/Models/Post.php", post_php),
+    ]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 12, 15).await;
+    let props = property_names(&items);
+    let methods = method_names(&items);
+
+    assert!(
+        props.contains(&"is_admin"),
+        "Cast property, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"posts"),
+        "Relationship property, got: {:?}",
+        props
+    );
+    assert!(
+        methods.contains(&"active"),
+        "Scope method, got: {:?}",
+        methods
+    );
+}
+
+#[tokio::test]
+async fn test_casts_coexist_with_accessors() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected $casts = [
+        'is_admin' => 'boolean',
+    ];
+    public function getDisplayNameAttribute(): string { return ''; }
+    public function avatarUrl(): \\Illuminate\\Database\\Eloquent\\Casts\\Attribute {
+        return \\Illuminate\\Database\\Eloquent\\Casts\\Attribute::make();
+    }
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 13, 15).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"is_admin"),
+        "Cast property, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"display_name"),
+        "Legacy accessor, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"avatar_url"),
+        "Modern accessor, got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_casts_on_this_arrow() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected $casts = [
+        'is_admin' => 'boolean',
+        'options' => 'array',
+    ];
+    public function demo() {
+        $this->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 9, 15).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"is_admin"),
+        "$this-> should show cast properties, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"options"),
+        "$this-> should show cast properties, got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_casts_method_overrides_property_and_both_merge() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected $casts = [
+        'from_property' => 'boolean',
+        'shared' => 'boolean',
+    ];
+    protected function casts(): array {
+        return [
+            'from_method' => 'integer',
+            'shared' => 'integer',
+        ];
+    }
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 16, 15).await;
+    let props = property_names(&items);
+
+    // Both sources contribute unique keys.
+    assert!(
+        props.contains(&"from_property"),
+        "$casts-only column should be present, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"from_method"),
+        "casts()-only column should be present, got: {:?}",
+        props
+    );
+    // casts() method overrides $casts property for overlapping keys.
+    assert!(
+        props.contains(&"shared"),
+        "overlapping column should be present, got: {:?}",
+        props
+    );
+    let shared = items
+        .iter()
+        .find(|i| i.kind == Some(CompletionItemKind::PROPERTY) && i.label == "shared");
+    assert!(shared.is_some());
+    assert!(
+        shared
+            .unwrap()
+            .detail
+            .as_deref()
+            .unwrap_or("")
+            .contains("int"),
+        "shared should be int from casts() not bool from $casts, got: {:?}",
+        shared.unwrap().detail
+    );
+}
+
+#[tokio::test]
+async fn test_casts_non_model_class_no_properties() {
+    let service_php = "\
+<?php
+namespace App\\Services;
+class UserService {
+    protected $casts = [
+        'is_admin' => 'boolean',
+    ];
+    public function test() {
+        $svc = new UserService();
+        $svc->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/UserService.php", service_php)]);
+
+    let items = complete_at(
+        &backend,
+        &dir,
+        "src/Models/UserService.php",
+        service_php,
+        8,
+        14,
+    )
+    .await;
+    let props = property_names(&items);
+
+    // Non-model classes should NOT get virtual cast properties.
+    // The $casts property itself is a real property, but no virtual
+    // 'is_admin' property should be synthesized.
+    assert!(
+        !props.contains(&"is_admin"),
+        "Non-model should not get cast virtual properties, got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_casts_double_quoted_strings() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected $casts = [
+        \"is_admin\" => \"boolean\",
+        \"created_at\" => \"datetime\",
+    ];
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 10, 15).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"is_admin"),
+        "Double-quoted casts key, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"created_at"),
+        "Double-quoted casts key, got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_casts_cross_file_psr4() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected $casts = [
+        'is_admin' => 'boolean',
+        'balance' => 'decimal:2',
+    ];
+}
+";
+    let controller_php = "\
+<?php
+namespace App\\Models;
+class UserController {
+    public function show() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[
+        ("src/Models/User.php", user_php),
+        ("src/Models/UserController.php", controller_php),
+    ]);
+
+    let items = complete_at(
+        &backend,
+        &dir,
+        "src/Models/UserController.php",
+        controller_php,
+        5,
+        15,
+    )
+    .await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"is_admin"),
+        "Cross-file cast property, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"balance"),
+        "Cross-file decimal cast, got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_casts_indirect_model_subclass() {
+    let base_model_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class BaseModel extends Model {}
+";
+    let user_php = "\
+<?php
+namespace App\\Models;
+class User extends BaseModel {
+    protected $casts = [
+        'is_admin' => 'boolean',
+    ];
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[
+        ("src/Models/BaseModel.php", base_model_php),
+        ("src/Models/User.php", user_php),
+    ]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 8, 15).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"is_admin"),
+        "Indirect model subclass should get cast properties, got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_casts_same_file_plain_backend() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///casts_same_file.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "namespace Illuminate\\Database\\Eloquent {\n",
+        "    abstract class Model {}\n",
+        "}\n",
+        "namespace App\\Models {\n",
+        "    class User extends \\Illuminate\\Database\\Eloquent\\Model {\n",
+        "        protected $casts = [\n",
+        "            'is_admin' => 'boolean',\n",
+        "            'created_at' => 'datetime',\n",
+        "            'options' => 'array',\n",
+        "        ];\n",
+        "        public function test() {\n",
+        "            $user = new User();\n",
+        "            $user->\n",
+        "        }\n",
+        "    }\n",
+        "}\n",
+    );
+
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: uri.clone(),
+                language_id: "php".to_string(),
+                version: 1,
+                text: text.to_string(),
+            },
+        })
+        .await;
+
+    let result = backend
+        .completion(CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position {
+                    line: 13,
+                    character: 19,
+                },
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+            context: None,
+        })
+        .await
+        .unwrap();
+
+    let items = match result {
+        Some(CompletionResponse::Array(items)) => items,
+        Some(CompletionResponse::List(list)) => list.items,
+        _ => Vec::new(),
+    };
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"is_admin"),
+        "Same-file cast property, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"created_at"),
+        "Same-file cast property, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"options"),
+        "Same-file cast property, got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_casts_custom_cast_class_with_get_method() {
+    let money_cast_php = "\
+<?php
+namespace App\\Casts;
+class MoneyCast {
+    public function get($model, string $key, $value, array $attributes): \\App\\ValueObjects\\Money {
+        return new \\App\\ValueObjects\\Money($value);
+    }
+}
+";
+    let money_php = "\
+<?php
+namespace App\\ValueObjects;
+class Money {
+    public function amount(): int { return 0; }
+    public function currency(): string { return ''; }
+    public function formatted(): string { return ''; }
+}
+";
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected $casts = [
+        'balance' => 'App\\Casts\\MoneyCast',
+    ];
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[
+        ("src/Models/User.php", user_php),
+        ("src/Collections/MoneyCast.php", money_cast_php),
+        ("src/Collections/Money.php", money_php),
+    ]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 9, 15).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"balance"),
+        "Custom cast class should produce a virtual property, got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_casts_encrypted_variants() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected $casts = [
+        'secret' => 'encrypted',
+        'encrypted_opts' => 'encrypted:array',
+        'encrypted_coll' => 'encrypted:collection',
+        'encrypted_obj' => 'encrypted:object',
+    ];
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 12, 15).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"secret"),
+        "encrypted cast, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"encrypted_opts"),
+        "encrypted:array cast, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"encrypted_coll"),
+        "encrypted:collection cast, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"encrypted_obj"),
+        "encrypted:object cast, got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_casts_datetime_with_format() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected $casts = [
+        'birthday' => 'date:Y-m-d',
+        'logged_at' => 'datetime:Y-m-d H:i:s',
+        'frozen_at' => 'immutable_datetime:Y-m-d',
+    ];
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 11, 15).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"birthday"),
+        "date:format cast, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"logged_at"),
+        "datetime:format cast, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"frozen_at"),
+        "immutable_datetime:format cast, got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_casts_enum_class_resolves_to_enum_type() {
+    let status_enum_php = "\
+<?php
+namespace App\\Enums;
+enum Status: string {
+    case Active = 'active';
+    case Inactive = 'inactive';
+    public function label(): string { return $this->value; }
+}
+";
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected $casts = [
+        'status' => App\\Enums\\Status::class,
+    ];
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let composer = r#"{
+    "autoload": {
+        "psr-4": {
+            "App\\Models\\": "src/Models/",
+            "App\\Enums\\": "src/Enums/",
+            "App\\Collections\\": "src/Collections/",
+            "App\\Concerns\\": "src/Concerns/",
+            "Illuminate\\Database\\Eloquent\\": "vendor/illuminate/Eloquent/",
+            "Illuminate\\Database\\Eloquent\\Attributes\\": "vendor/illuminate/Eloquent/Attributes/",
+            "Illuminate\\Database\\Eloquent\\Relations\\": "vendor/illuminate/Eloquent/Relations/",
+            "Illuminate\\Database\\Query\\": "vendor/illuminate/Query/",
+            "Illuminate\\Database\\Concerns\\": "vendor/illuminate/Concerns/"
+        }
+    }
+}"#;
+    let mut files: Vec<(&str, &str)> = framework_stubs();
+    files.push(("src/Enums/Status.php", status_enum_php));
+    files.push(("src/Models/User.php", user_php));
+    let (backend, dir) = create_psr4_workspace(composer, &files);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 9, 15).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"status"),
+        "Enum cast should produce status property, got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_casts_castable_class_resolves_to_class_itself() {
+    let address_php = "\
+<?php
+namespace App\\Casts;
+use Illuminate\\Contracts\\Database\\Eloquent\\Castable;
+class Address implements Castable {
+    public function getStreet(): string { return ''; }
+    public function getCity(): string { return ''; }
+    public static function castUsing(array $arguments): mixed { return null; }
+}
+";
+    let castable_php = "\
+<?php
+namespace Illuminate\\Contracts\\Database\\Eloquent;
+interface Castable {}
+";
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected $casts = [
+        'address' => App\\Casts\\Address::class,
+    ];
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let composer = r#"{
+    "autoload": {
+        "psr-4": {
+            "App\\Models\\": "src/Models/",
+            "App\\Casts\\": "src/Casts/",
+            "App\\Collections\\": "src/Collections/",
+            "App\\Concerns\\": "src/Concerns/",
+            "Illuminate\\Database\\Eloquent\\": "vendor/illuminate/Eloquent/",
+            "Illuminate\\Database\\Eloquent\\Attributes\\": "vendor/illuminate/Eloquent/Attributes/",
+            "Illuminate\\Database\\Eloquent\\Relations\\": "vendor/illuminate/Eloquent/Relations/",
+            "Illuminate\\Database\\Query\\": "vendor/illuminate/Query/",
+            "Illuminate\\Database\\Concerns\\": "vendor/illuminate/Concerns/",
+            "Illuminate\\Contracts\\Database\\Eloquent\\": "vendor/illuminate/Contracts/"
+        }
+    }
+}"#;
+    let mut files: Vec<(&str, &str)> = framework_stubs();
+    files.push(("vendor/illuminate/Contracts/Castable.php", castable_php));
+    files.push(("src/Casts/Address.php", address_php));
+    files.push(("src/Models/User.php", user_php));
+    let (backend, dir) = create_psr4_workspace(composer, &files);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 9, 15).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"address"),
+        "Castable class should produce address property, got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_casts_class_with_colon_argument_suffix() {
+    let address_php = "\
+<?php
+namespace App\\Casts;
+use Illuminate\\Contracts\\Database\\Eloquent\\Castable;
+class Address implements Castable {
+    public function getStreet(): string { return ''; }
+    public static function castUsing(array $arguments): mixed { return null; }
+}
+";
+    let castable_php = "\
+<?php
+namespace Illuminate\\Contracts\\Database\\Eloquent;
+interface Castable {}
+";
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected function casts(): array {
+        return [
+            'address' => App\\Casts\\Address::class.':nullable',
+        ];
+    }
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let composer = r#"{
+    "autoload": {
+        "psr-4": {
+            "App\\Models\\": "src/Models/",
+            "App\\Casts\\": "src/Casts/",
+            "App\\Collections\\": "src/Collections/",
+            "App\\Concerns\\": "src/Concerns/",
+            "Illuminate\\Database\\Eloquent\\": "vendor/illuminate/Eloquent/",
+            "Illuminate\\Database\\Eloquent\\Attributes\\": "vendor/illuminate/Eloquent/Attributes/",
+            "Illuminate\\Database\\Eloquent\\Relations\\": "vendor/illuminate/Eloquent/Relations/",
+            "Illuminate\\Database\\Query\\": "vendor/illuminate/Query/",
+            "Illuminate\\Database\\Concerns\\": "vendor/illuminate/Concerns/",
+            "Illuminate\\Contracts\\Database\\Eloquent\\": "vendor/illuminate/Contracts/"
+        }
+    }
+}"#;
+    let mut files: Vec<(&str, &str)> = framework_stubs();
+    files.push(("vendor/illuminate/Contracts/Castable.php", castable_php));
+    files.push(("src/Casts/Address.php", address_php));
+    files.push(("src/Models/User.php", user_php));
+    let (backend, dir) = create_psr4_workspace(composer, &files);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 11, 15).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"address"),
+        "::class.':argument' should strip suffix and resolve, got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_casts_enum_with_colon_argument_in_casts_method() {
+    let status_enum_php = "\
+<?php
+namespace App\\Enums;
+enum Status: string {
+    case Active = 'active';
+    case Inactive = 'inactive';
+    public function label(): string { return $this->value; }
+}
+";
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected function casts(): array {
+        return [
+            'status' => App\\Enums\\Status::class.':force',
+        ];
+    }
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let composer = r#"{
+    "autoload": {
+        "psr-4": {
+            "App\\Models\\": "src/Models/",
+            "App\\Enums\\": "src/Enums/",
+            "App\\Collections\\": "src/Collections/",
+            "App\\Concerns\\": "src/Concerns/",
+            "Illuminate\\Database\\Eloquent\\": "vendor/illuminate/Eloquent/",
+            "Illuminate\\Database\\Eloquent\\Attributes\\": "vendor/illuminate/Eloquent/Attributes/",
+            "Illuminate\\Database\\Eloquent\\Relations\\": "vendor/illuminate/Eloquent/Relations/",
+            "Illuminate\\Database\\Query\\": "vendor/illuminate/Query/",
+            "Illuminate\\Database\\Concerns\\": "vendor/illuminate/Concerns/"
+        }
+    }
+}"#;
+    let mut files: Vec<(&str, &str)> = framework_stubs();
+    files.push(("src/Enums/Status.php", status_enum_php));
+    files.push(("src/Models/User.php", user_php));
+    let (backend, dir) = create_psr4_workspace(composer, &files);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 11, 15).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"status"),
+        "Enum cast with :argument suffix should produce status property, got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_casts_enum_and_builtin_coexist() {
+    let status_enum_php = "\
+<?php
+namespace App\\Enums;
+enum Status: string {
+    case Active = 'active';
+    case Inactive = 'inactive';
+}
+";
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected $casts = [
+        'status' => App\\Enums\\Status::class,
+        'is_admin' => 'boolean',
+        'created_at' => 'datetime',
+    ];
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let composer = r#"{
+    "autoload": {
+        "psr-4": {
+            "App\\Models\\": "src/Models/",
+            "App\\Enums\\": "src/Enums/",
+            "App\\Collections\\": "src/Collections/",
+            "App\\Concerns\\": "src/Concerns/",
+            "Illuminate\\Database\\Eloquent\\": "vendor/illuminate/Eloquent/",
+            "Illuminate\\Database\\Eloquent\\Attributes\\": "vendor/illuminate/Eloquent/Attributes/",
+            "Illuminate\\Database\\Eloquent\\Relations\\": "vendor/illuminate/Eloquent/Relations/",
+            "Illuminate\\Database\\Query\\": "vendor/illuminate/Query/",
+            "Illuminate\\Database\\Concerns\\": "vendor/illuminate/Concerns/"
+        }
+    }
+}"#;
+    let mut files: Vec<(&str, &str)> = framework_stubs();
+    files.push(("src/Enums/Status.php", status_enum_php));
+    files.push(("src/Models/User.php", user_php));
+    let (backend, dir) = create_psr4_workspace(composer, &files);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 11, 15).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"status"),
+        "Enum cast property, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"is_admin"),
+        "Boolean cast property, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"created_at"),
+        "Datetime cast property, got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_casts_custom_cast_class_get_return_type_resolves_to_class() {
+    let html_string_php = "\
+<?php
+namespace Illuminate\\Support;
+class HtmlString {
+    public function toHtml(): string { return ''; }
+    public function isEmpty(): bool { return true; }
+}
+";
+    let html_cast_php = "\
+<?php
+namespace App\\Casts;
+use Illuminate\\Support\\HtmlString;
+class HtmlCast {
+    public function get($model, string $key, $value, array $attributes): ?HtmlString {
+        return new HtmlString($value);
+    }
+}
+";
+    let brand_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class BrandTranslation extends Model {
+    protected $casts = [
+        'description' => 'App\\Casts\\HtmlCast',
+    ];
+    public function test() {
+        $brand = new BrandTranslation();
+        $brand->description->
+    }
+}
+";
+    let composer = r#"{
+    "autoload": {
+        "psr-4": {
+            "App\\Models\\": "src/Models/",
+            "App\\Casts\\": "src/Casts/",
+            "App\\Collections\\": "src/Collections/",
+            "App\\Concerns\\": "src/Concerns/",
+            "Illuminate\\Support\\": "vendor/illuminate/Support/",
+            "Illuminate\\Database\\Eloquent\\": "vendor/illuminate/Eloquent/",
+            "Illuminate\\Database\\Eloquent\\Attributes\\": "vendor/illuminate/Eloquent/Attributes/",
+            "Illuminate\\Database\\Eloquent\\Relations\\": "vendor/illuminate/Eloquent/Relations/",
+            "Illuminate\\Database\\Query\\": "vendor/illuminate/Query/",
+            "Illuminate\\Database\\Concerns\\": "vendor/illuminate/Concerns/"
+        }
+    }
+}"#;
+    let mut files: Vec<(&str, &str)> = framework_stubs();
+    files.push(("vendor/illuminate/Support/HtmlString.php", html_string_php));
+    files.push(("src/Casts/HtmlCast.php", html_cast_php));
+    files.push(("src/Models/BrandTranslation.php", brand_php));
+    let (backend, dir) = create_psr4_workspace(composer, &files);
+
+    // First verify the 'description' virtual property exists.
+    let items = complete_at(
+        &backend,
+        &dir,
+        "src/Models/BrandTranslation.php",
+        brand_php,
+        9,
+        16,
+    )
+    .await;
+    let props = property_names(&items);
+    assert!(
+        props.contains(&"description"),
+        "Custom cast HtmlCast should produce 'description' property, got: {:?}",
+        props
+    );
+
+    // Now verify that $brand->description-> resolves to HtmlString members.
+    let items = complete_at(
+        &backend,
+        &dir,
+        "src/Models/BrandTranslation.php",
+        brand_php,
+        9,
+        30,
+    )
+    .await;
+    let methods = method_names(&items);
+    assert!(
+        methods.contains(&"toHtml"),
+        "description should resolve to HtmlString with toHtml(), got methods: {:?}",
+        methods
+    );
+    assert!(
+        methods.contains(&"isEmpty"),
+        "description should resolve to HtmlString with isEmpty(), got methods: {:?}",
+        methods
+    );
+}
+
+#[tokio::test]
+async fn test_casts_custom_cast_class_with_class_string_syntax() {
+    let html_string_php = "\
+<?php
+namespace Illuminate\\Support;
+class HtmlString {
+    public function toHtml(): string { return ''; }
+}
+";
+    let html_cast_php = "\
+<?php
+namespace App\\Casts;
+use Illuminate\\Support\\HtmlString;
+class HtmlCast {
+    public function get($model, string $key, $value, array $attributes): ?HtmlString {
+        return new HtmlString($value);
+    }
+}
+";
+    let brand_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use App\\Casts\\HtmlCast;
+class BrandTranslation extends Model {
+    protected $casts = [
+        'description' => HtmlCast::class,
+    ];
+    public function test() {
+        $brand = new BrandTranslation();
+        $brand->description->
+    }
+}
+";
+    let composer = r#"{
+    "autoload": {
+        "psr-4": {
+            "App\\Models\\": "src/Models/",
+            "App\\Casts\\": "src/Casts/",
+            "App\\Collections\\": "src/Collections/",
+            "App\\Concerns\\": "src/Concerns/",
+            "Illuminate\\Support\\": "vendor/illuminate/Support/",
+            "Illuminate\\Database\\Eloquent\\": "vendor/illuminate/Eloquent/",
+            "Illuminate\\Database\\Eloquent\\Attributes\\": "vendor/illuminate/Eloquent/Attributes/",
+            "Illuminate\\Database\\Eloquent\\Relations\\": "vendor/illuminate/Eloquent/Relations/",
+            "Illuminate\\Database\\Query\\": "vendor/illuminate/Query/",
+            "Illuminate\\Database\\Concerns\\": "vendor/illuminate/Concerns/"
+        }
+    }
+}"#;
+    let mut files: Vec<(&str, &str)> = framework_stubs();
+    files.push(("vendor/illuminate/Support/HtmlString.php", html_string_php));
+    files.push(("src/Casts/HtmlCast.php", html_cast_php));
+    files.push(("src/Models/BrandTranslation.php", brand_php));
+    let (backend, dir) = create_psr4_workspace(composer, &files);
+
+    // Verify the property exists.
+    let items = complete_at(
+        &backend,
+        &dir,
+        "src/Models/BrandTranslation.php",
+        brand_php,
+        10,
+        16,
+    )
+    .await;
+    let props = property_names(&items);
+    assert!(
+        props.contains(&"description"),
+        "HtmlCast::class syntax should produce 'description' property, got: {:?}",
+        props
+    );
+
+    // Verify chained completion resolves HtmlString members.
+    let items = complete_at(
+        &backend,
+        &dir,
+        "src/Models/BrandTranslation.php",
+        brand_php,
+        10,
+        30,
+    )
+    .await;
+    let methods = method_names(&items);
+    assert!(
+        methods.contains(&"toHtml"),
+        "description via ::class should resolve to HtmlString with toHtml(), got: {:?}",
+        methods
+    );
+}
+
+#[tokio::test]
+async fn test_casts_custom_cast_class_no_native_return_type_uses_docblock() {
+    let html_string_php = "\
+<?php
+namespace Illuminate\\Support;
+class HtmlString {
+    public function toHtml(): string { return ''; }
+    public function isEmpty(): bool { return true; }
+}
+";
+    let html_cast_php = "\
+<?php
+namespace App\\Casts;
+use Illuminate\\Support\\HtmlString;
+class HtmlCast {
+    /** @return HtmlString|null */
+    public function get($model, string $key, $value, array $attributes) {
+        return new HtmlString($value);
+    }
+}
+";
+    let brand_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class BrandTranslation extends Model {
+    protected $casts = [
+        'description' => 'App\\Casts\\HtmlCast',
+    ];
+    public function test() {
+        $brand = new BrandTranslation();
+        $brand->description->
+    }
+}
+";
+    let composer = r#"{
+    "autoload": {
+        "psr-4": {
+            "App\\Models\\": "src/Models/",
+            "App\\Casts\\": "src/Casts/",
+            "App\\Collections\\": "src/Collections/",
+            "App\\Concerns\\": "src/Concerns/",
+            "Illuminate\\Support\\": "vendor/illuminate/Support/",
+            "Illuminate\\Database\\Eloquent\\": "vendor/illuminate/Eloquent/",
+            "Illuminate\\Database\\Eloquent\\Attributes\\": "vendor/illuminate/Eloquent/Attributes/",
+            "Illuminate\\Database\\Eloquent\\Relations\\": "vendor/illuminate/Eloquent/Relations/",
+            "Illuminate\\Database\\Query\\": "vendor/illuminate/Query/",
+            "Illuminate\\Database\\Concerns\\": "vendor/illuminate/Concerns/"
+        }
+    }
+}"#;
+    let mut files: Vec<(&str, &str)> = framework_stubs();
+    files.push(("vendor/illuminate/Support/HtmlString.php", html_string_php));
+    files.push(("src/Casts/HtmlCast.php", html_cast_php));
+    files.push(("src/Models/BrandTranslation.php", brand_php));
+    let (backend, dir) = create_psr4_workspace(composer, &files);
+
+    // Verify the property exists.
+    let items = complete_at(
+        &backend,
+        &dir,
+        "src/Models/BrandTranslation.php",
+        brand_php,
+        9,
+        16,
+    )
+    .await;
+    let props = property_names(&items);
+    assert!(
+        props.contains(&"description"),
+        "Custom cast with @return docblock should produce 'description' property, got: {:?}",
+        props
+    );
+
+    // Verify chained completion resolves HtmlString members via docblock @return.
+    let items = complete_at(
+        &backend,
+        &dir,
+        "src/Models/BrandTranslation.php",
+        brand_php,
+        9,
+        30,
+    )
+    .await;
+    let methods = method_names(&items);
+    assert!(
+        methods.contains(&"toHtml"),
+        "description via @return docblock should resolve to HtmlString with toHtml(), got: {:?}",
+        methods
+    );
+    assert!(
+        methods.contains(&"isEmpty"),
+        "description via @return docblock should resolve to HtmlString with isEmpty(), got: {:?}",
+        methods
+    );
+}
+
+#[tokio::test]
+async fn test_casts_custom_cast_implements_generic_interface_no_native_return() {
+    let html_string_php = "\
+<?php
+namespace Illuminate\\Support;
+class HtmlString {
+    public function toHtml(): string { return ''; }
+    public function isEmpty(): bool { return true; }
+}
+";
+    let casts_attributes_php = "\
+<?php
+namespace Illuminate\\Contracts\\Database\\Eloquent;
+/**
+ * @template TGet
+ * @template TSet
+ */
+interface CastsAttributes {
+    /**
+     * @return TGet|null
+     */
+    public function get($model, string $key, $value, array $attributes);
+}
+";
+    let html_cast_php = "\
+<?php
+namespace App\\Casts;
+use Illuminate\\Support\\HtmlString;
+use Illuminate\\Contracts\\Database\\Eloquent\\CastsAttributes;
+/**
+ * @implements CastsAttributes<HtmlString, HtmlString>
+ */
+final class HtmlCast implements CastsAttributes {
+    public function get($model, string $key, $value, array $attributes) {
+        return new HtmlString($value);
+    }
+}
+";
+    let brand_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class BrandTranslation extends Model {
+    protected $casts = [
+        'description' => 'App\\Casts\\HtmlCast',
+    ];
+    public function test() {
+        $brand = new BrandTranslation();
+        $brand->description->
+    }
+}
+";
+    let composer = r#"{
+    "autoload": {
+        "psr-4": {
+            "App\\Models\\": "src/Models/",
+            "App\\Casts\\": "src/Casts/",
+            "App\\Collections\\": "src/Collections/",
+            "App\\Concerns\\": "src/Concerns/",
+            "Illuminate\\Support\\": "vendor/illuminate/Support/",
+            "Illuminate\\Contracts\\Database\\Eloquent\\": "vendor/illuminate/Contracts/",
+            "Illuminate\\Database\\Eloquent\\": "vendor/illuminate/Eloquent/",
+            "Illuminate\\Database\\Eloquent\\Attributes\\": "vendor/illuminate/Eloquent/Attributes/",
+            "Illuminate\\Database\\Eloquent\\Relations\\": "vendor/illuminate/Eloquent/Relations/",
+            "Illuminate\\Database\\Query\\": "vendor/illuminate/Query/",
+            "Illuminate\\Database\\Concerns\\": "vendor/illuminate/Concerns/"
+        }
+    }
+}"#;
+    let mut files: Vec<(&str, &str)> = framework_stubs();
+    files.push(("vendor/illuminate/Support/HtmlString.php", html_string_php));
+    files.push((
+        "vendor/illuminate/Contracts/CastsAttributes.php",
+        casts_attributes_php,
+    ));
+    files.push(("src/Casts/HtmlCast.php", html_cast_php));
+    files.push(("src/Models/BrandTranslation.php", brand_php));
+    let (backend, dir) = create_psr4_workspace(composer, &files);
+
+    // Verify the property exists.
+    let items = complete_at(
+        &backend,
+        &dir,
+        "src/Models/BrandTranslation.php",
+        brand_php,
+        9,
+        16,
+    )
+    .await;
+    let props = property_names(&items);
+    assert!(
+        props.contains(&"description"),
+        "@implements CastsAttributes<HtmlString, HtmlString> should produce 'description' property, got: {:?}",
+        props
+    );
+
+    // Verify chained completion resolves HtmlString members.
+    // The get() method has no native return type. The type should come from
+    // resolving the @implements generic: TGet=HtmlString substituted into
+    // the interface's @return TGet|null on get().
+    let items = complete_at(
+        &backend,
+        &dir,
+        "src/Models/BrandTranslation.php",
+        brand_php,
+        9,
+        30,
+    )
+    .await;
+    let methods = method_names(&items);
+    assert!(
+        methods.contains(&"toHtml"),
+        "description should resolve to HtmlString via @implements generic, got methods: {:?}",
+        methods
+    );
+    assert!(
+        methods.contains(&"isEmpty"),
+        "description should resolve to HtmlString via @implements generic, got methods: {:?}",
+        methods
+    );
+}
+
+// ── Eloquent $attributes Defaults ───────────────────────────────────────────
+
+#[tokio::test]
+async fn test_attributes_defaults_produce_typed_virtual_properties() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected $attributes = [
+        'role' => 'user',
+        'is_active' => true,
+        'login_count' => 0,
+    ];
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 11, 15).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"role"),
+        "Attribute default 'user' (string) should produce role property, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"is_active"),
+        "Attribute default true (bool) should produce is_active property, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"login_count"),
+        "Attribute default 0 (int) should produce login_count property, got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_attributes_defaults_string_type_hint() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected $attributes = [
+        'role' => 'user',
+    ];
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 9, 15).await;
+    let prop = items
+        .iter()
+        .find(|i| i.kind == Some(CompletionItemKind::PROPERTY) && i.label == "role");
+    assert!(prop.is_some(), "should find role property");
+    assert!(
+        prop.unwrap()
+            .detail
+            .as_deref()
+            .unwrap_or("")
+            .contains("string"),
+        "role should show string in detail, got: {:?}",
+        prop.unwrap().detail
+    );
+}
+
+#[tokio::test]
+async fn test_attributes_defaults_bool_type_hint() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected $attributes = [
+        'is_active' => true,
+    ];
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 9, 15).await;
+    let prop = items
+        .iter()
+        .find(|i| i.kind == Some(CompletionItemKind::PROPERTY) && i.label == "is_active");
+    assert!(prop.is_some(), "should find is_active property");
+    assert!(
+        prop.unwrap()
+            .detail
+            .as_deref()
+            .unwrap_or("")
+            .contains("bool"),
+        "is_active should show bool in detail, got: {:?}",
+        prop.unwrap().detail
+    );
+}
+
+#[tokio::test]
+async fn test_attributes_defaults_int_and_float() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected $attributes = [
+        'login_count' => 0,
+        'rating' => 1.5,
+    ];
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 10, 15).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"login_count"),
+        "int attribute default, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"rating"),
+        "float attribute default, got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_attributes_defaults_null_and_array() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected $attributes = [
+        'bio' => null,
+        'settings' => [],
+    ];
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 10, 15).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"bio"),
+        "null attribute default, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"settings"),
+        "array attribute default, got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_attributes_defaults_casts_take_priority() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected $casts = [
+        'is_active' => 'boolean',
+    ];
+    protected $attributes = [
+        'is_active' => 1,
+        'role' => 'user',
+    ];
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 13, 15).await;
+    let props = property_names(&items);
+
+    // is_active should exist (from casts)
+    assert!(
+        props.contains(&"is_active"),
+        "is_active should be present, got: {:?}",
+        props
+    );
+    // role should exist (from attributes, not in casts)
+    assert!(
+        props.contains(&"role"),
+        "role should be present from attributes, got: {:?}",
+        props
+    );
+
+    // Verify is_active has cast type (bool), not attributes type (int)
+    let prop = items
+        .iter()
+        .find(|i| i.kind == Some(CompletionItemKind::PROPERTY) && i.label == "is_active");
+    assert!(prop.is_some());
+    assert!(
+        prop.unwrap()
+            .detail
+            .as_deref()
+            .unwrap_or("")
+            .contains("bool"),
+        "is_active should be bool from casts, not int from attributes, got: {:?}",
+        prop.unwrap().detail
+    );
+}
+
+#[tokio::test]
+async fn test_attributes_defaults_on_this_arrow() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected $attributes = [
+        'role' => 'user',
+        'is_active' => true,
+    ];
+    public function test() {
+        $this->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 9, 15).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"role"),
+        "$this-> should include attribute default property, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"is_active"),
+        "$this-> should include attribute default property, got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_attributes_defaults_cross_file_psr4() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected $attributes = [
+        'role' => 'user',
+        'login_count' => 0,
+    ];
+}
+";
+    let controller_php = "\
+<?php
+namespace App\\Models;
+class UserController {
+    public function show() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[
+        ("src/Models/User.php", user_php),
+        ("src/Models/UserController.php", controller_php),
+    ]);
+
+    let items = complete_at(
+        &backend,
+        &dir,
+        "src/Models/UserController.php",
+        controller_php,
+        5,
+        15,
+    )
+    .await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"role"),
+        "Cross-file attribute default property, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"login_count"),
+        "Cross-file attribute default property, got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_attributes_defaults_coexist_with_relationships_and_scopes() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected $attributes = [
+        'role' => 'user',
+    ];
+    /** @return \\Illuminate\\Database\\Eloquent\\Relations\\HasMany<Post, $this> */
+    public function posts(): mixed { return $this->hasMany(Post::class); }
+    public function scopeActive($query): void {}
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 12, 15).await;
+    let props = property_names(&items);
+    let methods = method_names(&items);
+
+    assert!(
+        props.contains(&"role"),
+        "attribute default property, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"posts"),
+        "relationship property, got: {:?}",
+        props
+    );
+    assert!(
+        methods.contains(&"active"),
+        "scope method, got: {:?}",
+        methods
+    );
+}
+
+#[tokio::test]
+async fn test_attributes_defaults_double_quoted_keys() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected $attributes = [
+        \"role\" => \"user\",
+        \"is_active\" => false,
+    ];
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 10, 15).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"role"),
+        "double-quoted key attribute default, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"is_active"),
+        "double-quoted key attribute default, got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_attributes_defaults_negative_numbers() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected $attributes = [
+        'balance' => -100,
+        'score' => -1.5,
+    ];
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 10, 15).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"balance"),
+        "negative int attribute default, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"score"),
+        "negative float attribute default, got: {:?}",
+        props
+    );
+}
+
+// ── Eloquent $fillable / $guarded / $hidden Column Names ────────────────────
+
+#[tokio::test]
+async fn test_fillable_produces_mixed_virtual_properties() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected $fillable = [
+        'name',
+        'email',
+        'password',
+    ];
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 11, 15).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"name"),
+        "$fillable should produce name property, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"email"),
+        "$fillable should produce email property, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"password"),
+        "$fillable should produce password property, got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_fillable_type_is_mixed() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected $fillable = ['name'];
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 7, 15).await;
+    let prop = items
+        .iter()
+        .find(|i| i.kind == Some(CompletionItemKind::PROPERTY) && i.label == "name");
+    assert!(prop.is_some(), "should find name property");
+    assert!(
+        prop.unwrap()
+            .detail
+            .as_deref()
+            .unwrap_or("")
+            .contains("mixed"),
+        "name from $fillable should show mixed in detail, got: {:?}",
+        prop.unwrap().detail
+    );
+}
+
+#[tokio::test]
+async fn test_guarded_produces_mixed_virtual_properties() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected $guarded = [
+        'id',
+        'created_at',
+    ];
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 10, 15).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"id"),
+        "$guarded should produce id property, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"created_at"),
+        "$guarded should produce created_at property, got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_hidden_produces_mixed_virtual_properties() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected $hidden = [
+        'password',
+        'remember_token',
+    ];
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 10, 15).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"password"),
+        "$hidden should produce password property, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"remember_token"),
+        "$hidden should produce remember_token property, got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_fillable_guarded_hidden_merge_without_duplicates() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected $fillable = ['name', 'email'];
+    protected $guarded = ['id'];
+    protected $hidden = ['password', 'email'];
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 9, 15).await;
+    let props = property_names(&items);
+
+    assert!(props.contains(&"name"), "from $fillable, got: {:?}", props);
+    assert!(
+        props.contains(&"email"),
+        "from $fillable (first), got: {:?}",
+        props
+    );
+    assert!(props.contains(&"id"), "from $guarded, got: {:?}", props);
+    assert!(
+        props.contains(&"password"),
+        "from $hidden, got: {:?}",
+        props
+    );
+
+    // email appears in both $fillable and $hidden — should appear only once.
+    let email_count = items
+        .iter()
+        .filter(|i| {
+            i.kind == Some(CompletionItemKind::PROPERTY)
+                && (i.filter_text.as_deref().unwrap_or(&i.label) == "email")
+        })
+        .count();
+    assert_eq!(
+        email_count, 1,
+        "email should appear exactly once despite being in both $fillable and $hidden"
+    );
+}
+
+#[tokio::test]
+async fn test_casts_take_priority_over_fillable() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected $casts = [
+        'is_admin' => 'boolean',
+    ];
+    protected $fillable = [
+        'is_admin',
+        'name',
+    ];
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 13, 15).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"is_admin"),
+        "should be present, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"name"),
+        "should be present, got: {:?}",
+        props
+    );
+
+    // is_admin should have bool type from casts, not mixed from fillable.
+    let prop = items
+        .iter()
+        .find(|i| i.kind == Some(CompletionItemKind::PROPERTY) && i.label == "is_admin");
+    assert!(prop.is_some());
+    assert!(
+        prop.unwrap()
+            .detail
+            .as_deref()
+            .unwrap_or("")
+            .contains("bool"),
+        "is_admin should be bool from casts, not mixed from fillable, got: {:?}",
+        prop.unwrap().detail
+    );
+}
+
+#[tokio::test]
+async fn test_attributes_take_priority_over_fillable() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected $attributes = [
+        'role' => 'user',
+    ];
+    protected $fillable = [
+        'role',
+        'email',
+    ];
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 13, 15).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"role"),
+        "should be present, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"email"),
+        "should be present, got: {:?}",
+        props
+    );
+
+    // role should have string type from attributes, not mixed from fillable.
+    let prop = items
+        .iter()
+        .find(|i| i.kind == Some(CompletionItemKind::PROPERTY) && i.label == "role");
+    assert!(prop.is_some());
+    assert!(
+        prop.unwrap()
+            .detail
+            .as_deref()
+            .unwrap_or("")
+            .contains("string"),
+        "role should be string from attributes, not mixed from fillable, got: {:?}",
+        prop.unwrap().detail
+    );
+}
+
+#[tokio::test]
+async fn test_all_three_sources_coexist() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected $casts = [
+        'is_admin' => 'boolean',
+    ];
+    protected $attributes = [
+        'role' => 'user',
+    ];
+    protected $fillable = [
+        'is_admin',
+        'role',
+        'email',
+    ];
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 17, 15).await;
+    let props = property_names(&items);
+
+    assert!(props.contains(&"is_admin"), "from casts, got: {:?}", props);
+    assert!(props.contains(&"role"), "from attributes, got: {:?}", props);
+    assert!(props.contains(&"email"), "from fillable, got: {:?}", props);
+
+    // Verify priority: casts > attributes > fillable
+    let is_admin = items
+        .iter()
+        .find(|i| i.kind == Some(CompletionItemKind::PROPERTY) && i.label == "is_admin")
+        .unwrap();
+    assert!(
+        is_admin.detail.as_deref().unwrap_or("").contains("bool"),
+        "is_admin should be bool from casts, got: {:?}",
+        is_admin.detail
+    );
+
+    let role = items
+        .iter()
+        .find(|i| i.kind == Some(CompletionItemKind::PROPERTY) && i.label == "role")
+        .unwrap();
+    assert!(
+        role.detail.as_deref().unwrap_or("").contains("string"),
+        "role should be string from attributes, got: {:?}",
+        role.detail
+    );
+
+    let email = items
+        .iter()
+        .find(|i| i.kind == Some(CompletionItemKind::PROPERTY) && i.label == "email")
+        .unwrap();
+    assert!(
+        email.detail.as_deref().unwrap_or("").contains("mixed"),
+        "email should be mixed from fillable, got: {:?}",
+        email.detail
+    );
+}
+
+#[tokio::test]
+async fn test_fillable_on_this_arrow() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected $fillable = ['name', 'email'];
+    public function test() {
+        $this->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 6, 15).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"name"),
+        "$this-> should include fillable property, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"email"),
+        "$this-> should include fillable property, got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_fillable_cross_file_psr4() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected $fillable = ['name', 'email'];
+}
+";
+    let controller_php = "\
+<?php
+namespace App\\Models;
+class UserController {
+    public function show() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[
+        ("src/Models/User.php", user_php),
+        ("src/Models/UserController.php", controller_php),
+    ]);
+
+    let items = complete_at(
+        &backend,
+        &dir,
+        "src/Models/UserController.php",
+        controller_php,
+        5,
+        15,
+    )
+    .await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"name"),
+        "Cross-file fillable property, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"email"),
+        "Cross-file fillable property, got: {:?}",
+        props
+    );
+}
+
+#[tokio::test]
+async fn test_fillable_coexist_with_relationships_and_scopes() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected $fillable = ['name'];
+    /** @return \\Illuminate\\Database\\Eloquent\\Relations\\HasMany<Post, $this> */
+    public function posts(): mixed { return $this->hasMany(Post::class); }
+    public function scopeActive($query): void {}
+    public function test() {
+        $user = new User();
+        $user->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 10, 15).await;
+    let props = property_names(&items);
+    let methods = method_names(&items);
+
+    assert!(
+        props.contains(&"name"),
+        "fillable property, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"posts"),
+        "relationship property, got: {:?}",
+        props
+    );
+    assert!(
+        methods.contains(&"active"),
+        "scope method, got: {:?}",
         methods
     );
 }

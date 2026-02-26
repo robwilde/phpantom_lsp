@@ -953,3 +953,323 @@ async fn test_goto_definition_builder_groupby_in_example_php() {
         query_groupby_line, line
     );
 }
+
+// ─── Go-to-definition for Eloquent virtual properties ───────────────────────
+
+#[tokio::test]
+async fn test_goto_definition_legacy_accessor_property() {
+    // Ctrl+click on `$author->display_name` should jump to
+    // `getDisplayNameAttribute()` method.
+    let author_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class BlogAuthor extends Model {
+    public function getDisplayNameAttribute(): string {
+        return 'display';
+    }
+    public function demo(): void {
+        $author = new BlogAuthor();
+        $author->display_name;
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/BlogAuthor.php", author_php)]);
+
+    // "display_name" on line 9, cursor at character 18
+    let result = goto_definition_at(
+        &backend,
+        &dir,
+        "src/Models/BlogAuthor.php",
+        author_php,
+        9,
+        18,
+    )
+    .await;
+
+    assert!(
+        result.is_some(),
+        "Go-to-definition on $author->display_name should resolve"
+    );
+
+    let response = result.unwrap();
+    let line = definition_line(&response);
+    assert_eq!(
+        line, 4,
+        "Should jump to getDisplayNameAttribute on line 4, got: {}",
+        line
+    );
+}
+
+#[tokio::test]
+async fn test_goto_definition_modern_accessor_property() {
+    // Ctrl+click on `$author->avatar_url` should jump to
+    // `avatarUrl()` method.
+    let author_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class BlogAuthor extends Model {
+    protected function avatarUrl(): \\Illuminate\\Database\\Eloquent\\Casts\\Attribute {
+        return new \\Illuminate\\Database\\Eloquent\\Casts\\Attribute();
+    }
+    public function demo(): void {
+        $author = new BlogAuthor();
+        $author->avatar_url;
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/BlogAuthor.php", author_php)]);
+
+    // "avatar_url" on line 9, cursor at character 18
+    let result = goto_definition_at(
+        &backend,
+        &dir,
+        "src/Models/BlogAuthor.php",
+        author_php,
+        9,
+        18,
+    )
+    .await;
+
+    assert!(
+        result.is_some(),
+        "Go-to-definition on $author->avatar_url should resolve"
+    );
+
+    let response = result.unwrap();
+    let line = definition_line(&response);
+    assert_eq!(
+        line, 4,
+        "Should jump to avatarUrl() on line 4, got: {}",
+        line
+    );
+}
+
+#[tokio::test]
+async fn test_goto_definition_casts_property_entry() {
+    // Ctrl+click on `$user->is_admin` should jump to the 'is_admin'
+    // entry in the $casts array.
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected $casts = [
+        'is_admin' => 'boolean',
+        'created_at' => 'datetime',
+    ];
+    public function demo(): void {
+        $user = new User();
+        $user->is_admin;
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    // "is_admin" on line 10, cursor at character 15
+    let result = goto_definition_at(&backend, &dir, "src/Models/User.php", user_php, 10, 15).await;
+
+    assert!(
+        result.is_some(),
+        "Go-to-definition on $user->is_admin should resolve to $casts entry"
+    );
+
+    let response = result.unwrap();
+    let line = definition_line(&response);
+    assert_eq!(
+        line, 5,
+        "Should jump to 'is_admin' in $casts on line 5, got: {}",
+        line
+    );
+}
+
+#[tokio::test]
+async fn test_goto_definition_casts_method_entry() {
+    // Ctrl+click on `$user->verified_at` should jump to the
+    // 'verified_at' entry in the casts() method return array.
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected function casts(): array {
+        return [
+            'verified_at' => 'datetime',
+        ];
+    }
+    public function demo(): void {
+        $user = new User();
+        $user->verified_at;
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    // "verified_at" on line 11, cursor at character 15
+    let result = goto_definition_at(&backend, &dir, "src/Models/User.php", user_php, 11, 15).await;
+
+    assert!(
+        result.is_some(),
+        "Go-to-definition on $user->verified_at should resolve to casts() entry"
+    );
+
+    let response = result.unwrap();
+    let line = definition_line(&response);
+    assert_eq!(
+        line, 6,
+        "Should jump to 'verified_at' in casts() on line 6, got: {}",
+        line
+    );
+}
+
+#[tokio::test]
+async fn test_goto_definition_attributes_default_entry() {
+    // Ctrl+click on `$user->role` should jump to the 'role' entry
+    // in the $attributes array.
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected $attributes = [
+        'role' => 'user',
+        'is_active' => true,
+    ];
+    public function demo(): void {
+        $user = new User();
+        $user->role;
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    // "role" on line 10, cursor at character 15
+    let result = goto_definition_at(&backend, &dir, "src/Models/User.php", user_php, 10, 15).await;
+
+    assert!(
+        result.is_some(),
+        "Go-to-definition on $user->role should resolve to $attributes entry"
+    );
+
+    let response = result.unwrap();
+    let line = definition_line(&response);
+    assert_eq!(
+        line, 5,
+        "Should jump to 'role' in $attributes on line 5, got: {}",
+        line
+    );
+}
+
+#[tokio::test]
+async fn test_goto_definition_fillable_column_name() {
+    // Ctrl+click on `$user->name` should jump to the 'name' entry
+    // in the $fillable array.
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected $fillable = [
+        'name',
+        'email',
+    ];
+    public function demo(): void {
+        $user = new User();
+        $user->name;
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    // "name" on line 10, cursor at character 15
+    let result = goto_definition_at(&backend, &dir, "src/Models/User.php", user_php, 10, 15).await;
+
+    assert!(
+        result.is_some(),
+        "Go-to-definition on $user->name should resolve to $fillable entry"
+    );
+
+    let response = result.unwrap();
+    let line = definition_line(&response);
+    assert_eq!(
+        line, 5,
+        "Should jump to 'name' in $fillable on line 5, got: {}",
+        line
+    );
+}
+
+#[tokio::test]
+async fn test_goto_definition_hidden_column_name() {
+    // Ctrl+click on `$user->password` should jump to the 'password'
+    // entry in the $hidden array.
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected $hidden = [
+        'password',
+        'remember_token',
+    ];
+    public function demo(): void {
+        $user = new User();
+        $user->password;
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    // "password" on line 10, cursor at character 15
+    let result = goto_definition_at(&backend, &dir, "src/Models/User.php", user_php, 10, 15).await;
+
+    assert!(
+        result.is_some(),
+        "Go-to-definition on $user->password should resolve to $hidden entry"
+    );
+
+    let response = result.unwrap();
+    let line = definition_line(&response);
+    assert_eq!(
+        line, 5,
+        "Should jump to 'password' in $hidden on line 5, got: {}",
+        line
+    );
+}
+
+#[tokio::test]
+async fn test_goto_definition_guarded_column_name() {
+    // Ctrl+click on `$user->secret_key` should jump to the
+    // 'secret_key' entry in the $guarded array.
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    protected $guarded = [
+        'secret_key',
+    ];
+    public function demo(): void {
+        $user = new User();
+        $user->secret_key;
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    // "secret_key" on line 9, cursor at character 15
+    let result = goto_definition_at(&backend, &dir, "src/Models/User.php", user_php, 9, 15).await;
+
+    assert!(
+        result.is_some(),
+        "Go-to-definition on $user->secret_key should resolve to $guarded entry"
+    );
+
+    let response = result.unwrap();
+    let line = definition_line(&response);
+    assert_eq!(
+        line, 5,
+        "Should jump to 'secret_key' in $guarded on line 5, got: {}",
+        line
+    );
+}

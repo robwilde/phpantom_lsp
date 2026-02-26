@@ -534,6 +534,32 @@ pub struct ClassInfo {
     /// relationship property types and Builder-forwarded return types
     /// (e.g. `get()`, `all()`).
     pub custom_collection: Option<String>,
+    /// Eloquent cast definitions extracted from the `$casts` property
+    /// initializer or the `casts()` method body.
+    ///
+    /// Each entry maps a column name to a cast type string (e.g.
+    /// `("created_at", "datetime")`, `("is_admin", "boolean")`).
+    /// The `LaravelModelProvider` uses these to synthesize typed virtual
+    /// properties, mapping cast type strings to PHP types (e.g.
+    /// `datetime` to `Carbon\Carbon`, `boolean` to `bool`).
+    pub casts_definitions: Vec<(String, String)>,
+    /// Eloquent attribute defaults extracted from the `$attributes`
+    /// property initializer.
+    ///
+    /// Each entry maps a column name to a PHP type string inferred from
+    /// the literal default value (e.g. `("role", "string")`,
+    /// `("is_active", "bool")`, `("login_count", "int")`).
+    /// The `LaravelModelProvider` uses these as a fallback when no
+    /// `$casts` entry exists for the same column.
+    pub attributes_definitions: Vec<(String, String)>,
+    /// Column names extracted from `$fillable`, `$guarded`, and
+    /// `$hidden` property arrays.
+    ///
+    /// These are simple string lists (no type information), so the
+    /// `LaravelModelProvider` synthesizes `mixed`-typed virtual
+    /// properties as a last-resort fallback when a column is not
+    /// already covered by `$casts` or `$attributes`.
+    pub column_names: Vec<String>,
 }
 
 // ─── ClassInfo helpers ──────────────────────────────────────────────────────

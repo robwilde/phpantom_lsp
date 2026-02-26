@@ -25,7 +25,9 @@ use crate::subject_extraction::{
 };
 use crate::types::*;
 use crate::util::short_name;
-use crate::virtual_members::laravel::{ELOQUENT_BUILDER_FQN, extends_eloquent_model};
+use crate::virtual_members::laravel::{
+    ELOQUENT_BUILDER_FQN, accessor_method_candidates, extends_eloquent_model,
+};
 
 /// The kind of class member being resolved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -152,21 +154,38 @@ impl Backend {
                         match Self::find_declaring_class(lookup_class, &scope_name, &class_loader) {
                             Some((cls, fqn)) => (scope_name.clone(), cls, fqn),
                             None => {
-                                // Try builder-forwarded method: Laravel's
-                                // Model::__callStatic delegates to Builder.
-                                // The real Model has no @mixin, so we check
-                                // explicitly.
-                                match Self::find_builder_forwarded_method(
-                                    lookup_class,
-                                    &effective_name,
-                                    &class_loader,
-                                ) {
-                                    Some((cls, fqn)) => (effective_name.clone(), cls, fqn),
-                                    None => (
-                                        effective_name.clone(),
-                                        target_class.clone(),
-                                        target_class.name.clone(),
-                                    ),
+                                // Try accessor mapping: display_name →
+                                // getDisplayNameAttribute or avatarUrl
+                                let accessor_match = accessor_method_candidates(&effective_name)
+                                    .into_iter()
+                                    .find_map(|candidate| {
+                                        Self::find_declaring_class(
+                                            lookup_class,
+                                            &candidate,
+                                            &class_loader,
+                                        )
+                                        .map(|(cls, fqn)| (candidate, cls, fqn))
+                                    });
+                                match accessor_match {
+                                    Some((name, cls, fqn)) => (name, cls, fqn),
+                                    None => {
+                                        // Try builder-forwarded method: Laravel's
+                                        // Model::__callStatic delegates to Builder.
+                                        // The real Model has no @mixin, so we check
+                                        // explicitly.
+                                        match Self::find_builder_forwarded_method(
+                                            lookup_class,
+                                            &effective_name,
+                                            &class_loader,
+                                        ) {
+                                            Some((cls, fqn)) => (effective_name.clone(), cls, fqn),
+                                            None => (
+                                                effective_name.clone(),
+                                                target_class.clone(),
+                                                target_class.name.clone(),
+                                            ),
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -195,6 +214,27 @@ impl Backend {
                 && let Ok(parsed_uri) = Url::parse(&class_uri)
             {
                 return Some(point_location(parsed_uri, member_position));
+            }
+
+            // ── Eloquent array entry fallback ───────────────────────
+            // Virtual properties from $casts, $attributes, $fillable,
+            // $guarded, and $hidden don't have a method or property
+            // declaration.  Jump to the string literal entry inside the
+            // array property instead.
+            if extends_eloquent_model(lookup_class, &class_loader)
+                && let Some((class_uri, class_content)) =
+                    self.find_class_file_content(&declaring_fqn, uri, content)
+                && let Some(entry_position) = Self::find_eloquent_array_entry(
+                    &class_content,
+                    &effective_name,
+                    Some((
+                        declaring_class.start_offset as usize,
+                        declaring_class.end_offset as usize,
+                    )),
+                )
+                && let Ok(parsed_uri) = Url::parse(&class_uri)
+            {
+                return Some(point_location(parsed_uri, entry_position));
             }
         }
 
@@ -235,13 +275,55 @@ impl Backend {
                     match Self::find_declaring_class(fallback_class, &scope_name, &class_loader) {
                         Some((cls, fqn)) => (scope_name, cls, fqn),
                         None => {
-                            match Self::find_builder_forwarded_method(
-                                fallback_class,
-                                &effective_name,
-                                &class_loader,
-                            ) {
-                                Some((cls, fqn)) => (effective_name.clone(), cls, fqn),
-                                None => return None,
+                            // Try accessor mapping in the fallback path.
+                            let accessor_match = accessor_method_candidates(&effective_name)
+                                .into_iter()
+                                .find_map(|candidate| {
+                                    Self::find_declaring_class(
+                                        fallback_class,
+                                        &candidate,
+                                        &class_loader,
+                                    )
+                                    .map(|(cls, fqn)| (candidate, cls, fqn))
+                                });
+                            match accessor_match {
+                                Some((name, cls, fqn)) => (name, cls, fqn),
+                                None => {
+                                    match Self::find_builder_forwarded_method(
+                                        fallback_class,
+                                        &effective_name,
+                                        &class_loader,
+                                    ) {
+                                        Some((cls, fqn)) => (effective_name.clone(), cls, fqn),
+                                        None => {
+                                            // Last resort: Eloquent array entry.
+                                            if extends_eloquent_model(fallback_class, &class_loader)
+                                            {
+                                                let fqn = fallback_class.name.clone();
+                                                if let Some((class_uri, class_content)) =
+                                                    self.find_class_file_content(&fqn, uri, content)
+                                                    && let Some(entry_position) =
+                                                        Self::find_eloquent_array_entry(
+                                                            &class_content,
+                                                            &effective_name,
+                                                            Some((
+                                                                fallback_class.start_offset
+                                                                    as usize,
+                                                                fallback_class.end_offset as usize,
+                                                            )),
+                                                        )
+                                                    && let Ok(parsed_uri) = Url::parse(&class_uri)
+                                                {
+                                                    return Some(point_location(
+                                                        parsed_uri,
+                                                        entry_position,
+                                                    ));
+                                                }
+                                            }
+                                            return None;
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -561,6 +643,70 @@ impl Backend {
     ///
     /// Returns `Some(raw)` when a reload succeeds, or `None` when the
     /// class cannot be reloaded (e.g. synthetic/anonymous classes).
+    /// Find a string literal entry inside an Eloquent array property.
+    ///
+    /// Searches for `'member_name'` or `"member_name"` inside `$casts`,
+    /// `$attributes`, `$fillable`, `$guarded`, and `$hidden` property
+    /// declarations within the given class range.  Returns the position
+    /// of the string literal so go-to-definition can jump to it.
+    fn find_eloquent_array_entry(
+        content: &str,
+        member_name: &str,
+        class_range: Option<(usize, usize)>,
+    ) -> Option<Position> {
+        let single_pattern = format!("'{member_name}'");
+        let double_pattern = format!("\"{member_name}\"");
+        let targets = ["$casts", "$attributes", "$fillable", "$guarded", "$hidden"];
+
+        // Track whether we're inside one of the target property arrays.
+        let mut in_target_property = false;
+        let mut byte_offset: usize = 0;
+
+        for (line_idx, line) in content.lines().enumerate() {
+            let line_len = line.len() + 1;
+            let in_range = match class_range {
+                Some((start, end)) => byte_offset >= start && byte_offset < end,
+                None => true,
+            };
+            if in_range {
+                let trimmed = line.trim();
+                // Detect property declarations for target arrays.
+                if targets.iter().any(|t| trimmed.contains(t)) {
+                    in_target_property = true;
+                }
+                // Also detect the casts() method body.
+                if trimmed.contains("function casts(") {
+                    in_target_property = true;
+                }
+
+                if in_target_property {
+                    // Look for the member name as a string key.
+                    if let Some(col) = line.find(&single_pattern) {
+                        // Position cursor inside the quotes on the first
+                        // letter of the column name.
+                        return Some(Position {
+                            line: line_idx as u32,
+                            character: (col + 1) as u32,
+                        });
+                    }
+                    if let Some(col) = line.find(&double_pattern) {
+                        return Some(Position {
+                            line: line_idx as u32,
+                            character: (col + 1) as u32,
+                        });
+                    }
+
+                    // A line ending with `];` or just `];` closes the array.
+                    if trimmed == "];" || trimmed.ends_with("];") {
+                        in_target_property = false;
+                    }
+                }
+            }
+            byte_offset += line_len;
+        }
+        None
+    }
+
     fn reload_raw_class(
         candidate: &ClassInfo,
         all_classes: &[ClassInfo],
