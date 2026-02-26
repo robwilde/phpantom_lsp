@@ -25,6 +25,9 @@ use crate::types::{
     ParamCondition, PropertyInfo, TraitAlias, TraitPrecedence, Visibility,
 };
 use crate::util::short_name;
+use crate::virtual_members::laravel::{
+    extends_eloquent_model, factory_to_model_fqn, model_to_factory_fqn,
+};
 
 impl Backend {
     /// Resolve a class together with all inherited members from its parent
@@ -98,7 +101,29 @@ impl Backend {
             // Look through current's `extends_generics` for an entry
             // whose class name matches this parent, and zip its type
             // arguments with the parent's `template_params`.
-            let level_subs = build_substitution_map(&current, &parent, &active_subs);
+            let mut level_subs = build_substitution_map(&current, &parent, &active_subs);
+
+            // ── Convention-based Factory fallback ────────────────────
+            // When a factory class extends `Factory` without
+            // `@extends Factory<Model>`, derive the model class from
+            // the naming convention (e.g. `Database\Factories\UserFactory`
+            // → `App\Models\User`) and substitute `TModel` automatically.
+            if level_subs.is_empty()
+                && !parent.template_params.is_empty()
+                && is_factory_class(parent_name)
+            {
+                let factory_fqn = match &current.file_namespace {
+                    Some(ns) if !ns.is_empty() => format!("{}\\{}", ns, current.name),
+                    _ => current.name.clone(),
+                };
+                if let Some(model_fqn) = factory_to_model_fqn(&factory_fqn)
+                    && class_loader(&model_fqn).is_some()
+                {
+                    for param in &parent.template_params {
+                        level_subs.insert(param.clone(), model_fqn.clone());
+                    }
+                }
+            }
 
             // Merge traits used by the parent class as well, so that
             // grandparent-level trait members are visible.
@@ -252,7 +277,30 @@ impl Backend {
             // Build a substitution map for this trait if the using class
             // declared `@use TraitName<Type1, Type2>` and the trait has
             // `@template` parameters.
-            let trait_subs = build_trait_substitution_map(trait_name, &trait_info, use_generics);
+            let mut trait_subs =
+                build_trait_substitution_map(trait_name, &trait_info, use_generics);
+
+            // ── Convention-based HasFactory fallback ─────────────────
+            // When a model uses `HasFactory` without `@use HasFactory<X>`,
+            // derive the factory class from the naming convention
+            // (e.g. `App\Models\User` → `Database\Factories\UserFactory`)
+            // and substitute `TFactory` automatically.
+            if trait_subs.is_empty()
+                && !trait_info.template_params.is_empty()
+                && is_has_factory_trait(trait_name)
+                && extends_eloquent_model(merged, class_loader)
+            {
+                let model_fqn = match &merged.file_namespace {
+                    Some(ns) if !ns.is_empty() => format!("{}\\{}", ns, merged.name),
+                    _ => merged.name.clone(),
+                };
+                let factory_fqn = model_to_factory_fqn(&model_fqn);
+                if class_loader(&factory_fqn).is_some() {
+                    for param in &trait_info.template_params {
+                        trait_subs.insert(param.clone(), factory_fqn.clone());
+                    }
+                }
+            }
 
             // Recursively merge traits used by this trait (trait composition).
             // The sub-trait's own `@use` generics (from the trait's docblock)
@@ -453,6 +501,22 @@ impl Backend {
 }
 
 // ─── Generic Type Substitution ──────────────────────────────────────────────
+
+/// Check whether a trait name is the Laravel `HasFactory` trait.
+///
+/// Matches the FQN `Illuminate\Database\Eloquent\Factories\HasFactory`
+/// as well as the short name `HasFactory` (common in same-file tests).
+fn is_has_factory_trait(trait_name: &str) -> bool {
+    let stripped = trait_name.strip_prefix('\\').unwrap_or(trait_name);
+    stripped == "Illuminate\\Database\\Eloquent\\Factories\\HasFactory" || stripped == "HasFactory"
+}
+
+/// Check whether a parent class name is the Laravel
+/// `Illuminate\Database\Eloquent\Factories\Factory` base class.
+fn is_factory_class(class_name: &str) -> bool {
+    let stripped = class_name.strip_prefix('\\').unwrap_or(class_name);
+    stripped == "Illuminate\\Database\\Eloquent\\Factories\\Factory" || stripped == "Factory"
+}
 
 /// Build a substitution map for a trait based on `@use` generics and the
 /// trait's `@template` parameters.

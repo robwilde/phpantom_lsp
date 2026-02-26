@@ -661,7 +661,6 @@ impl Backend {
                 };
                 Self::resolve_target_classes(&target.subject, target.access_kind, &rctx)
             };
-
             if candidates.is_empty() {
                 return vec![];
             }

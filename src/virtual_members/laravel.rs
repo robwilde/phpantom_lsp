@@ -119,6 +119,9 @@ const DEFAULT_SCOPE_RETURN_TYPE: &str = "\\Illuminate\\Database\\Eloquent\\Build
 /// The fully-qualified name of the Eloquent Builder class.
 pub const ELOQUENT_BUILDER_FQN: &str = "Illuminate\\Database\\Eloquent\\Builder";
 
+/// The fully-qualified name of the `Factory` base class.
+const FACTORY_FQN: &str = "Illuminate\\Database\\Eloquent\\Factories\\Factory";
+
 /// The short name of the `CastsAttributes` interface, used to look up
 /// `@implements` generic arguments on custom cast classes.
 const CASTS_ATTRIBUTES_SHORT: &str = "CastsAttributes";
@@ -296,6 +299,16 @@ fn is_castable(class: &ClassInfo) -> bool {
 /// `\Illuminate\Database\Eloquent\Collection<Post>`.
 pub struct LaravelModelProvider;
 
+/// Virtual member provider for Laravel Eloquent factory classes.
+///
+/// When a class extends `Illuminate\Database\Eloquent\Factories\Factory`
+/// and does not already have an `@extends Factory<Model>` annotation
+/// that would let the generics system resolve `TModel`, this provider
+/// uses the naming convention (`Database\Factories\UserFactory` maps to
+/// `App\Models\User`) to synthesize `create()` and `make()` methods
+/// that return the correct model type.
+pub struct LaravelFactoryProvider;
+
 /// Determine whether `class_name` is the Eloquent Model base class.
 ///
 /// Checks against the FQN with and without a leading backslash, and
@@ -304,6 +317,170 @@ pub struct LaravelModelProvider;
 fn is_eloquent_model(class_name: &str) -> bool {
     let stripped = class_name.strip_prefix('\\').unwrap_or(class_name);
     stripped == ELOQUENT_MODEL_FQN
+}
+
+/// Derive the conventional factory FQN from a model FQN.
+///
+/// Follows Laravel's default convention:
+/// - `App\Models\User` → `Database\Factories\UserFactory`
+/// - `App\Models\Admin\SuperUser` → `Database\Factories\Admin\SuperUserFactory`
+///
+/// The rule: strip the `Models\` segment from the namespace, replace
+/// the root with `Database\Factories\`, and append `Factory` to the
+/// class short name.
+pub(crate) fn model_to_factory_fqn(model_fqn: &str) -> String {
+    let clean = model_fqn.strip_prefix('\\').unwrap_or(model_fqn);
+
+    // Split into namespace + short name.
+    let (ns, short) = match clean.rsplit_once('\\') {
+        Some((ns, short)) => (ns, short),
+        None => return format!("Database\\Factories\\{clean}Factory"),
+    };
+
+    // Check for `X\Models\Sub` pattern → `Database\Factories\Sub`
+    if let Some((_prefix, suffix)) = ns.split_once("\\Models\\") {
+        return format!("Database\\Factories\\{suffix}\\{short}Factory");
+    }
+
+    // Check for `X\Models` pattern (model directly in Models namespace)
+    if ns.ends_with("\\Models") || ns == "Models" {
+        return format!("Database\\Factories\\{short}Factory");
+    }
+
+    // No `Models` segment — put factory in `Database\Factories`
+    format!("Database\\Factories\\{short}Factory")
+}
+
+/// Derive the conventional model FQN from a factory FQN.
+///
+/// Reverse of [`model_to_factory_fqn`]:
+/// - `Database\Factories\UserFactory` → `App\Models\User`
+/// - `Database\Factories\Admin\SuperUserFactory` → `App\Models\Admin\SuperUser`
+pub(crate) fn factory_to_model_fqn(factory_fqn: &str) -> Option<String> {
+    let clean = factory_fqn.strip_prefix('\\').unwrap_or(factory_fqn);
+
+    // The short name must end with `Factory`.
+    let short = clean.rsplit('\\').next().unwrap_or(clean);
+    let model_short = short.strip_suffix("Factory")?;
+    if model_short.is_empty() {
+        return None;
+    }
+
+    // Extract the namespace after `Database\Factories\`.
+    let ns = clean.rsplit_once('\\').map(|(ns, _)| ns).unwrap_or("");
+
+    let sub_ns = if let Some(after) = ns.strip_prefix("Database\\Factories\\") {
+        Some(after)
+    } else if ns == "Database\\Factories" {
+        None
+    } else {
+        // Not in the standard factory namespace — still try to strip
+        // any `Factories` segment.
+        None
+    };
+
+    match sub_ns {
+        Some(sub) => Some(format!("App\\Models\\{sub}\\{model_short}")),
+        None => Some(format!("App\\Models\\{model_short}")),
+    }
+}
+
+/// Determine whether `class_name` is the Eloquent Factory base class.
+fn is_eloquent_factory(class_name: &str) -> bool {
+    let stripped = class_name.strip_prefix('\\').unwrap_or(class_name);
+    stripped == FACTORY_FQN
+}
+
+/// Walk the parent chain of `class` looking for
+/// `Illuminate\Database\Eloquent\Factories\Factory`.
+///
+/// Returns `true` if the class itself is `Factory` or any ancestor is.
+fn extends_eloquent_factory(
+    class: &ClassInfo,
+    class_loader: &dyn Fn(&str) -> Option<ClassInfo>,
+) -> bool {
+    if is_eloquent_factory(&class.name) {
+        return true;
+    }
+
+    let mut current = class.clone();
+    let mut depth = 0u32;
+    while let Some(ref parent_name) = current.parent_class {
+        depth += 1;
+        if depth > MAX_INHERITANCE_DEPTH {
+            break;
+        }
+        if is_eloquent_factory(parent_name) {
+            return true;
+        }
+        match class_loader(parent_name) {
+            Some(parent) => {
+                if is_eloquent_factory(&parent.name) {
+                    return true;
+                }
+                current = parent;
+            }
+            None => break,
+        }
+    }
+
+    false
+}
+
+/// Check whether a factory class already has `@extends Factory<Model>`
+/// that would let the generics system resolve `TModel`.
+fn has_factory_extends_generic(class: &ClassInfo) -> bool {
+    class.extends_generics.iter().any(|(name, args)| {
+        let short = name.rsplit('\\').next().unwrap_or(name);
+        short == "Factory" && !args.is_empty()
+    })
+}
+
+/// Build virtual `create()` and `make()` methods for a factory class
+/// that does not have `@extends Factory<Model>`.
+///
+/// The model type is derived from the naming convention (e.g.
+/// `Database\Factories\UserFactory` → `App\Models\User`).
+fn build_factory_model_methods(
+    class: &ClassInfo,
+    class_loader: &dyn Fn(&str) -> Option<ClassInfo>,
+) -> Vec<MethodInfo> {
+    let model_fqn = match factory_to_model_fqn(&class.name) {
+        Some(fqn) => fqn,
+        None => return Vec::new(),
+    };
+
+    // Verify the model class actually exists.
+    if class_loader(&model_fqn).is_none() {
+        return Vec::new();
+    }
+
+    let model_type = format!("\\{model_fqn}");
+
+    vec![
+        MethodInfo {
+            name: "create".to_string(),
+            parameters: Vec::new(),
+            return_type: Some(model_type.clone()),
+            is_static: false,
+            visibility: Visibility::Public,
+            conditional_return: None,
+            is_deprecated: false,
+            template_params: Vec::new(),
+            template_bindings: Vec::new(),
+        },
+        MethodInfo {
+            name: "make".to_string(),
+            parameters: Vec::new(),
+            return_type: Some(model_type),
+            is_static: false,
+            visibility: Visibility::Public,
+            conditional_return: None,
+            is_deprecated: false,
+            template_params: Vec::new(),
+            template_bindings: Vec::new(),
+        },
+    ]
 }
 
 /// Walk the parent chain of `class` looking for
@@ -1013,6 +1190,36 @@ impl VirtualMemberProvider for LaravelModelProvider {
         VirtualMembers {
             methods,
             properties,
+            constants: Vec::new(),
+        }
+    }
+}
+
+impl VirtualMemberProvider for LaravelFactoryProvider {
+    /// Returns `true` if the class extends
+    /// `Illuminate\Database\Eloquent\Factories\Factory` and does not
+    /// already have `@extends Factory<Model>` generics.
+    fn applies_to(
+        &self,
+        class: &ClassInfo,
+        class_loader: &dyn Fn(&str) -> Option<ClassInfo>,
+    ) -> bool {
+        !is_eloquent_factory(&class.name)
+            && !has_factory_extends_generic(class)
+            && extends_eloquent_factory(class, class_loader)
+    }
+
+    /// Synthesize `create()` and `make()` methods that return the model
+    /// type derived from the naming convention.
+    fn provide(
+        &self,
+        class: &ClassInfo,
+        class_loader: &dyn Fn(&str) -> Option<ClassInfo>,
+    ) -> VirtualMembers {
+        let methods = build_factory_model_methods(class, class_loader);
+        VirtualMembers {
+            methods,
+            properties: Vec::new(),
             constants: Vec::new(),
         }
     }
@@ -4283,5 +4490,324 @@ mod tests {
 
         let result = provider.provide(&user, &no_loader);
         assert!(result.properties.is_empty());
+    }
+
+    // ── Factory helper tests ────────────────────────────────────────────
+
+    // ── model_to_factory_fqn tests ──────────────────────────────────────
+
+    #[test]
+    fn model_to_factory_standard() {
+        assert_eq!(
+            model_to_factory_fqn("App\\Models\\User"),
+            "Database\\Factories\\UserFactory"
+        );
+    }
+
+    #[test]
+    fn model_to_factory_subdirectory() {
+        assert_eq!(
+            model_to_factory_fqn("App\\Models\\Admin\\SuperUser"),
+            "Database\\Factories\\Admin\\SuperUserFactory"
+        );
+    }
+
+    #[test]
+    fn model_to_factory_no_models_segment() {
+        assert_eq!(
+            model_to_factory_fqn("App\\User"),
+            "Database\\Factories\\UserFactory"
+        );
+    }
+
+    #[test]
+    fn model_to_factory_bare_name() {
+        assert_eq!(
+            model_to_factory_fqn("User"),
+            "Database\\Factories\\UserFactory"
+        );
+    }
+
+    #[test]
+    fn model_to_factory_leading_backslash() {
+        assert_eq!(
+            model_to_factory_fqn("\\App\\Models\\User"),
+            "Database\\Factories\\UserFactory"
+        );
+    }
+
+    #[test]
+    fn model_to_factory_models_only_namespace() {
+        assert_eq!(
+            model_to_factory_fqn("Models\\Post"),
+            "Database\\Factories\\PostFactory"
+        );
+    }
+
+    // ── factory_to_model_fqn tests ──────────────────────────────────────
+
+    #[test]
+    fn factory_to_model_standard() {
+        assert_eq!(
+            factory_to_model_fqn("Database\\Factories\\UserFactory"),
+            Some("App\\Models\\User".to_string())
+        );
+    }
+
+    #[test]
+    fn factory_to_model_subdirectory() {
+        assert_eq!(
+            factory_to_model_fqn("Database\\Factories\\Admin\\SuperUserFactory"),
+            Some("App\\Models\\Admin\\SuperUser".to_string())
+        );
+    }
+
+    #[test]
+    fn factory_to_model_leading_backslash() {
+        assert_eq!(
+            factory_to_model_fqn("\\Database\\Factories\\UserFactory"),
+            Some("App\\Models\\User".to_string())
+        );
+    }
+
+    #[test]
+    fn factory_to_model_no_factory_suffix() {
+        assert_eq!(
+            factory_to_model_fqn("Database\\Factories\\UserBuilder"),
+            None
+        );
+    }
+
+    #[test]
+    fn factory_to_model_bare_factory() {
+        // "Factory" alone has an empty model short name — should return None.
+        assert_eq!(factory_to_model_fqn("Factory"), None);
+    }
+
+    // ── is_eloquent_factory / extends_eloquent_factory tests ────────────
+
+    #[test]
+    fn is_eloquent_factory_fqn() {
+        assert!(is_eloquent_factory(FACTORY_FQN));
+    }
+
+    #[test]
+    fn is_eloquent_factory_with_backslash() {
+        assert!(is_eloquent_factory(&format!("\\{FACTORY_FQN}")));
+    }
+
+    #[test]
+    fn is_eloquent_factory_rejects_unrelated() {
+        assert!(!is_eloquent_factory("App\\Factories\\UserFactory"));
+    }
+
+    #[test]
+    fn extends_factory_direct() {
+        let mut class = make_class("UserFactory");
+        class.parent_class = Some(FACTORY_FQN.to_string());
+        assert!(extends_eloquent_factory(&class, &no_loader));
+    }
+
+    #[test]
+    fn extends_factory_indirect() {
+        let mut class = make_class("UserFactory");
+        class.parent_class = Some("BaseFactory".to_string());
+
+        let mut base = make_class("BaseFactory");
+        base.parent_class = Some(FACTORY_FQN.to_string());
+
+        let loader = move |name: &str| -> Option<ClassInfo> {
+            if name == "BaseFactory" {
+                Some(base.clone())
+            } else {
+                None
+            }
+        };
+        assert!(extends_eloquent_factory(&class, &loader));
+    }
+
+    #[test]
+    fn does_not_extend_factory() {
+        let class = make_class("SomeClass");
+        assert!(!extends_eloquent_factory(&class, &no_loader));
+    }
+
+    // ── has_factory_extends_generic tests ────────────────────────────────
+
+    #[test]
+    fn has_factory_extends_generic_present() {
+        let mut class = make_class("UserFactory");
+        class.extends_generics = vec![("Factory".to_string(), vec!["User".to_string()])];
+        assert!(has_factory_extends_generic(&class));
+    }
+
+    #[test]
+    fn has_factory_extends_generic_fqn() {
+        let mut class = make_class("UserFactory");
+        class.extends_generics = vec![(FACTORY_FQN.to_string(), vec!["User".to_string()])];
+        assert!(has_factory_extends_generic(&class));
+    }
+
+    #[test]
+    fn has_factory_extends_generic_not_present() {
+        let class = make_class("UserFactory");
+        assert!(!has_factory_extends_generic(&class));
+    }
+
+    #[test]
+    fn has_factory_extends_generic_empty_args() {
+        let mut class = make_class("UserFactory");
+        class.extends_generics = vec![("Factory".to_string(), vec![])];
+        assert!(!has_factory_extends_generic(&class));
+    }
+
+    // ── build_factory_model_methods tests ───────────────────────────────
+
+    #[test]
+    fn build_factory_model_methods_synthesizes_create_and_make() {
+        let mut factory = make_class("Database\\Factories\\UserFactory");
+        factory.parent_class = Some(FACTORY_FQN.to_string());
+
+        let model = make_class("App\\Models\\User");
+        let loader = move |name: &str| -> Option<ClassInfo> {
+            if name == "App\\Models\\User" {
+                Some(model.clone())
+            } else {
+                None
+            }
+        };
+
+        let methods = build_factory_model_methods(&factory, &loader);
+        assert_eq!(methods.len(), 2);
+
+        let create = methods.iter().find(|m| m.name == "create").unwrap();
+        assert!(!create.is_static);
+        assert_eq!(create.return_type.as_deref(), Some("\\App\\Models\\User"));
+
+        let make = methods.iter().find(|m| m.name == "make").unwrap();
+        assert!(!make.is_static);
+        assert_eq!(make.return_type.as_deref(), Some("\\App\\Models\\User"));
+    }
+
+    #[test]
+    fn build_factory_model_methods_returns_empty_when_model_missing() {
+        let mut factory = make_class("Database\\Factories\\UserFactory");
+        factory.parent_class = Some(FACTORY_FQN.to_string());
+
+        let methods = build_factory_model_methods(&factory, &no_loader);
+        assert!(methods.is_empty());
+    }
+
+    #[test]
+    fn build_factory_model_methods_returns_empty_for_non_factory_name() {
+        let mut class = make_class("App\\Builders\\UserBuilder");
+        class.parent_class = Some(FACTORY_FQN.to_string());
+
+        let methods = build_factory_model_methods(&class, &no_loader);
+        assert!(methods.is_empty());
+    }
+
+    // ── LaravelFactoryProvider tests ────────────────────────────────────
+
+    #[test]
+    fn factory_provider_applies_to_factory_subclass() {
+        let provider = LaravelFactoryProvider;
+        let mut factory = make_class("Database\\Factories\\UserFactory");
+        factory.parent_class = Some(FACTORY_FQN.to_string());
+
+        let loader = |name: &str| -> Option<ClassInfo> {
+            if name == FACTORY_FQN {
+                Some(make_class(FACTORY_FQN))
+            } else {
+                None
+            }
+        };
+        assert!(provider.applies_to(&factory, &loader));
+    }
+
+    #[test]
+    fn factory_provider_does_not_apply_to_factory_base_class() {
+        let provider = LaravelFactoryProvider;
+        let class = make_class(FACTORY_FQN);
+        assert!(!provider.applies_to(&class, &no_loader));
+    }
+
+    #[test]
+    fn factory_provider_does_not_apply_when_extends_generic_present() {
+        let provider = LaravelFactoryProvider;
+        let mut factory = make_class("Database\\Factories\\UserFactory");
+        factory.parent_class = Some(FACTORY_FQN.to_string());
+        factory.extends_generics = vec![("Factory".to_string(), vec!["User".to_string()])];
+
+        assert!(!provider.applies_to(&factory, &no_loader));
+    }
+
+    #[test]
+    fn factory_provider_does_not_apply_to_non_factory() {
+        let provider = LaravelFactoryProvider;
+        let class = make_class("App\\Models\\User");
+        assert!(!provider.applies_to(&class, &no_loader));
+    }
+
+    #[test]
+    fn factory_provider_synthesizes_create_and_make() {
+        let provider = LaravelFactoryProvider;
+        let mut factory = make_class("Database\\Factories\\UserFactory");
+        factory.parent_class = Some(FACTORY_FQN.to_string());
+
+        let model = make_class("App\\Models\\User");
+        let loader = move |name: &str| -> Option<ClassInfo> {
+            if name == "App\\Models\\User" {
+                Some(model.clone())
+            } else {
+                None
+            }
+        };
+
+        let result = provider.provide(&factory, &loader);
+        assert_eq!(result.methods.len(), 2);
+
+        let create = result.methods.iter().find(|m| m.name == "create").unwrap();
+        assert_eq!(create.return_type.as_deref(), Some("\\App\\Models\\User"));
+        assert!(!create.is_static);
+
+        let make = result.methods.iter().find(|m| m.name == "make").unwrap();
+        assert_eq!(make.return_type.as_deref(), Some("\\App\\Models\\User"));
+        assert!(!make.is_static);
+    }
+
+    #[test]
+    fn factory_provider_empty_when_model_not_found() {
+        let provider = LaravelFactoryProvider;
+        let mut factory = make_class("Database\\Factories\\UserFactory");
+        factory.parent_class = Some(FACTORY_FQN.to_string());
+
+        let result = provider.provide(&factory, &no_loader);
+        assert!(result.methods.is_empty());
+    }
+
+    #[test]
+    fn factory_provider_subdirectory_convention() {
+        let provider = LaravelFactoryProvider;
+        let mut factory = make_class("Database\\Factories\\Admin\\SuperUserFactory");
+        factory.parent_class = Some(FACTORY_FQN.to_string());
+
+        let model = make_class("App\\Models\\Admin\\SuperUser");
+        let loader = move |name: &str| -> Option<ClassInfo> {
+            if name == "App\\Models\\Admin\\SuperUser" {
+                Some(model.clone())
+            } else {
+                None
+            }
+        };
+
+        let result = provider.provide(&factory, &loader);
+        assert_eq!(result.methods.len(), 2);
+
+        let create = result.methods.iter().find(|m| m.name == "create").unwrap();
+        assert_eq!(
+            create.return_type.as_deref(),
+            Some("\\App\\Models\\Admin\\SuperUser")
+        );
     }
 }

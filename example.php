@@ -364,7 +364,8 @@ resolve(AdminUser::class)->grantPermission('x');  // function @template
 // ── Trait Generic Substitution ──────────────────────────────────────────────
 
 Product::factory()->create();             // @use HasFactory<UserFactory> → UserFactory
-Product::factory()->count(5);
+Product::factory()->count(5)->make();     // count() returns static, make() returns Product
+Product::factory()->state([])->create();  // state() returns static, create() returns Product
 
 $idx = new UserIndex();                   // @use Indexable<int, User>
 $idx->get()->getEmail();                  // TValue → User
@@ -2407,6 +2408,7 @@ class UserFactory
 {
     public function create(): User { return new User('', ''); }
     public function count(int $n): static { return $this; }
+    public function state(array $state): static { return $this; }
     public function make(): User { return new User('', ''); }
 }
 

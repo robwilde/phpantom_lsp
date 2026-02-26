@@ -8,7 +8,7 @@ virtual member provider design, see `ARCHITECTURE.md`.
 
 ---
 
-## Known gaps (documented in tests)
+## Missing features
 
 ### 1. Variable assignment from builder-forwarded static method in GTD
 
@@ -22,32 +22,18 @@ to the declaring class in a Builder loaded through the chain. This
 works for completion (which only needs the type) but not for GTD (which
 needs the source location).
 
----
-
-## Missing features
-
-### 2. Factory support
-
-`User::factory()->create()` is ubiquitous in Laravel test code. The
-`factory()` static method returns a `HasFactory` trait method that
-produces a factory instance. Resolving the chain requires:
-
-1. Detecting the `HasFactory` trait on the model.
-2. Resolving `factory()` to the model's corresponding Factory class
-   (convention: `App\Models\User` → `Database\Factories\UserFactory`).
-3. Resolving `create()` / `make()` on the factory to return the model.
-
-This is medium complexity because it involves a naming convention
-(model name → factory name) and cross-file resolution.
-
-### 3. Closure parameter inference in collection pipelines
+### 2. Closure parameter inference in collection pipelines
 
 `$users->map(fn($u) => $u->...)` does not infer `$u` as the
 collection's element type. This is a general generics/callable
 inference problem, not Laravel-specific, but Laravel collection
 pipelines are the most common place users encounter it.
+Other cases:
+- MyModel::whereIn()->chunk(self::CHUNK_SIZE, function (Collection $orders) {})
+- MyModel::whereHas('order', function (Builder $q) {})
+- MyModel::with(['translations' => function (Relation $query) {}]) // translations is the name of the relation on MyModel, Relation will become the return type of that relation
 
-### 4. Query scope chaining on Builder instances
+### 3. Query scope chaining on Builder instances
 
 Inside a scope method body, `$query->verified()` (calling another
 scope) does not offer scope method completions. Scope methods are
@@ -60,6 +46,11 @@ known (e.g., `Builder<User>`), load the concrete model and merge its
 scope methods as instance methods on the resolved Builder. This
 requires extending the virtual member system to also apply to
 Builder instances, not just Model classes.
+
+### 4. Scopes on queries
+
+Copes are missing from complation of a query after other query
+opertions for example Brand::where('id', $id)->isActive(); // Brand has a method called scopeIsActive()
 
 ---
 

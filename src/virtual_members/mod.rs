@@ -2,18 +2,22 @@
 //!
 //! Virtual members are methods and properties that do not exist as real
 //! PHP declarations but are surfaced by magic methods (`__call`, `__get`,
-//! `__set`, etc.) or framework conventions.  Two sources produce virtual
-//! members today:
+//! `__set`, etc.) or framework conventions.  Three providers produce
+//! virtual members today:
 //!
-//! 1. **PHPDoc tags** (`@method`, `@property`, `@property-read`,
-//!    `@property-write`, `@mixin`) — document magic members on a class.
+//! 1. **Laravel model provider** — synthesizes members from
+//!    framework-specific patterns (relationship properties, scope methods,
+//!    Builder-as-static forwarding, convention-based `factory()` method).
+//! 2. **Laravel factory provider** — synthesizes `create()` and `make()`
+//!    methods on factory classes that return the corresponding model type,
+//!    using the naming convention when no `@extends Factory<Model>`
+//!    annotation is present.
+//! 3. **PHPDoc provider** (`@method`, `@property`, `@property-read`,
+//!    `@property-write`, `@mixin`) — documents magic members on a class.
 //!    Within this provider, explicit `@method` / `@property` tags take
 //!    precedence over members inherited from `@mixin` classes.
-//! 2. **Framework providers** (e.g. Laravel) — synthesize members from
-//!    framework-specific patterns (relationship properties, scope methods,
-//!    Builder-as-static forwarding).
 //!
-//! Both are unified behind the [`VirtualMemberProvider`] trait.
+//! All are unified behind the [`VirtualMemberProvider`] trait.
 //! Providers are queried in priority order after base resolution
 //! (own members + traits + parent chain) is complete.  A member
 //! contributed by a higher-priority provider is never overwritten by a
@@ -27,8 +31,9 @@
 //! 2. Trait members (real implementations)
 //! 3. Parent chain members (real implementations)
 //! 4. Virtual member providers (in priority order):
-//!    a. Framework provider  — richest type info
-//!    b. PHPDoc provider     — @method, @property, @mixin
+//!    a. Laravel model provider  — richest type info
+//!    b. Laravel factory provider — convention-based factory methods
+//!    c. PHPDoc provider          — @method, @property, @mixin
 //! ```
 
 pub mod laravel;
@@ -154,12 +159,17 @@ pub fn apply_virtual_members(
 /// Providers are queried in order; a member contributed by an earlier
 /// provider is never overwritten by a later one.
 ///
-/// 1. Laravel provider (highest priority — richest type info)
-/// 2. PHPDoc provider (`@method` / `@property` / `@mixin` tags)
+/// 1. Laravel model provider (highest priority — richest type info)
+/// 2. Laravel factory provider (convention-based create/make methods)
+/// 3. PHPDoc provider (`@method` / `@property` / `@mixin` tags)
 pub fn default_providers() -> Vec<Box<dyn VirtualMemberProvider>> {
     vec![
-        // Laravel provider — relationship properties, scopes, Builder forwarding.
+        // Laravel model provider — relationship properties, scopes, Builder
+        // forwarding, convention-based factory() method.
         Box::new(laravel::LaravelModelProvider),
+        // Laravel factory provider — convention-based create()/make() methods
+        // for factory classes extending Illuminate\Database\Eloquent\Factories\Factory.
+        Box::new(laravel::LaravelFactoryProvider),
         // PHPDoc provider — @method / @property / @mixin tags.
         Box::new(phpdoc::PHPDocProvider),
     ]
@@ -655,8 +665,8 @@ mod tests {
         let providers = default_providers();
         assert_eq!(
             providers.len(),
-            2,
-            "should have LaravelModelProvider and PHPDocProvider registered"
+            3,
+            "should have LaravelModelProvider, LaravelFactoryProvider, and PHPDocProvider registered"
         );
     }
 

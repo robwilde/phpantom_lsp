@@ -12,8 +12,10 @@ const COMPOSER_JSON: &str = r#"{
             "App\\Models\\": "src/Models/",
             "App\\Collections\\": "src/Collections/",
             "App\\Concerns\\": "src/Concerns/",
+            "Database\\Factories\\": "database/factories/",
             "Illuminate\\Database\\Eloquent\\": "vendor/illuminate/Eloquent/",
             "Illuminate\\Database\\Eloquent\\Attributes\\": "vendor/illuminate/Eloquent/Attributes/",
+            "Illuminate\\Database\\Eloquent\\Factories\\": "vendor/illuminate/Eloquent/Factories/",
             "Illuminate\\Database\\Eloquent\\Relations\\": "vendor/illuminate/Eloquent/Relations/",
             "Illuminate\\Database\\Query\\": "vendor/illuminate/Query/",
             "Illuminate\\Database\\Concerns\\": "vendor/illuminate/Concerns/"
@@ -178,6 +180,36 @@ namespace Illuminate\\Database\\Eloquent;
 trait HasCollection {}
 ";
 
+const HAS_FACTORY_PHP: &str = "\
+<?php
+namespace Illuminate\\Database\\Eloquent\\Factories;
+/**
+ * @template TFactory of Factory
+ */
+trait HasFactory {
+    /** @return TFactory */
+    public static function factory() {}
+}
+";
+
+const FACTORY_PHP: &str = "\
+<?php
+namespace Illuminate\\Database\\Eloquent\\Factories;
+/**
+ * @template TModel of \\Illuminate\\Database\\Eloquent\\Model
+ */
+class Factory {
+    /** @return TModel */
+    public function create(array $attributes = []) {}
+    /** @return TModel */
+    public function make(array $attributes = []) {}
+    /** @return static */
+    public function count(int $count): static { return $this; }
+    /** @return static */
+    public function state(array $state): static { return $this; }
+}
+";
+
 /// Standard set of framework stub files that every test needs.
 fn framework_stubs() -> Vec<(&'static str, &'static str)> {
     vec![
@@ -232,6 +264,14 @@ fn framework_stubs() -> Vec<(&'static str, &'static str)> {
         (
             "vendor/illuminate/Eloquent/HasCollection.php",
             HAS_COLLECTION_PHP,
+        ),
+        (
+            "vendor/illuminate/Eloquent/Factories/HasFactory.php",
+            HAS_FACTORY_PHP,
+        ),
+        (
+            "vendor/illuminate/Eloquent/Factories/Factory.php",
+            FACTORY_PHP,
         ),
     ]
 }
@@ -7471,6 +7511,623 @@ class User extends Model {
     assert!(
         methods.contains(&"active"),
         "scope method, got: {:?}",
+        methods
+    );
+}
+
+// ─── Factory support tests ──────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_factory_method_appears_on_model_static_access() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Factories\\HasFactory;
+class User extends Model {
+    use HasFactory;
+}
+";
+
+    let factory_php = "\
+<?php
+namespace Database\\Factories;
+use Illuminate\\Database\\Eloquent\\Factories\\Factory;
+class UserFactory extends Factory {
+    public function definition(): array { return []; }
+}
+";
+
+    let (backend, dir) = make_workspace(&[
+        ("src/Models/User.php", user_php),
+        ("database/factories/UserFactory.php", factory_php),
+    ]);
+
+    // Verify that factory() appears as a static method on User::
+    let items = complete_at(
+        &backend,
+        &dir,
+        "src/test.php",
+        "<?php\nuse App\\Models\\User;\nUser::\n",
+        2,
+        6,
+    )
+    .await;
+
+    let methods = method_names(&items);
+    assert!(
+        methods.contains(&"factory"),
+        "factory() should appear as static method on User::, got methods: {:?}",
+        methods
+    );
+}
+
+#[tokio::test]
+async fn test_factory_convention_based_factory_method_on_model() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Factories\\HasFactory;
+class User extends Model {
+    use HasFactory;
+}
+";
+
+    let factory_php = "\
+<?php
+namespace Database\\Factories;
+use Illuminate\\Database\\Eloquent\\Factories\\Factory;
+class UserFactory extends Factory {
+    public function definition(): array { return []; }
+}
+";
+
+    let (backend, dir) = make_workspace(&[
+        ("src/Models/User.php", user_php),
+        ("database/factories/UserFactory.php", factory_php),
+    ]);
+
+    // User::factory()-> should resolve to UserFactory and show its methods
+    let items = complete_at(
+        &backend,
+        &dir,
+        "src/test.php",
+        concat!(
+            "<?php\n",
+            "use App\\Models\\User;\n",
+            "function test() {\n",
+            "    User::factory()->\n",
+            "}\n",
+        ),
+        3,
+        22,
+    )
+    .await;
+
+    let methods = method_names(&items);
+    assert!(
+        methods.contains(&"definition"),
+        "factory() should resolve to UserFactory, got methods: {:?}",
+        methods
+    );
+}
+
+#[tokio::test]
+async fn test_factory_convention_based_create_returns_model() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Factories\\HasFactory;
+class User extends Model {
+    use HasFactory;
+    public function greet(): string { return ''; }
+}
+";
+
+    let factory_php = "\
+<?php
+namespace Database\\Factories;
+use Illuminate\\Database\\Eloquent\\Factories\\Factory;
+class UserFactory extends Factory {
+    public function definition(): array { return []; }
+}
+";
+
+    let (backend, dir) = make_workspace(&[
+        ("src/Models/User.php", user_php),
+        ("database/factories/UserFactory.php", factory_php),
+    ]);
+
+    let items = complete_at(
+        &backend,
+        &dir,
+        "src/test.php",
+        "<?php\nuse App\\Models\\User;\nUser::factory()->create()->\n",
+        2,
+        28,
+    )
+    .await;
+
+    let methods = method_names(&items);
+    assert!(
+        methods.contains(&"greet"),
+        "create() should resolve back to User, got methods: {:?}",
+        methods
+    );
+}
+
+#[tokio::test]
+async fn test_factory_convention_based_make_returns_model() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Factories\\HasFactory;
+class User extends Model {
+    use HasFactory;
+    public function greet(): string { return ''; }
+}
+";
+
+    let factory_php = "\
+<?php
+namespace Database\\Factories;
+use Illuminate\\Database\\Eloquent\\Factories\\Factory;
+class UserFactory extends Factory {
+    public function definition(): array { return []; }
+}
+";
+
+    let (backend, dir) = make_workspace(&[
+        ("src/Models/User.php", user_php),
+        ("database/factories/UserFactory.php", factory_php),
+    ]);
+
+    let items = complete_at(
+        &backend,
+        &dir,
+        "src/test.php",
+        "<?php\nuse App\\Models\\User;\nUser::factory()->make()->\n",
+        2,
+        26,
+    )
+    .await;
+
+    let methods = method_names(&items);
+    assert!(
+        methods.contains(&"greet"),
+        "make() should resolve back to User, got methods: {:?}",
+        methods
+    );
+}
+
+#[tokio::test]
+async fn test_factory_convention_based_chain_count_then_create() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Factories\\HasFactory;
+class User extends Model {
+    use HasFactory;
+    public function greet(): string { return ''; }
+}
+";
+
+    let factory_php = "\
+<?php
+namespace Database\\Factories;
+use Illuminate\\Database\\Eloquent\\Factories\\Factory;
+class UserFactory extends Factory {
+    public function definition(): array { return []; }
+}
+";
+
+    let (backend, dir) = make_workspace(&[
+        ("src/Models/User.php", user_php),
+        ("database/factories/UserFactory.php", factory_php),
+    ]);
+
+    // User::factory()->count(3)->create() should still resolve to User
+    let items = complete_at(
+        &backend,
+        &dir,
+        "src/test.php",
+        "<?php\nuse App\\Models\\User;\nUser::factory()->count(3)->create()->\n",
+        2,
+        38,
+    )
+    .await;
+
+    let methods = method_names(&items);
+    assert!(
+        methods.contains(&"greet"),
+        "count()->create() chain should resolve back to User, got methods: {:?}",
+        methods
+    );
+}
+
+#[tokio::test]
+async fn test_factory_skips_convention_when_use_generic_present() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Factories\\HasFactory;
+use Database\\Factories\\CustomUserFactory;
+/**
+ * @use HasFactory<CustomUserFactory>
+ */
+class User extends Model {
+    use HasFactory;
+}
+";
+
+    let custom_factory_php = "\
+<?php
+namespace Database\\Factories;
+use Illuminate\\Database\\Eloquent\\Factories\\Factory;
+class CustomUserFactory extends Factory {
+    public function customMethod(): void {}
+    public function definition(): array { return []; }
+}
+";
+
+    let (backend, dir) = make_workspace(&[
+        ("src/Models/User.php", user_php),
+        (
+            "database/factories/CustomUserFactory.php",
+            custom_factory_php,
+        ),
+    ]);
+
+    // With @use HasFactory<CustomUserFactory>, the generics system handles it.
+    // The convention-based factory() virtual method should NOT be synthesized.
+    let items = complete_at(
+        &backend,
+        &dir,
+        "src/test.php",
+        "<?php\nuse App\\Models\\User;\nUser::factory()->\n",
+        2,
+        18,
+    )
+    .await;
+
+    let methods = method_names(&items);
+    assert!(
+        methods.contains(&"customMethod"),
+        "should resolve to CustomUserFactory via generics, got methods: {:?}",
+        methods
+    );
+}
+
+#[tokio::test]
+async fn test_factory_no_factory_class_no_crash() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Factories\\HasFactory;
+class User extends Model {
+    use HasFactory;
+    public function greet(): string { return ''; }
+}
+";
+
+    // No UserFactory file exists — should degrade gracefully.
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    let items = complete_at(
+        &backend,
+        &dir,
+        "src/test.php",
+        "<?php\nuse App\\Models\\User;\n$u = new User();\n$u->\n",
+        3,
+        4,
+    )
+    .await;
+
+    let methods = method_names(&items);
+    assert!(
+        methods.contains(&"greet"),
+        "model should still work when factory is missing, got methods: {:?}",
+        methods
+    );
+}
+
+#[tokio::test]
+async fn test_factory_provider_on_factory_class_directly() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    public function greet(): string { return ''; }
+}
+";
+
+    let factory_php = "\
+<?php
+namespace Database\\Factories;
+use Illuminate\\Database\\Eloquent\\Factories\\Factory;
+class UserFactory extends Factory {
+    public function definition(): array { return []; }
+}
+";
+
+    let (backend, dir) = make_workspace(&[
+        ("src/Models/User.php", user_php),
+        ("database/factories/UserFactory.php", factory_php),
+    ]);
+
+    // $factory = new UserFactory(); $factory->create()->
+    let items = complete_at(
+        &backend,
+        &dir,
+        "src/test.php",
+        concat!(
+            "<?php\n",
+            "use Database\\Factories\\UserFactory;\n",
+            "$f = new UserFactory();\n",
+            "$f->create()->\n",
+        ),
+        3,
+        14,
+    )
+    .await;
+
+    let methods = method_names(&items);
+    assert!(
+        methods.contains(&"greet"),
+        "create() on factory instance should resolve to User model, got methods: {:?}",
+        methods
+    );
+}
+
+#[tokio::test]
+async fn test_factory_provider_skipped_when_extends_generic_present() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    public function greet(): string { return ''; }
+}
+";
+
+    let factory_php = "\
+<?php
+namespace Database\\Factories;
+use Illuminate\\Database\\Eloquent\\Factories\\Factory;
+use App\\Models\\User;
+/**
+ * @extends Factory<User>
+ */
+class UserFactory extends Factory {
+    public function definition(): array { return []; }
+}
+";
+
+    let (backend, dir) = make_workspace(&[
+        ("src/Models/User.php", user_php),
+        ("database/factories/UserFactory.php", factory_php),
+    ]);
+
+    // With @extends Factory<User>, the generics system handles create()/make().
+    let items = complete_at(
+        &backend,
+        &dir,
+        "src/test.php",
+        concat!(
+            "<?php\n",
+            "use Database\\Factories\\UserFactory;\n",
+            "$f = new UserFactory();\n",
+            "$f->create()->\n",
+        ),
+        3,
+        14,
+    )
+    .await;
+
+    let methods = method_names(&items);
+    assert!(
+        methods.contains(&"greet"),
+        "create() should resolve via @extends generic, got methods: {:?}",
+        methods
+    );
+}
+
+#[tokio::test]
+async fn test_factory_subdirectory_convention() {
+    let user_php = "\
+<?php
+namespace App\\Models\\Admin;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Factories\\HasFactory;
+class SuperUser extends Model {
+    use HasFactory;
+    public function adminAction(): void {}
+}
+";
+
+    let factory_php = "\
+<?php
+namespace Database\\Factories\\Admin;
+use Illuminate\\Database\\Eloquent\\Factories\\Factory;
+class SuperUserFactory extends Factory {
+    public function definition(): array { return []; }
+}
+";
+
+    // Need to add subdirectory PSR-4 mapping.
+    let composer = r#"{
+    "autoload": {
+        "psr-4": {
+            "App\\Models\\": "src/Models/",
+            "App\\Models\\Admin\\": "src/Models/Admin/",
+            "Database\\Factories\\": "database/factories/",
+            "Database\\Factories\\Admin\\": "database/factories/Admin/",
+            "Illuminate\\Database\\Eloquent\\": "vendor/illuminate/Eloquent/",
+            "Illuminate\\Database\\Eloquent\\Attributes\\": "vendor/illuminate/Eloquent/Attributes/",
+            "Illuminate\\Database\\Eloquent\\Factories\\": "vendor/illuminate/Eloquent/Factories/",
+            "Illuminate\\Database\\Eloquent\\Relations\\": "vendor/illuminate/Eloquent/Relations/",
+            "Illuminate\\Database\\Query\\": "vendor/illuminate/Query/",
+            "Illuminate\\Database\\Concerns\\": "vendor/illuminate/Concerns/"
+        }
+    }
+}"#;
+
+    let mut files: Vec<(&str, &str)> = framework_stubs();
+    files.push(("src/Models/Admin/SuperUser.php", user_php));
+    files.push(("database/factories/Admin/SuperUserFactory.php", factory_php));
+    let (backend, dir) = create_psr4_workspace(composer, &files);
+
+    let items = complete_at(
+        &backend,
+        &dir,
+        "src/test.php",
+        concat!(
+            "<?php\n",
+            "use App\\Models\\Admin\\SuperUser;\n",
+            "function test() {\n",
+            "    SuperUser::factory()->\n",
+            "}\n",
+        ),
+        3,
+        26,
+    )
+    .await;
+
+    let methods = method_names(&items);
+    assert!(
+        methods.contains(&"definition"),
+        "factory() on subdirectory model should resolve to SuperUserFactory, got methods: {:?}",
+        methods
+    );
+}
+
+/// Variable assignment from a factory chain does not fully resolve yet.
+/// This is the same limitation as todo-laravel.md item 1: variable
+/// resolution from static method chains (`$q = User::where(...)`) does
+/// not propagate the return type through the text-based fallback path
+/// in the variable resolver.  The inline chain (`User::factory()->create()->`)
+/// works; only the variable-assignment form is affected.
+#[tokio::test]
+#[ignore = "known gap: variable assignment from static chain (todo-laravel.md #1)"]
+async fn test_factory_variable_assignment_then_create() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Factories\\HasFactory;
+class User extends Model {
+    use HasFactory;
+    public function greet(): string { return ''; }
+}
+";
+
+    let factory_php = "\
+<?php
+namespace Database\\Factories;
+use Illuminate\\Database\\Eloquent\\Factories\\Factory;
+class UserFactory extends Factory {
+    public function definition(): array { return []; }
+}
+";
+
+    let (backend, dir) = make_workspace(&[
+        ("src/Models/User.php", user_php),
+        ("database/factories/UserFactory.php", factory_php),
+    ]);
+
+    // $user = User::factory()->create(); $user->
+    let items = complete_at(
+        &backend,
+        &dir,
+        "src/test.php",
+        concat!(
+            "<?php\n",
+            "use App\\Models\\User;\n",
+            "function test() {\n",
+            "    $user = User::factory()->create();\n",
+            "    $user->\n",
+            "}\n",
+        ),
+        4,
+        10,
+    )
+    .await;
+
+    let methods = method_names(&items);
+    assert!(
+        methods.contains(&"greet"),
+        "$user assigned from factory()->create() should resolve to User, got methods: {:?}",
+        methods
+    );
+}
+
+#[tokio::test]
+async fn test_factory_coexists_with_relationships_and_scopes() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Factories\\HasFactory;
+class User extends Model {
+    use HasFactory;
+    public function greet(): string { return ''; }
+    /** @return \\Illuminate\\Database\\Eloquent\\Relations\\HasMany<Post, $this> */
+    public function posts() {}
+    public function scopeActive($query) {}
+}
+";
+
+    let post_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class Post extends Model {
+    public function title(): string { return ''; }
+}
+";
+
+    let factory_php = "\
+<?php
+namespace Database\\Factories;
+use Illuminate\\Database\\Eloquent\\Factories\\Factory;
+class UserFactory extends Factory {
+    public function definition(): array { return []; }
+}
+";
+
+    let (backend, dir) = make_workspace(&[
+        ("src/Models/User.php", user_php),
+        ("src/Models/Post.php", post_php),
+        ("database/factories/UserFactory.php", factory_php),
+    ]);
+
+    // User:: should show factory() alongside other static methods and scopes.
+    let items = complete_at(
+        &backend,
+        &dir,
+        "src/test.php",
+        "<?php\nuse App\\Models\\User;\nUser::\n",
+        2,
+        6,
+    )
+    .await;
+
+    let methods = method_names(&items);
+    assert!(
+        methods.contains(&"factory"),
+        "factory() should be available as static method, got methods: {:?}",
+        methods
+    );
+    assert!(
+        methods.contains(&"active"),
+        "scope should coexist with factory, got methods: {:?}",
         methods
     );
 }

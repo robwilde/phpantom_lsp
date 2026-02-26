@@ -166,6 +166,16 @@ impl Backend {
         let file_namespace = self.parse_namespace(content);
         Self::resolve_parent_class_names(&mut classes, &file_use_map, &file_namespace);
 
+        // Set the per-class file_namespace so that classes loaded via
+        // PSR-4 / classmap carry their namespace.  This mirrors the
+        // same assignment done in `update_ast_inner` for files opened
+        // through `did_open` / `did_change`.
+        for cls in &mut classes {
+            if cls.file_namespace.is_none() {
+                cls.file_namespace = file_namespace.clone();
+            }
+        }
+
         if let Ok(mut map) = self.ast_map.lock() {
             map.insert(uri.to_owned(), classes.clone());
         }
