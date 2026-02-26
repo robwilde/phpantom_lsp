@@ -408,6 +408,99 @@ async fn test_multiline_chain_this_on_own_line() {
 /// Continuation lines that include closure arguments (contains `->` inside
 /// the closure that should not confuse the extraction).
 #[tokio::test]
+async fn test_multiline_chain_with_blank_line() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///multiline_blank.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Repo {\n",
+        "    public function findAll(): array { return []; }\n",
+        "}\n",
+        "class Service {\n",
+        "    public function getRepo(): Repo { return new Repo(); }\n",
+        "    public function run(): void {\n",
+        "        $this->getRepo()\n",
+        "\n",
+        "            ->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    // Cursor on line 9 (`            ->`) right after `->`
+    // A blank line separates the base expression from the continuation.
+    let names = complete_at(&backend, &uri, text, 9, 14).await;
+    assert!(
+        names.iter().any(|n| n.starts_with("findAll(")),
+        "Should offer Repo::findAll() even with a blank line in the chain, got: {names:?}"
+    );
+}
+
+/// A chain with multiple blank lines between segments should still resolve.
+#[tokio::test]
+async fn test_multiline_chain_with_multiple_blank_lines() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///multiline_multi_blank.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Builder {\n",
+        "    public function where(): static { return $this; }\n",
+        "    public function orderBy(): static { return $this; }\n",
+        "    public function get(): array { return []; }\n",
+        "}\n",
+        "class Model {\n",
+        "    public function query(): Builder { return new Builder(); }\n",
+        "    public function run(): void {\n",
+        "        $this->query()\n",
+        "\n",
+        "            ->where()\n",
+        "\n",
+        "            ->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    // Cursor on line 13 (`            ->`) after `->`
+    let names = complete_at(&backend, &uri, text, 13, 14).await;
+    assert!(
+        names.iter().any(|n| n.starts_with("orderBy(")),
+        "Should offer Builder::orderBy() with multiple blank lines in chain, got: {names:?}"
+    );
+    assert!(
+        names.iter().any(|n| n.starts_with("get(")),
+        "Should offer Builder::get() with multiple blank lines in chain, got: {names:?}"
+    );
+}
+
+/// A whitespace-only line (spaces/tabs but no code) should be treated as blank.
+#[tokio::test]
+async fn test_multiline_chain_with_whitespace_only_line() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///multiline_ws.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Repo {\n",
+        "    public function findAll(): array { return []; }\n",
+        "}\n",
+        "class Service {\n",
+        "    public function getRepo(): Repo { return new Repo(); }\n",
+        "    public function run(): void {\n",
+        "        $this->getRepo()\n",
+        "        \n",
+        "            ->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    // Cursor on line 9 (`            ->`) after `->`
+    let names = complete_at(&backend, &uri, text, 9, 14).await;
+    assert!(
+        names.iter().any(|n| n.starts_with("findAll(")),
+        "Should offer Repo::findAll() with a whitespace-only line in the chain, got: {names:?}"
+    );
+}
+
+/// Chain with a closure argument AND a blank line should still resolve.
+#[tokio::test]
 async fn test_multiline_chain_with_closure_arg() {
     let backend = create_test_backend();
     let uri = Url::parse("file:///multiline_closure.php").unwrap();

@@ -21,36 +21,6 @@ Other cases:
 - MyModel::whereHas('order', function (Builder $q) {})
 - MyModel::with(['translations' => function (Relation $query) {}]) // translations is the name of the relation on MyModel, Relation will become the return type of that relation
 
-### 3. Go-to-definition for scope methods called through `with()`
-
-`Brand::with('english')->sortable()` does not resolve go-to-definition
-for `sortable()`, even though completion works. Compare with
-`Brand::with('english')->paginate()` where GTD works fine. The
-difference is that `paginate()` is a real Builder method with a source
-location, while `sortable()` is a scope method injected onto the
-Builder at resolution time without preserving the original declaration
-site. The GTD fallback `find_scope_on_builder_model` may not be
-triggering for the `with()` return path.
-
-### 4. Blank line inside a method chain breaks collapse logic
-
-When a blank line separates parts of a fluent chain,
-`collapse_continuation_lines` stops walking backwards at the empty line
-and never reaches the base expression:
-
-```php
-Brand::with('english')
-
-    ->paginate(); // neither GTD nor completion works
-```
-
-The same chain without the blank line works fine. The backward walk in
-`collapse_continuation_lines` treats any line that does not start with
-`->` or `?->` as the base. An empty line matches that condition, so the
-collapsed result is just `->paginate()` with no subject. Fixing this
-requires skipping blank (whitespace-only) lines during the backward
-walk.
-
 ---
 
 ## Out of scope (and why)

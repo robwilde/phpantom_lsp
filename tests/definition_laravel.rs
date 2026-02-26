@@ -28,6 +28,8 @@ namespace Illuminate\\Database\\Eloquent;
 abstract class Model {
     /** @return \\Illuminate\\Database\\Eloquent\\Builder<static> */
     public static function query() {}
+    /** @return \\Illuminate\\Database\\Eloquent\\Builder<static> */
+    public static function with(mixed $relations) {}
 }
 ";
 
@@ -1716,6 +1718,280 @@ class Brand extends Model {
     assert_eq!(
         line, 6,
         "scopeOfType is on line 6 (0-indexed), got: {}",
+        line
+    );
+}
+
+// ─── GTD for scope methods called through with() ────────────────────────────
+
+#[tokio::test]
+async fn test_goto_definition_scope_on_builder_after_with() {
+    // Brand::with('english')->sortable() — GTD on sortable should jump
+    // to scopeSortable on the model.  `with()` returns Builder<static>,
+    // so the chain resolves to Builder<Brand> which has scope methods
+    // injected.
+    let brand_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Builder;
+class Brand extends Model {
+    public function scopeSortable(Builder $query): void {
+        $query->orderBy('name');
+    }
+    public function demo(): void {
+        Brand::with('english')->sortable();
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/Brand.php", brand_php)]);
+
+    // Cursor on "sortable" in `Brand::with('english')->sortable();`
+    // Line 9 (0-indexed): "        Brand::with('english')->sortable();"
+    // "sortable" starts at character 32
+    let result = goto_definition_at(&backend, &dir, "src/Models/Brand.php", brand_php, 9, 34).await;
+
+    assert!(
+        result.is_some(),
+        "Go-to-definition on ->sortable() after with() should resolve to scopeSortable"
+    );
+
+    let response = result.unwrap();
+    let uri = definition_uri(&response);
+    assert!(
+        uri.as_str().contains("Brand.php"),
+        "Scope should resolve within Brand.php, got: {}",
+        uri.as_str()
+    );
+
+    let line = definition_line(&response);
+    assert_eq!(
+        line, 5,
+        "scopeSortable is on line 5 (0-indexed), got: {}",
+        line
+    );
+}
+
+#[tokio::test]
+async fn test_goto_definition_scope_on_builder_after_with_then_where() {
+    // Brand::with('english')->where('active', 1)->sortable() — GTD on
+    // sortable should still resolve through the chained Builder<Brand>.
+    let brand_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Builder;
+class Brand extends Model {
+    public function scopeSortable(Builder $query): void {
+        $query->orderBy('name');
+    }
+    public function demo(): void {
+        Brand::with('english')->where('active', 1)->sortable();
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/Brand.php", brand_php)]);
+
+    // Cursor on "sortable" in `->sortable();`
+    // Line 9 (0-indexed): "        Brand::with('english')->where('active', 1)->sortable();"
+    // "sortable" starts at character 52
+    let result = goto_definition_at(&backend, &dir, "src/Models/Brand.php", brand_php, 9, 54).await;
+
+    assert!(
+        result.is_some(),
+        "Go-to-definition on ->sortable() after with()->where() should resolve to scopeSortable"
+    );
+
+    let response = result.unwrap();
+    let line = definition_line(&response);
+    assert_eq!(
+        line, 5,
+        "scopeSortable is on line 5 (0-indexed), got: {}",
+        line
+    );
+}
+
+// ─── GTD with blank lines in method chains ──────────────────────────────────
+
+#[tokio::test]
+async fn test_goto_definition_with_blank_line_in_chain() {
+    // A blank line between chain segments should not break GTD.
+    //
+    //   Brand::where('id', 1)
+    //
+    //       ->isActive()   // GTD on isActive should still work
+    let brand_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Builder;
+class Brand extends Model {
+    public function scopeIsActive(Builder $query): void {
+        $query->where('active', true);
+    }
+    public function demo(): void {
+        Brand::where('id', 1)
+
+            ->isActive();
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/Brand.php", brand_php)]);
+
+    // Cursor on "isActive" in `            ->isActive();`
+    // Line 11 (0-indexed), "isActive" starts at character 14
+    let result =
+        goto_definition_at(&backend, &dir, "src/Models/Brand.php", brand_php, 11, 16).await;
+
+    assert!(
+        result.is_some(),
+        "GTD on ->isActive() should work even with a blank line in the chain"
+    );
+
+    let response = result.unwrap();
+    let uri = definition_uri(&response);
+    assert!(
+        uri.as_str().contains("Brand.php"),
+        "Scope should resolve within Brand.php, got: {}",
+        uri.as_str()
+    );
+
+    let line = definition_line(&response);
+    assert_eq!(
+        line, 5,
+        "scopeIsActive is on line 5 (0-indexed), got: {}",
+        line
+    );
+}
+
+#[tokio::test]
+async fn test_goto_definition_builder_method_with_blank_line_in_chain() {
+    // Also verify that regular (non-scope) builder methods work across
+    // blank lines in the chain.
+    let brand_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Builder;
+class Brand extends Model {
+    public function demo(): void {
+        Brand::where('id', 1)
+
+            ->get();
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/Brand.php", brand_php)]);
+
+    // Cursor on "get" in `            ->get();`
+    // Line 8 (0-indexed), "get" starts at character 14
+    let result = goto_definition_at(&backend, &dir, "src/Models/Brand.php", brand_php, 8, 15).await;
+
+    assert!(
+        result.is_some(),
+        "GTD on ->get() should work even with a blank line in the chain"
+    );
+
+    let response = result.unwrap();
+    let line = definition_line(&response);
+    // get() is defined on Builder — just verify we got a result (line varies
+    // depending on the stub).
+    assert!(
+        line < 100,
+        "get() definition line should be reasonable, got: {}",
+        line
+    );
+}
+
+#[tokio::test]
+async fn test_goto_definition_scope_on_builder_forwarded_with() {
+    // When `with()` is NOT defined on Model but only on Builder (as in
+    // real Laravel), it reaches Model via __callStatic forwarding.
+    // GTD on a scope method after `Brand::with('english')->sortable()`
+    // should still resolve to `scopeSortable` on the model.
+
+    // Use a Model stub WITHOUT `with()` — the builder-forwarding logic
+    // in the LSP will delegate the static call to Builder.
+    let model_no_with = "\
+<?php
+namespace Illuminate\\Database\\Eloquent;
+abstract class Model {
+    /** @return \\Illuminate\\Database\\Eloquent\\Builder<static> */
+    public static function query() {}
+}
+";
+
+    // Builder stub that declares `with()` as an instance method returning `$this`.
+    let builder_with = "\
+<?php
+namespace Illuminate\\Database\\Eloquent;
+
+/**
+ * @template TModel of \\Illuminate\\Database\\Eloquent\\Model
+ * @mixin \\Illuminate\\Database\\Query\\Builder
+ */
+class Builder {
+    /** @use \\Illuminate\\Database\\Concerns\\BuildsQueries<TModel> */
+    use \\Illuminate\\Database\\Concerns\\BuildsQueries;
+
+    /** @return $this */
+    public function where($column, $operator = null, $value = null, $boolean = 'and') {}
+    /** @return $this */
+    public function with(mixed $relations) {}
+    /** @return \\Illuminate\\Database\\Eloquent\\Collection<int, TModel> */
+    public function get($columns = null) { return new Collection(); }
+}
+";
+
+    let brand_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Builder;
+class Brand extends Model {
+    public function scopeSortable(Builder $query): void {
+        $query->orderBy('name');
+    }
+    public function demo(): void {
+        Brand::with('english')->sortable();
+    }
+}
+";
+
+    let files: Vec<(&str, &str)> = vec![
+        ("vendor/illuminate/Eloquent/Model.php", model_no_with),
+        ("vendor/illuminate/Eloquent/Builder.php", builder_with),
+        ("vendor/illuminate/Eloquent/Collection.php", COLLECTION_PHP),
+        (
+            "vendor/illuminate/Concerns/BuildsQueries.php",
+            BUILDS_QUERIES_PHP,
+        ),
+        ("vendor/illuminate/Query/Builder.php", QUERY_BUILDER_PHP),
+        ("src/Models/Brand.php", brand_php),
+    ];
+    let (backend, dir) = create_psr4_workspace(COMPOSER_JSON, &files);
+
+    // Cursor on "sortable" in `Brand::with('english')->sortable();`
+    // Line 9 (0-indexed), "sortable" starts at character 32
+    let result = goto_definition_at(&backend, &dir, "src/Models/Brand.php", brand_php, 9, 34).await;
+
+    assert!(
+        result.is_some(),
+        "GTD on ->sortable() after builder-forwarded with() should resolve to scopeSortable"
+    );
+
+    let response = result.unwrap();
+    let uri = definition_uri(&response);
+    assert!(
+        uri.as_str().contains("Brand.php"),
+        "Scope should resolve within Brand.php, got: {}",
+        uri.as_str()
+    );
+
+    let line = definition_line(&response);
+    assert_eq!(
+        line, 5,
+        "scopeSortable is on line 5 (0-indexed), got: {}",
         line
     );
 }

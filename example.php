@@ -159,6 +159,13 @@ User::query()
 $maybe?->getProfile()
     ?->getDisplayName();                  // nullsafe continuations
 
+// Blank lines inside a chain are skipped automatically:
+$user->setName('Bob')
+
+    ->setStatus(Status::Active)
+
+    ->getEmail();                         // works even with blank lines
+
 
 // ── Chained Method Calls in Variable Assignment ─────────────────────────────
 // When a variable is assigned from a chained call, the full chain is walked

@@ -526,6 +526,15 @@ pub(crate) fn collapse_continuation_lines(
     let mut start = cursor_line;
     while start > 0 {
         let prev_trimmed = lines[start - 1].trim_start();
+
+        // Skip blank (whitespace-only) lines — they don't terminate a
+        // chain.  Without this, a blank line between chain segments
+        // causes the backward walk to stop prematurely.
+        if prev_trimmed.is_empty() {
+            start -= 1;
+            continue;
+        }
+
         if prev_trimmed.starts_with("->") || prev_trimmed.starts_with("?->") {
             start -= 1;
         } else {
@@ -584,13 +593,18 @@ pub(crate) fn collapse_continuation_lines(
         }
     }
 
-    // Build the collapsed string from the base line through the cursor line.
+    // Build the collapsed string from the base line through the cursor line,
+    // skipping blank lines so they don't leave gaps in the collapsed result.
     let mut prefix = String::new();
     for (i, line) in lines.iter().enumerate().take(cursor_line).skip(start) {
         let piece = if i == start {
             line.trim_end()
         } else {
-            line.trim()
+            let t = line.trim();
+            if t.is_empty() {
+                continue;
+            }
+            t
         };
         prefix.push_str(piece);
     }
@@ -875,5 +889,73 @@ mod tests {
             "col {col} should be within collapsed len {}",
             chars.len()
         );
+    }
+
+    #[test]
+    fn test_collapse_blank_line_in_chain() {
+        // A blank line between chain segments should not break the collapse.
+        //
+        //   Brand::with('english')
+        //
+        //       ->paginate()
+        //       ->
+        let lines = vec!["Brand::with('english')", "", "    ->paginate()", "    ->"];
+        let (collapsed, col) = collapse_continuation_lines(&lines, 3, 6);
+        assert!(
+            collapsed.starts_with("Brand::with('english')"),
+            "collapsed should start with the base expression, got: {collapsed}"
+        );
+        assert!(
+            collapsed.contains("->paginate()->"),
+            "collapsed should contain the intermediate chain, got: {collapsed}"
+        );
+        let chars: Vec<char> = collapsed.chars().collect();
+        assert!(
+            col <= chars.len(),
+            "col {col} should be within collapsed len {}",
+            chars.len()
+        );
+    }
+
+    #[test]
+    fn test_collapse_multiple_blank_lines_in_chain() {
+        // Multiple blank lines should all be skipped.
+        let lines = vec!["$foo->bar()", "", "", "    ->baz()", "    ->"];
+        let (collapsed, _col) = collapse_continuation_lines(&lines, 4, 6);
+        assert_eq!(collapsed, "$foo->bar()->baz()->");
+    }
+
+    #[test]
+    fn test_collapse_whitespace_only_line_in_chain() {
+        // A line with only spaces/tabs should be treated as blank.
+        let lines = vec![
+            "SomeClass::query()",
+            "    ",
+            "    ->where('active', true)",
+            "    ->",
+        ];
+        let (collapsed, col) = collapse_continuation_lines(&lines, 3, 6);
+        assert!(
+            collapsed.starts_with("SomeClass::query()"),
+            "collapsed should start with static call, got: {collapsed}"
+        );
+        assert!(
+            collapsed.contains("->where('active', true)->"),
+            "collapsed should contain intermediate chain, got: {collapsed}"
+        );
+        let chars: Vec<char> = collapsed.chars().collect();
+        assert!(
+            col <= chars.len(),
+            "col {col} should be within collapsed len {}",
+            chars.len()
+        );
+    }
+
+    #[test]
+    fn test_collapse_blank_line_cursor_on_first_continuation() {
+        // Blank line right before the cursor's continuation line.
+        let lines = vec!["$obj->method()", "", "    ->"];
+        let (collapsed, _col) = collapse_continuation_lines(&lines, 2, 6);
+        assert_eq!(collapsed, "$obj->method()->");
     }
 }
