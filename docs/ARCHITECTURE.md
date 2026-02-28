@@ -67,6 +67,7 @@ src/
 │   ├── catch_completion.rs # Smart exception type completion inside catch() clauses
 │   ├── type_hint_completion.rs # Type completion in parameter lists, return types, properties
 │   └── use_edit.rs         # Use-statement insertion helpers
+├── signature_help.rs       # Signature help: parameter hints inside function/method call parens
 ├── hover/
 │   └── mod.rs              # Hover handler: symbol-map dispatch, type/signature/docblock formatting
 ├── definition/
@@ -82,6 +83,7 @@ tests/
 ├── completion_*.rs         # Completion integration tests (by feature area)
 ├── definition_*.rs         # Go-to-definition integration tests
 ├── hover.rs                # Hover integration tests
+├── signature_help.rs       # Signature help integration tests
 ├── implementation.rs       # Go-to-implementation integration tests
 ├── docblock_*.rs           # Docblock parsing and type tests
 ├── parser.rs               # PHP parser / AST extraction tests

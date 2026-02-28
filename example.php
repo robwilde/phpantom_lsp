@@ -114,6 +114,18 @@ $cls::findByEmail('a@b.c');  // static method from User
 $cls::TYPE_ADMIN;            // class constant
 $cls::$defaultRole;          // static property
 
+
+// ── Signature Help ──────────────────────────────────────────────────────────
+// Parameter hints appear automatically when typing inside function/method
+// call parentheses. The active parameter is tracked as you type commas.
+//
+// Try: place the cursor inside the parentheses and see the signature popup.
+
+createUser('Alice', 'alice@example.com');  // standalone function
+$user->setStatus(Status::Active);          // instance method
+User::findByEmail('alice@example.com');    // static method
+new User('Bob', 'bob@example.com');        // constructor
+
 class ClassTest {
     function test()
     {
@@ -571,13 +583,14 @@ $r = new Response(200);                   // → Response(${1:$statusCode})
 // Constants and standalone functions are excluded since they're invalid
 // in type positions.
 
-// Try triggering completion after the `(` or `,` in these signatures:
 function typeHintDemo(User $user, string $name): User { return $user; }
 //                    ↑ type hint  ↑ scalar      ↑ return type
+typeHintDemo(); // // Try triggering completion after the `(` or `,` in these signatures
 
-// Union types, nullable types, and intersection types also work:
+
 function unionDemo(string|int $value, ?User $maybe): User|null { return $maybe; }
 //                 ↑ after |   ↑ after ?             ↑ after |
+unionDemo(); // Union types, nullable types, and intersection types
 
 // Property type hints after visibility modifiers:
 // (see Model class below — `public readonly string $uuid`)

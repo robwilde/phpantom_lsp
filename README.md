@@ -3,7 +3,7 @@
 A fast, lightweight PHP language server written in Rust. Uses only a few MB of RAM regardless of project size and is fully responsive in milliseconds. No indexing phase, no background workers, no waiting.
 
 > [!NOTE]
-> PHPantom is in active development. Completion and go-to-definition are solid and used daily. More LSP features (hover, signature help, find references) are on the roadmap.
+> PHPantom is in active development. Completion, go-to-definition, and signature help are solid and used daily. More LSP features (hover, find references) are on the roadmap.
 
 ## Features
 
@@ -22,8 +22,8 @@ PHPantom focuses on completion and go-to-definition and aims to do them really w
 | Array shape inference | ✅ | ❌ | ✅ | ❌ | 🚧 |
 | Object shape completion | ✅ | ❌ | ✅ | ❌ | 🚧 |
 | Generator body types | ✅ | ❌ | 🚧 | ❌ | ❌ |
-| Hover | ❌ | ✅ | ✅ | ✅ | ✅ |
-| Signature help | ❌ | ✅ | ✅ | ✅ | ✅ |
+| Hover | 🚧 | ✅ | ✅ | ✅ | ✅ |
+| Signature help | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Find references | ❌ | ✅ | ✅ | ✅ | ✅ |
 | Diagnostics | ❌ | ✅ | ✅ | ✅ | ✅ |
 | Rename / refactoring | ❌ | 💰 | ✅ | ✅ | ✅ |

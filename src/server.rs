@@ -32,6 +32,13 @@ impl LanguageServer for Backend {
         Ok(InitializeResult {
             offset_encoding: None,
             capabilities: ServerCapabilities {
+                signature_help_provider: Some(SignatureHelpOptions {
+                    trigger_characters: Some(vec!["(".to_string(), ",".to_string()]),
+                    retrigger_characters: Some(vec![",".to_string()]),
+                    work_done_progress_options: WorkDoneProgressOptions {
+                        work_done_progress: None,
+                    },
+                }),
                 completion_provider: Some(CompletionOptions {
                     resolve_provider: Some(false),
                     trigger_characters: Some(vec![
@@ -348,5 +355,41 @@ impl LanguageServer for Backend {
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
         self.handle_completion(params).await
+    }
+
+    async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
+        let uri = params
+            .text_document_position_params
+            .text_document
+            .uri
+            .to_string();
+        let position = params.text_document_position_params.position;
+
+        let content = if let Ok(files) = self.open_files.lock() {
+            files.get(&uri).cloned()
+        } else {
+            None
+        };
+
+        if let Some(content) = content {
+            let uri_owned = uri.clone();
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.handle_signature_help(&uri_owned, &content, position)
+            }));
+
+            match result {
+                Ok(sig_help) => return Ok(sig_help),
+                Err(_) => {
+                    log::error!(
+                        "PHPantom: panic during signature_help at {}:{}:{}",
+                        uri,
+                        position.line,
+                        position.character
+                    );
+                }
+            }
+        }
+
+        Ok(None)
     }
 }

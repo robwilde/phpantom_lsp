@@ -12,6 +12,8 @@
 //! - `util` — Utility helpers (position conversion, class lookup, logging)
 //! - `hover` — Hover support (`textDocument/hover`). Resolves the symbol under the
 //!   cursor and returns type information, method signatures, and docblock descriptions
+//! - `signature_help` — Signature help (`textDocument/signatureHelp`). Shows parameter
+//!   hints while typing function/method arguments, with active-parameter tracking
 //! - `definition` — Go-to-definition support for classes, members, and functions
 //! - `inheritance` — Base class inheritance resolution. Merges members from parent
 //!   classes and traits into a unified `ClassInfo`
@@ -50,6 +52,7 @@ pub(crate) mod inheritance;
 mod parser;
 mod resolution;
 mod server;
+mod signature_help;
 pub mod stubs;
 pub(crate) mod subject_extraction;
 pub(crate) mod symbol_map;
