@@ -362,43 +362,7 @@ target.
 
 ---
 
-### 8. Suppress GTD on parameter variable names and class declaration names
-**Impact: Medium · Effort: Low**
-
-Go-to-definition fires on parameter variable names (`$supplier`, `$country`)
-and promoted property variable names when they have a class type hint,
-navigating to the type hint's class. Only the type hint itself (e.g.
-`Supplier`, `Country`) should be clickable. The variable name should
-return no result because the type hint is already visible right next to it
-and is separately navigable.
-
-Similarly, class declaration names (e.g. `ExcelImportProvider` in
-`final class ExcelImportProvider {}`) should not offer GTD since the user
-is already at the definition site. The symbol-map path already returns
-`None` for `ClassDeclaration`, but the text-based fallback may still
-resolve the name to itself in some edge cases.
-
-**Root cause:** `extract_from_method` and `extract_from_function` in
-`symbol_map.rs` do not emit a `SymbolSpan` for parameter variables (only
-a `VarDefSite`). Without a span, the symbol-map lookup returns `None` and
-the request falls through to the text-based path, which calls
-`resolve_type_hint_at_variable` and navigates to the class. Closures and
-arrow functions already emit the span correctly.
-
-**Fix:** Add `SymbolSpan { kind: SymbolKind::Variable }` for each
-parameter in `extract_from_method` and `extract_from_function` (matching
-what closures and arrow functions already do). The existing
-`resolve_from_symbol` logic for `VarDefKind::Parameter` already returns
-`None`, so no changes are needed in the resolution path. Update the two
-tests in `definition_variables.rs` that currently expect parameter-at-
-definition to navigate to the type hint class
-(`test_goto_definition_parameter_at_definition_jumps_to_type_hint` and
-`test_goto_definition_variable_at_definition_jumps_to_type_hint`) to
-expect `None` instead.
-
----
-
-### 9. `BackedEnum::from()` / `::tryFrom()` return type refinement
+### 8. `BackedEnum::from()` / `::tryFrom()` return type refinement
 **Impact: Medium · Effort: Low**
 
 When calling `MyEnum::from($value)` or `MyEnum::tryFrom($value)`,
@@ -415,14 +379,14 @@ See `BackedEnumFromMethodDynamicReturnTypeExtension` in PHPStan.
 
 ---
 
-### 10. Document Symbols (`textDocument/documentSymbol`)
+### 9. Document Symbols (`textDocument/documentSymbol`)
 **Impact: Medium · Effort: Low**
 
 No outline view. Editors can't show a file's class/method/property structure.
 
 ---
 
-### 11. Workspace Symbols (`workspace/symbol`)
+### 10. Workspace Symbols (`workspace/symbol`)
 **Impact: Medium · Effort: Low-Medium**
 
 Can't search for classes/functions across the project. The `ast_map`
@@ -434,7 +398,7 @@ LSP `Location`s.
 
 ---
 
-### 12. No go-to-definition for built-in (stub) functions and constants
+### 11. No go-to-definition for built-in (stub) functions and constants
 **Impact: Medium · Effort: Medium**
 
 Clicking on a built-in function name like `array_map`, `strlen`, or
@@ -456,7 +420,7 @@ limitation.
 
 ---
 
-### 13. Property hooks (PHP 8.4)
+### 12. Property hooks (PHP 8.4)
 **Impact: Medium · Effort: Medium**
 
 PHP 8.4 introduced property hooks (`get` / `set`):
@@ -491,7 +455,7 @@ scopes, and parse the set-visibility modifier into a new
 
 ---
 
-### 14. Narrow types of `&$var` parameters after function calls
+### 13. Narrow types of `&$var` parameters after function calls
 **Impact: Medium · Effort: Medium**
 
 When a function takes a parameter by reference, the variable's type
@@ -520,7 +484,7 @@ extension) or use a built-in map for known functions.
 
 ---
 
-### 15. SPL iterator generic stubs
+### 14. SPL iterator generic stubs
 **Impact: Medium · Effort: Medium**
 
 PHPStan's `iterable.stub` provides full `@template TKey` /
@@ -541,7 +505,7 @@ certainly missing these generic annotations.  We should either:
 
 ---
 
-### 16. Partial result streaming via `$/progress`
+### 15. Partial result streaming via `$/progress`
 **Impact: Medium · Effort: Medium-High**
 
 The LSP spec (3.17) allows requests that return arrays — such as
@@ -621,7 +585,7 @@ developer arrive before vendor matches, even within a single phase.
 
 ---
 
-### 17. Rename (`textDocument/rename`)
+### 16. Rename (`textDocument/rename`)
 **Impact: Medium · Effort: Medium-High**
 
 No rename refactoring support. Rename builds on find-references (§8) —
@@ -636,7 +600,7 @@ position without text scanning.
 
 ---
 
-### 18. Array functions needing new code paths
+### 17. Array functions needing new code paths
 **Impact: Medium · Effort: High**
 
 These functions have return type semantics that don't fit into either
@@ -675,7 +639,7 @@ These functions have return type semantics that don't fit into either
 
 ## Low-Medium Impact
 
-### 19. Asymmetric visibility (PHP 8.4)
+### 18. Asymmetric visibility (PHP 8.4)
 **Impact: Low-Medium · Effort: Low**
 
 Separate from property hooks, PHP 8.4 allows asymmetric visibility on
@@ -705,7 +669,7 @@ is just to store the value; context-aware filtering can follow later.
 
 ---
 
-### 20. `str_contains` / `str_starts_with` / `str_ends_with` → non-empty-string narrowing
+### 19. `str_contains` / `str_starts_with` / `str_ends_with` → non-empty-string narrowing
 **Impact: Low-Medium · Effort: Low**
 
 When `str_contains($haystack, $needle)` appears in a condition and
@@ -722,7 +686,7 @@ See `StrContainingTypeSpecifyingExtension` in PHPStan.
 
 ---
 
-### 21. `count` / `sizeof` comparison → non-empty-array narrowing
+### 20. `count` / `sizeof` comparison → non-empty-array narrowing
 **Impact: Low-Medium · Effort: Low**
 
 `if (count($arr) > 0)` or `if (count($arr) >= 1)` narrows `$arr` to
@@ -734,7 +698,7 @@ branches in `TypeSpecifier::specifyTypesInCondition`.
 
 ---
 
-### 22. Go-to-definition for array shape keys via bracket access
+### 21. Go-to-definition for array shape keys via bracket access
 **Impact: Low · Effort: Medium**
 
 Array shape keys accessed via bracket notation (`$status['code']`)
@@ -759,7 +723,7 @@ key inside the matching `array{…}` annotation.
 
 ## Low Impact
 
-### 23. Short-name collisions in `find_implementors`
+### 22. Short-name collisions in `find_implementors`
 **Impact: Low · Effort: Low**
 
 `class_implements_or_extends` matches interfaces by both short name and
@@ -775,7 +739,7 @@ before comparison.
 
 ---
 
-### 24. Fiber type resolution
+### 23. Fiber type resolution
 **Impact: Low · Effort: Low**
 
 `Generator<TKey, TValue, TSend, TReturn>` has dedicated support for
@@ -790,7 +754,7 @@ Generator extraction in `docblock/types.rs`.
 
 ---
 
-### 25. Non-empty-string propagation through string functions
+### 24. Non-empty-string propagation through string functions
 **Impact: Low · Effort: Low**
 
 PHPStan tracks `non-empty-string` through string-manipulating
@@ -808,7 +772,7 @@ See `NonEmptyStringFunctionsReturnTypeExtension` in PHPStan.
 
 ---
 
-### 26. `Closure::bind()` / `Closure::fromCallable()` return type preservation
+### 25. `Closure::bind()` / `Closure::fromCallable()` return type preservation
 **Impact: Low · Effort: Low-Medium**
 
 Variables holding closure literals, arrow functions, and first-class
@@ -824,7 +788,7 @@ See `ClosureBindDynamicReturnTypeExtension` and
 
 ---
 
-### 27. Non-array functions with dynamic return types
+### 26. Non-array functions with dynamic return types
 **Impact: Low · Effort: High**
 
 PHPStan also provides dynamic return type extensions for many non-array
@@ -855,7 +819,7 @@ return types (less impactful for class-based completion).
 
 ---
 
-### 28. Language construct signature help and hover
+### 27. Language construct signature help and hover
 **Impact: Low · Effort: Low**
 
 PHP language constructs that use parentheses (`unset()`, `isset()`, `empty()`,
@@ -872,14 +836,14 @@ need a similar hardcoded lookup.
 
 ---
 
-### 29. Diagnostics
+### 28. Diagnostics
 **Impact: Low (large scope) · Effort: Very High**
 
 No error reporting (undefined methods, type mismatches, etc.).
 
 ---
 
-### 30. Code Actions
+### 29. Code Actions
 **Impact: Low · Effort: Very High**
 
 No quick fixes or refactoring suggestions. No `codeActionProvider` in
@@ -887,7 +851,7 @@ No quick fixes or refactoring suggestions. No `codeActionProvider` in
 `WorkspaceEdit` generation infrastructure beyond trivial `TextEdit`s for
 use-statement insertion.
 
-#### 30a. Extract Function refactoring
+#### 29a. Extract Function refactoring
 
 Select a range of statements inside a method/function and extract them into a
 new function. The LSP would need to:

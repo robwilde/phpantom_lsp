@@ -11,7 +11,7 @@
 /// references).
 use tower_lsp::lsp_types::*;
 
-use crate::subject_extraction::{OperatorScanMode, detect_access_operator};
+use crate::subject_extraction::detect_access_operator;
 use crate::types::*;
 use crate::util::collapse_continuation_lines;
 
@@ -31,8 +31,7 @@ pub fn extract_completion_target(content: &str, position: Position) -> Option<Co
         collapse_continuation_lines(&lines, position.line as usize, position.character as usize);
     let chars: Vec<char> = line.chars().collect();
 
-    let (subject, access_kind) =
-        detect_access_operator(&chars, col, OperatorScanMode::AfterOperator)?;
+    let (subject, access_kind) = detect_access_operator(&chars, col)?;
 
     Some(CompletionTarget {
         access_kind,

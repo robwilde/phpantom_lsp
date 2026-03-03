@@ -205,7 +205,7 @@ class AssertNarrowingDemo
         }
 
         $maybe = pickRockOrBanana();
-        if (isNotRock($maybe)) {                   // @phpstan-assert-if-false Rock
+        if (isNotRock($maybe)) {                  // @phpstan-assert-if-false Rock
             $maybe->peel();
         } else {
             $maybe->crush();

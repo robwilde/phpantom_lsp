@@ -3,8 +3,7 @@
 //! During `update_ast`, every navigable symbol occurrence (class reference,
 //! member access, variable, function call, etc.) is recorded as a
 //! [`SymbolSpan`] in a flat, sorted vec.  At request time a binary search
-//! on this vec replaces the character-level backward-walking in
-//! `extract_word_at_position` / `extract_member_access_context` and
+//! on this vec replaces character-level backward-walking and
 //! provides instant rejection when the cursor lands on whitespace, a
 //! string literal, a comment, or any other non-navigable token.
 //!

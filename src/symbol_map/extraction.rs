@@ -295,6 +295,33 @@ fn extract_from_statement<'a>(
                 extract_from_expression(val, ctx, scope_start);
             }
         }
+        Statement::Constant(constant) => {
+            // Top-level `const FOO = Expr;` — walk value expressions so
+            // that class references like `Foo::class` produce spans.
+            extract_from_attribute_lists(&constant.attribute_lists, ctx, scope_start);
+            for item in constant.items.iter() {
+                extract_from_expression(item.value, ctx, scope_start);
+            }
+        }
+        Statement::Declare(declare) => {
+            // `declare(strict_types=1) { ... }` — walk the body if present.
+            match &declare.body {
+                DeclareBody::Statement(inner) => {
+                    extract_from_statement(inner, ctx, scope_start);
+                }
+                DeclareBody::ColonDelimited(body) => {
+                    for s in body.statements.iter() {
+                        extract_from_statement(s, ctx, scope_start);
+                    }
+                }
+            }
+        }
+        Statement::EchoTag(echo_tag) => {
+            // `<?= $expr ?>` — walk expressions inside short echo tags.
+            for expr in echo_tag.values.iter() {
+                extract_from_expression(expr, ctx, scope_start);
+            }
+        }
         _ => {}
     }
 }
@@ -670,7 +697,7 @@ fn extract_from_method<'a>(method: &'a Method<'a>, ctx: &mut ExtractionCtx<'a>) 
         0
     };
 
-    // Parameter type hints and variable definition sites.
+    // Parameter type hints, variable spans, and variable definition sites.
     for param in method.parameter_list.parameters.iter() {
         if let Some(ref hint) = param.hint {
             extract_from_hint(hint, &mut ctx.spans);
@@ -682,6 +709,13 @@ fn extract_from_method<'a>(method: &'a Method<'a>, ctx: &mut ExtractionCtx<'a>) 
             .unwrap_or(param.variable.name)
             .to_string();
         let param_offset = param.variable.span.start.offset;
+        // Emit a Variable span so the symbol map covers the parameter
+        // token itself (needed for GTD-from-parameter-to-type-hint).
+        ctx.spans.push(SymbolSpan {
+            start: param_offset,
+            end: param.variable.span.end.offset,
+            kind: SymbolKind::Variable { name: name.clone() },
+        });
         ctx.var_defs.push(VarDefSite {
             offset: param_offset,
             name,
@@ -848,7 +882,7 @@ fn extract_from_function<'a>(func: &'a Function<'a>, ctx: &mut ExtractionCtx<'a>
     let func_scope_end = func.body.right_brace.end.offset;
     ctx.scopes.push((func_scope_start, func_scope_end));
 
-    // Parameter type hints and variable definition sites.
+    // Parameter type hints, variable spans, and variable definition sites.
     for param in func.parameter_list.parameters.iter() {
         if let Some(ref hint) = param.hint {
             extract_from_hint(hint, &mut ctx.spans);
@@ -861,6 +895,15 @@ fn extract_from_function<'a>(func: &'a Function<'a>, ctx: &mut ExtractionCtx<'a>
             .unwrap_or(param.variable.name)
             .to_string();
         let param_offset = param.variable.span.start.offset;
+        // Emit a Variable span so the symbol map covers the parameter
+        // token itself (needed for GTD-from-parameter-to-type-hint).
+        ctx.spans.push(SymbolSpan {
+            start: param_offset,
+            end: param.variable.span.end.offset,
+            kind: SymbolKind::Variable {
+                name: pname.clone(),
+            },
+        });
         ctx.var_defs.push(VarDefSite {
             offset: param_offset,
             name: pname,
@@ -1534,6 +1577,204 @@ fn extract_from_expression<'a>(
         Expression::Clone(clone) => {
             extract_from_expression(clone.object, ctx, scope_start);
         }
+
+        // ── Anonymous class ──
+        // `new class(...) extends Foo implements Bar { ... }`
+        Expression::AnonymousClass(anon) => {
+            // Constructor arguments.
+            if let Some(ref args) = anon.argument_list {
+                extract_from_arguments(&args.arguments, ctx, scope_start);
+            }
+
+            // Extends.
+            if let Some(ref extends) = anon.extends {
+                for ident in extends.types.iter() {
+                    let raw = ident.value().to_string();
+                    ctx.spans.push(class_ref_span(
+                        ident.span().start.offset,
+                        ident.span().end.offset,
+                        &raw,
+                    ));
+                }
+            }
+
+            // Implements.
+            if let Some(ref implements) = anon.implements {
+                for ident in implements.types.iter() {
+                    let raw = ident.value().to_string();
+                    ctx.spans.push(class_ref_span(
+                        ident.span().start.offset,
+                        ident.span().end.offset,
+                        &raw,
+                    ));
+                }
+            }
+
+            // Attributes on the anonymous class.
+            extract_from_attribute_lists(&anon.attribute_lists, ctx, scope_start);
+
+            // Docblock.
+            if let Some((doc_text, doc_offset)) =
+                get_docblock_text_with_offset(ctx.trivias, ctx.content, anon)
+            {
+                let _tpl = extract_docblock_symbols(doc_text, doc_offset, &mut ctx.spans);
+            }
+
+            // Members.
+            for member in anon.members.iter() {
+                extract_from_class_member(member, ctx);
+            }
+        }
+
+        // ── Language constructs ──
+        // `isset($a, $b)`, `empty($x)`, `eval(...)`, `print(...)`,
+        // `include ...`, `require ...`, `exit(...)`, `die(...)`
+        Expression::Construct(construct) => match construct {
+            Construct::Isset(isset) => {
+                for val in isset.values.iter() {
+                    extract_from_expression(val, ctx, scope_start);
+                }
+            }
+            Construct::Empty(empty) => {
+                extract_from_expression(empty.value, ctx, scope_start);
+            }
+            Construct::Eval(eval) => {
+                extract_from_expression(eval.value, ctx, scope_start);
+            }
+            Construct::Include(inc) => {
+                extract_from_expression(inc.value, ctx, scope_start);
+            }
+            Construct::IncludeOnce(inc) => {
+                extract_from_expression(inc.value, ctx, scope_start);
+            }
+            Construct::Require(req) => {
+                extract_from_expression(req.value, ctx, scope_start);
+            }
+            Construct::RequireOnce(req) => {
+                extract_from_expression(req.value, ctx, scope_start);
+            }
+            Construct::Print(print) => {
+                extract_from_expression(print.value, ctx, scope_start);
+            }
+            Construct::Exit(exit) => {
+                if let Some(ref args) = exit.arguments {
+                    extract_from_arguments(&args.arguments, ctx, scope_start);
+                }
+            }
+            Construct::Die(die) => {
+                if let Some(ref args) = die.arguments {
+                    extract_from_arguments(&args.arguments, ctx, scope_start);
+                }
+            }
+        },
+
+        // ── Composite strings (interpolation) ──
+        // `"Hello {$obj->method()}"`, heredocs, shell-exec backticks.
+        Expression::CompositeString(composite) => {
+            for part in composite.parts().iter() {
+                match part {
+                    StringPart::Expression(expr) => {
+                        extract_from_expression(expr, ctx, scope_start);
+                    }
+                    StringPart::BracedExpression(braced) => {
+                        extract_from_expression(braced.expression, ctx, scope_start);
+                    }
+                    StringPart::Literal(_) => {}
+                }
+            }
+        }
+
+        // ── Array append ──
+        // `$arr[]` — the array expression is navigable.
+        Expression::ArrayAppend(append) => {
+            extract_from_expression(append.array, ctx, scope_start);
+        }
+
+        // ── Standalone constant access ──
+        // `PHP_EOL`, `SORT_ASC`, etc.
+        Expression::ConstantAccess(ca) => {
+            let name = ca.name.value().to_string();
+            let name_clean = name.strip_prefix('\\').unwrap_or(&name).to_string();
+            // Only emit for names that look like class references (uppercase
+            // start, contains backslash) since most standalone constants
+            // like `PHP_EOL` aren't navigable.  We also check
+            // `is_navigable_type` to filter out scalars.
+            if name.contains('\\') && is_navigable_type(&name_clean) {
+                ctx.spans.push(class_ref_span(
+                    ca.name.span().start.offset,
+                    ca.name.span().end.offset,
+                    &name,
+                ));
+            } else {
+                // For non-namespaced constants, emit a ConstantReference
+                // so GTD can resolve `define()`-d constants.
+                ctx.spans.push(SymbolSpan {
+                    start: ca.name.span().start.offset,
+                    end: ca.name.span().end.offset,
+                    kind: SymbolKind::ConstantReference { name: name_clean },
+                });
+            }
+        }
+
+        // ── Pipe operator (PHP 8.5) ──
+        // `$value |> transform(...)`
+        Expression::Pipe(pipe) => {
+            extract_from_expression(pipe.input, ctx, scope_start);
+            extract_from_expression(pipe.callable, ctx, scope_start);
+        }
+
+        // ── First-class callable / partial application ──
+        // `strlen(...)`, `$obj->method(...)`, `Class::method(...)`
+        Expression::PartialApplication(partial) => match partial {
+            PartialApplication::Function(func_pa) => match func_pa.function {
+                Expression::Identifier(ident) => {
+                    let name = ident.value().to_string();
+                    let name_clean = name.strip_prefix('\\').unwrap_or(&name).to_string();
+                    ctx.spans.push(SymbolSpan {
+                        start: ident.span().start.offset,
+                        end: ident.span().end.offset,
+                        kind: SymbolKind::FunctionCall { name: name_clean },
+                    });
+                }
+                _ => {
+                    extract_from_expression(func_pa.function, ctx, scope_start);
+                }
+            },
+            PartialApplication::Method(method_pa) => {
+                let subject_text = expr_to_subject_text(method_pa.object);
+                extract_from_expression(method_pa.object, ctx, scope_start);
+                if let ClassLikeMemberSelector::Identifier(ident) = &method_pa.method {
+                    let member_name = ident.value.to_string();
+                    ctx.spans.push(SymbolSpan {
+                        start: ident.span.start.offset,
+                        end: ident.span.end.offset,
+                        kind: SymbolKind::MemberAccess {
+                            subject_text,
+                            member_name,
+                            is_static: false,
+                            is_method_call: true,
+                        },
+                    });
+                }
+            }
+            PartialApplication::StaticMethod(static_pa) => {
+                let subject_text = expr_to_subject_text(static_pa.class);
+                emit_class_expr_span(static_pa.class, ctx, scope_start);
+                if let ClassLikeMemberSelector::Identifier(ident) = &static_pa.method {
+                    let member_name = ident.value.to_string();
+                    ctx.spans.push(SymbolSpan {
+                        start: ident.span.start.offset,
+                        end: ident.span.end.offset,
+                        kind: SymbolKind::MemberAccess {
+                            subject_text,
+                            member_name,
+                            is_static: true,
+                            is_method_call: true,
+                        },
+                    });
+                }
+            }
+        },
 
         // Non-navigable expressions (literals, etc.) are intentionally ignored.
         _ => {}

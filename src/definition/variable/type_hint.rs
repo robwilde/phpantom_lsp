@@ -2,7 +2,7 @@
 ///
 /// This submodule contains the AST walk that finds the type hint string
 /// for a variable at its definition site (parameter, property, promoted
-/// property, closure/arrow function parameter).
+/// property, closure/arrow function parameter, catch variable).
 ///
 /// The entry point is [`find_type_hint_at_definition`], called from the
 /// `Backend` methods in the parent `variable` module.
@@ -96,7 +96,24 @@ where
                 let body_start = func.body.left_brace.start.offset;
                 let body_end = func.body.right_brace.end.offset;
                 if cursor_offset >= body_start && cursor_offset <= body_end {
+                    // Check catch variables and nested closures in the body.
+                    let body_stmts: Vec<&Statement> = func.body.statements.iter().collect();
+                    if let Some(hint) =
+                        find_type_hint_in_body_stmts(&body_stmts, var_name, cursor_offset)
+                    {
+                        return Some(hint);
+                    }
                     return find_type_hint_in_params(&func.parameter_list, var_name, cursor_offset);
+                }
+            }
+            // Top-level try/catch (outside any function/method body).
+            Statement::Try(_) => {
+                let stmt_span = stmt.span();
+                if cursor_offset >= stmt_span.start.offset
+                    && cursor_offset <= stmt_span.end.offset
+                    && let Some(hint) = find_type_hint_in_catch(stmt, var_name, cursor_offset)
+                {
+                    return Some(hint);
                 }
             }
             _ => {}
@@ -122,10 +139,10 @@ where
                     let body_start = body.left_brace.start.offset;
                     let body_end = body.right_brace.end.offset;
                     if cursor_offset >= body_start && cursor_offset <= body_end {
-                        // Check if cursor is on a closure/arrow function parameter.
+                        // Check catch variables and nested closures in the body.
                         let body_stmts: Vec<&Statement> = body.statements.iter().collect();
                         if let Some(hint) =
-                            find_type_hint_in_nested_closure(&body_stmts, var_name, cursor_offset)
+                            find_type_hint_in_body_stmts(&body_stmts, var_name, cursor_offset)
                         {
                             return Some(hint);
                         }
@@ -165,6 +182,148 @@ where
         }
     }
     None
+}
+
+/// Walk body statements looking for catch variable type hints and nested
+/// closure parameters.
+///
+/// This is the combined search for constructs that define typed variables
+/// inside a function/method body: catch clauses (with their type hints)
+/// and closure/arrow function parameters.
+fn find_type_hint_in_body_stmts(
+    stmts: &[&Statement<'_>],
+    var_name: &str,
+    cursor_offset: u32,
+) -> Option<String> {
+    for &stmt in stmts {
+        let stmt_span = stmt.span();
+        if cursor_offset < stmt_span.start.offset || cursor_offset > stmt_span.end.offset {
+            continue;
+        }
+        // Check for catch variable type hints.
+        if let Some(hint) = find_type_hint_in_catch(stmt, var_name, cursor_offset) {
+            return Some(hint);
+        }
+        // Check for closure/arrow function parameters.
+        if let Some(hint) = find_type_hint_in_closure_stmt(stmt, var_name, cursor_offset) {
+            return Some(hint);
+        }
+    }
+    None
+}
+
+/// Search a statement for a catch clause whose variable matches `var_name`
+/// at `cursor_offset`, and return the catch type hint string.
+fn find_type_hint_in_catch(
+    stmt: &Statement<'_>,
+    var_name: &str,
+    cursor_offset: u32,
+) -> Option<String> {
+    match stmt {
+        Statement::Try(try_stmt) => {
+            // Check catch clauses for the matching variable.
+            for catch in try_stmt.catch_clauses.iter() {
+                if let Some(ref var) = catch.variable
+                    && var.name == var_name
+                {
+                    let var_start = var.span.start.offset;
+                    let var_end = var.span.end.offset;
+                    if cursor_offset >= var_start && cursor_offset < var_end {
+                        return Some(extract_hint_string(&catch.hint));
+                    }
+                }
+                // Also recurse into catch block statements for nested
+                // try/catch.
+                let catch_span = catch.block.span();
+                if cursor_offset >= catch_span.start.offset
+                    && cursor_offset <= catch_span.end.offset
+                {
+                    for inner in catch.block.statements.iter() {
+                        if let Some(h) = find_type_hint_in_catch(inner, var_name, cursor_offset) {
+                            return Some(h);
+                        }
+                    }
+                }
+            }
+            // Recurse into try block.
+            let try_span = try_stmt.block.span();
+            if cursor_offset >= try_span.start.offset && cursor_offset <= try_span.end.offset {
+                for inner in try_stmt.block.statements.iter() {
+                    if let Some(h) = find_type_hint_in_catch(inner, var_name, cursor_offset) {
+                        return Some(h);
+                    }
+                }
+            }
+            // Recurse into finally block.
+            if let Some(ref finally) = try_stmt.finally_clause {
+                let finally_span = finally.block.span();
+                if cursor_offset >= finally_span.start.offset
+                    && cursor_offset <= finally_span.end.offset
+                {
+                    for inner in finally.block.statements.iter() {
+                        if let Some(h) = find_type_hint_in_catch(inner, var_name, cursor_offset) {
+                            return Some(h);
+                        }
+                    }
+                }
+            }
+            None
+        }
+        Statement::If(if_stmt) => {
+            for inner in if_stmt.body.statements() {
+                if let Some(h) = find_type_hint_in_catch(inner, var_name, cursor_offset) {
+                    return Some(h);
+                }
+            }
+            None
+        }
+        Statement::Foreach(foreach) => {
+            for inner in foreach.body.statements() {
+                if let Some(h) = find_type_hint_in_catch(inner, var_name, cursor_offset) {
+                    return Some(h);
+                }
+            }
+            None
+        }
+        Statement::While(while_stmt) => {
+            for inner in while_stmt.body.statements() {
+                if let Some(h) = find_type_hint_in_catch(inner, var_name, cursor_offset) {
+                    return Some(h);
+                }
+            }
+            None
+        }
+        Statement::DoWhile(do_while) => {
+            find_type_hint_in_catch(do_while.statement, var_name, cursor_offset)
+        }
+        Statement::For(for_stmt) => {
+            for inner in for_stmt.body.statements() {
+                if let Some(h) = find_type_hint_in_catch(inner, var_name, cursor_offset) {
+                    return Some(h);
+                }
+            }
+            None
+        }
+        Statement::Block(block) => {
+            for inner in block.statements.iter() {
+                if let Some(h) = find_type_hint_in_catch(inner, var_name, cursor_offset) {
+                    return Some(h);
+                }
+            }
+            None
+        }
+        Statement::Switch(switch) => {
+            for case in switch.body.cases() {
+                for inner in case.statements().iter() {
+                    if let Some(h) = find_type_hint_in_catch(inner, var_name, cursor_offset) {
+                        return Some(h);
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
 }
 
 /// Check if cursor is on a closure/arrow function parameter and extract
@@ -220,6 +379,30 @@ fn find_type_hint_in_closure_stmt(
             for inner in block.statements.iter() {
                 if let Some(h) = find_type_hint_in_closure_stmt(inner, var_name, cursor_offset) {
                     return Some(h);
+                }
+            }
+            None
+        }
+        Statement::Try(try_stmt) => {
+            for inner in try_stmt.block.statements.iter() {
+                if let Some(h) = find_type_hint_in_closure_stmt(inner, var_name, cursor_offset) {
+                    return Some(h);
+                }
+            }
+            for catch in try_stmt.catch_clauses.iter() {
+                for inner in catch.block.statements.iter() {
+                    if let Some(h) = find_type_hint_in_closure_stmt(inner, var_name, cursor_offset)
+                    {
+                        return Some(h);
+                    }
+                }
+            }
+            if let Some(ref finally) = try_stmt.finally_clause {
+                for inner in finally.block.statements.iter() {
+                    if let Some(h) = find_type_hint_in_closure_stmt(inner, var_name, cursor_offset)
+                    {
+                        return Some(h);
+                    }
                 }
             }
             None

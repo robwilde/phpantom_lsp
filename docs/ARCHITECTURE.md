@@ -146,14 +146,11 @@ When a cross-file jump lands on a class or member, `find_member_position` and `f
 
 A value of `0` means "not available" (stubs parsed before offsets were stored, synthetic/virtual members). In that case, the system falls back to Tier 3.
 
-### Tier 3: Text-Based Fallback (deprecated)
+### Tier 3: Docblock Tag Scanning (virtual members only)
 
-The remaining line-by-line text scanners (`extract_word_at_position`, `find_member_position_in_range` text search, `find_definition_position`, `find_function_position`) are retained as fallbacks for:
+The only remaining line-by-line text scanner is in `find_member_position` (`definition/member/file_lookup.rs`). When a member has no stored AST byte offset (`name_offset` is `None` or `0`), the function scans docblock comments for `@property` / `@property-read` / `@property-write` and `@method` tags that declare the virtual member. This is inherent to virtual members: they exist only as docblock annotations and have no AST node to store an offset for.
 
-- Stubs and synthetic members where `name_offset == 0` or `keyword_offset == 0`
-- Files where the parser panicked (malformed PHP) and no symbol map exists
-
-These functions are marked `#[deprecated]` with phase notes. They will be removed once stubs and synthetic members store valid byte offsets during parsing.
+All cursor context detection (word extraction, member access detection, type-hint resolution) now relies exclusively on the precomputed `SymbolMap` and AST walks. The former text-based helpers `extract_word_at_position`, `extract_member_access_context`, and `resolve_type_hint_at_variable_text` have been removed.
 
 ### Variable Definition Resolution
 

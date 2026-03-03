@@ -45,16 +45,15 @@ impl Backend {
         } else if offset > 0
             // When the cursor is right at the end of a token (e.g. `$o|)`
             // where `|` is the cursor), the offset lands one past the span.
-            // Retry with offset − 1 so the symbol-map path (which has proper
-            // VarDefKind checks for parameters, catch, foreach) handles it
-            // instead of falling through to the text-based fallback.
+            // Retry with offset − 1 so the symbol-map path handles it
+            // instead of returning None.
             && let Some(symbol) = self.lookup_symbol_map(uri, offset - 1)
         {
             self.resolve_from_symbol(&symbol.kind, uri, content, position, offset - 1)
         } else {
-            // Fallback: text-based resolution (parser panicked, map missing,
-            // cursor in a gap between spans, etc.).
-            self.resolve_definition_text_based(uri, content, position)
+            // No symbol at cursor position (whitespace, string interior,
+            // comment interior, numeric literal, etc.).
+            None
         };
 
         // ── Self-reference guard ────────────────────────────────────
@@ -143,8 +142,7 @@ impl Backend {
     /// Dispatch a symbol-map hit to the appropriate resolution path.
     ///
     /// Each [`SymbolKind`] variant maps directly to existing resolution
-    /// logic — the symbol map simply replaces the text-scanning step
-    /// (`extract_word_at_position`, `extract_member_access_context`)
+    /// logic — the symbol map replaces the former text-scanning step
     /// with an O(log n) binary search.
     fn resolve_from_symbol(
         &self,
@@ -168,25 +166,15 @@ impl Backend {
                 // the LHS token — the lookup would skip the definition and
                 // find an earlier one instead of recognising "at definition".
                 if let Some(def_kind) = self.lookup_var_def_kind_at(uri, name, cursor_offset) {
-                    // For parameters, catch variables, foreach bindings,
-                    // and properties the type hint is already visible
-                    // right next to the variable — don't navigate away;
-                    // the user can click the type hint itself if they
-                    // want to jump there.
-                    match def_kind {
-                        VarDefKind::Parameter
-                        | VarDefKind::Catch
-                        | VarDefKind::Foreach
-                        | VarDefKind::Property => {
-                            return None;
-                        }
-                        _ => {
-                            // Assignment, static, global, destructuring —
-                            // fall through to type-hint resolution.
-                            return self
-                                .resolve_type_hint_at_variable(uri, content, position, &var_name);
-                        }
-                    }
+                    // The cursor is on a variable at its definition site.
+                    // Try to resolve the type hint so the user can jump
+                    // from `HtmlString|string $content` to `HtmlString`.
+                    // For all definition kinds (parameter, catch, foreach,
+                    // property, assignment, etc.) the behaviour is the
+                    // same: attempt type-hint resolution and return None
+                    // when no navigable type hint exists.
+                    let _ = def_kind; // all kinds use the same path
+                    return self.resolve_type_hint_at_variable(uri, content, position, &var_name);
                 }
 
                 if let Some(var_def) = self.lookup_var_definition(uri, name, cursor_offset) {
@@ -205,7 +193,7 @@ impl Backend {
                     });
                 }
 
-                // Fallback: AST-based / text-based variable resolution.
+                // Fallback: AST-based variable resolution.
                 if let Some(location) =
                     Self::resolve_variable_definition(content, uri, position, &var_name)
                 {
@@ -255,9 +243,8 @@ impl Backend {
             }
 
             SymbolKind::FunctionCall { name } => {
-                // Build candidates similar to the text-based path:
-                // resolved FQN, the raw name, and (if namespaced) the
-                // namespace-qualified version.
+                // Build FQN candidates: the resolved name, the raw name,
+                // and (if namespaced) the namespace-qualified version.
                 let ctx = self.file_context(uri);
                 let fqn = Self::resolve_to_fqn(name, &ctx.use_map, &ctx.namespace);
                 let mut candidates = vec![fqn];
@@ -402,166 +389,6 @@ impl Backend {
         map.find_template_def(name, cursor_offset).cloned()
     }
 
-    /// Text-based fallback for `resolve_definition`.
-    ///
-    /// This is the original resolution path that uses character-level
-    /// scanning (`extract_word_at_position`, `extract_member_access_context`)
-    /// to determine the symbol under the cursor.  It is activated when the
-    /// symbol map lookup returns `None` (cursor in a gap between spans) or
-    /// when no symbol map exists for the file (e.g. the parser panicked on
-    /// malformed code during `update_ast`).
-    fn resolve_definition_text_based(
-        &self,
-        uri: &str,
-        content: &str,
-        position: Position,
-    ) -> Option<Location> {
-        // 1. Extract the symbol name under the cursor.
-        #[allow(deprecated)] // text-based fallback; not yet migrated to symbol map
-        let word = Self::extract_word_at_position(content, position)?;
-
-        if word.is_empty() {
-            return None;
-        }
-
-        // ── Variable go-to-definition ──
-        // When the cursor is on a `$variable`, jump to its most recent
-        // assignment or declaration (parameter, foreach, catch) above the
-        // cursor position.
-        //
-        // When we are already *at* the definition (resolve returns None),
-        // fall through to type-hint resolution so the user can jump from
-        // e.g. `HtmlString|string $content` to the `HtmlString` class.
-        if Self::cursor_is_on_variable(content, position, &word) {
-            let var_name = format!("${}", word);
-            if let Some(location) =
-                Self::resolve_variable_definition(content, uri, position, &var_name)
-            {
-                return Some(location);
-            }
-
-            // We are at the definition site — try to resolve the type hint.
-            if let Some(location) =
-                self.resolve_type_hint_at_variable(uri, content, position, &var_name)
-            {
-                return Some(location);
-            }
-
-            return None;
-        }
-
-        // ── Member access resolution (::, ->, ?->) ──
-        // If the cursor is on a member name (right side of an operator),
-        // resolve the owning class and jump to the member declaration.
-        //
-        // When a member-access operator IS detected but resolution fails
-        // (e.g. the owning class couldn't be determined because a helper
-        // function like `collect()` isn't indexed), we must return early
-        // so that the member name (e.g. `map`) is NOT misinterpreted as
-        // a standalone function / class / constant.  Without this guard,
-        // `collect($x)->map(` would fall through and resolve `map` to a
-        // global `map()` helper function — or even crash while trying.
-        let is_member_access = self.check_member_access_context(uri, content, position);
-        if let Some(location) = self.resolve_member_definition(uri, content, position, &word) {
-            return Some(location);
-        }
-        if is_member_access {
-            // The cursor is on the RHS of `->`, `?->`, or `::` but we
-            // couldn't resolve the owning class.  Don't fall through to
-            // standalone symbol resolution — there is no standalone
-            // symbol named `map`, `getName`, etc.
-            return None;
-        }
-
-        // ── Handle `self`, `static`, `parent` keywords ──
-        // When the cursor is on one of these keywords (e.g. `new self()`,
-        // `new static()`, `new parent()`), resolve to the enclosing class
-        // definition (or the parent class for `parent`).
-        if (word == "self" || word == "static" || word == "parent")
-            && let Some(location) = self.resolve_self_static_parent(uri, content, position, &word)
-        {
-            return Some(location);
-        }
-
-        // 2. Gather context from the current file (use map + namespace).
-        let ctx = self.file_context(uri);
-
-        // 3. Resolve to a fully-qualified name.
-        let fqn = Self::resolve_to_fqn(&word, &ctx.use_map, &ctx.namespace);
-
-        // Build a list of FQN candidates to try.  The resolved name is tried
-        // first, but when the original word already contains `\` (e.g. from a
-        // `use` statement where the name is already fully-qualified) we also
-        // try the raw word so we don't fail just because namespace-prefixing
-        // produced a wrong result.
-        let mut candidates = vec![fqn];
-        if word.contains('\\') && !candidates.contains(&word) {
-            candidates.push(word.clone());
-        }
-
-        // 4. Try to find the class in the current file first (same-file jump).
-        for fqn in &candidates {
-            if let Some(location) = self.find_definition_in_ast_map(fqn, content, uri) {
-                return Some(location);
-            }
-        }
-
-        // 4b. Cross-file lookup via class_index + ast_map.
-        for fqn in &candidates {
-            let target_uri = self
-                .class_index
-                .lock()
-                .ok()
-                .and_then(|idx| idx.get(fqn.as_str()).cloned());
-            if let Some(ref target_uri) = target_uri
-                && let Some(location) = self.find_definition_in_ast_map_cross_file(fqn, target_uri)
-            {
-                return Some(location);
-            }
-        }
-
-        // 5. Resolve file path via PSR-4 (only when workspace root is available).
-        let workspace_root = self
-            .workspace_root
-            .lock()
-            .ok()
-            .and_then(|guard| guard.clone());
-
-        if let Some(workspace_root) = workspace_root
-            && let Ok(mappings) = self.psr4_mappings.lock()
-        {
-            for fqn in &candidates {
-                if let Some(file_path) =
-                    composer::resolve_class_path(&mappings, &workspace_root, fqn)
-                {
-                    // 6. Parse on demand, cache, and use AST offsets.
-                    if let Some(location) = self.resolve_class_in_file(&file_path, fqn) {
-                        return Some(location);
-                    }
-                }
-            }
-        }
-
-        // 7. Try global function lookup as a last resort.
-        //    Build candidates: the word itself, the FQN-resolved version, and
-        //    (if inside a namespace) the namespace-qualified version.
-        let mut func_candidates = candidates.clone();
-        if !func_candidates.contains(&word) {
-            func_candidates.push(word.clone());
-        }
-
-        if let Some(location) = self.resolve_function_definition(&func_candidates) {
-            return Some(location);
-        }
-
-        // 8. Try standalone constant lookup (define() constants).
-        if let Some(location) = self.resolve_constant_definition(&func_candidates) {
-            return Some(location);
-        }
-
-        None
-    }
-
     // ─── Constant Definition Resolution ─────────────────────────────────────
 
     /// Resolve a standalone constant to its `define('NAME', …)` call site.
@@ -678,93 +505,6 @@ impl Backend {
     }
 
     // ─── Word Extraction & FQN Resolution ───────────────────────────────────
-
-    /// Extract the symbol name (class / interface / trait / enum / namespace)
-    /// at the given cursor position.
-    ///
-    /// The word is defined as a contiguous run of alphanumeric characters,
-    /// underscores, and backslashes (to capture fully-qualified names).
-    ///
-    /// **Deprecated:** For go-to-definition, prefer the precomputed
-    /// `SymbolMap` lookup.  This helper is retained for non-cursor-context
-    /// uses (e.g. go-to-implementation) and as a fallback when no symbol
-    /// map exists for the file.
-    #[deprecated(note = "prefer SymbolMap lookup; kept as fallback and for non-cursor uses")]
-    pub fn extract_word_at_position(content: &str, position: Position) -> Option<String> {
-        let lines: Vec<&str> = content.lines().collect();
-        let line_idx = position.line as usize;
-        if line_idx >= lines.len() {
-            return None;
-        }
-
-        let line = lines[line_idx];
-        let chars: Vec<char> = line.chars().collect();
-        let col = (position.character as usize).min(chars.len());
-
-        // Nothing to do on an empty line or if cursor is at position 0
-        // with no word character.
-        if chars.is_empty() {
-            return None;
-        }
-
-        // If the cursor is right after a word (col points at a non-word char
-        // or end-of-line), we still want to resolve the word to its left.
-        // But if the cursor is in the middle of a word, expand in both
-        // directions.
-
-        let is_word_char = |c: char| c.is_alphanumeric() || c == '_' || c == '\\';
-
-        // Find the start of the word: walk left from cursor.
-        let mut start = col;
-
-        // If cursor is between two chars and the right one is a word char,
-        // start there.  Otherwise start from the char to the left.
-        if start < chars.len() && is_word_char(chars[start]) {
-            // cursor is on a word char — expand left
-        } else if start > 0 && is_word_char(chars[start - 1]) {
-            start -= 1;
-        } else {
-            return None;
-        }
-
-        // Walk left to find start of word
-        while start > 0 && is_word_char(chars[start - 1]) {
-            start -= 1;
-        }
-
-        // Walk right to find end of word
-        let mut end = col;
-        if end < chars.len() && is_word_char(chars[end]) {
-            // cursor is on a word char — also expand right
-            while end < chars.len() && is_word_char(chars[end]) {
-                end += 1;
-            }
-        } else {
-            // Cursor was past the word — expand right from start
-            end = start;
-            while end < chars.len() && is_word_char(chars[end]) {
-                end += 1;
-            }
-        }
-
-        if start == end {
-            return None;
-        }
-
-        let word: String = chars[start..end].iter().collect();
-
-        // Strip a leading `\` (PHP fully-qualified prefix).
-        let word = word.strip_prefix('\\').unwrap_or(&word).to_string();
-
-        // Strip trailing `\` if any (partial namespace).
-        let word = word.strip_suffix('\\').unwrap_or(&word).to_string();
-
-        if word.is_empty() {
-            return None;
-        }
-
-        Some(word)
-    }
 
     /// Resolve a short or partially-qualified name to a fully-qualified name
     /// using the file's `use` map and namespace context.

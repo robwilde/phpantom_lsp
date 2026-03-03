@@ -35,9 +35,8 @@ use super::point_location;
 use crate::Backend;
 use crate::completion::resolver::ResolutionCtx;
 use crate::docblock;
-use crate::subject_extraction::{OperatorScanMode, detect_access_operator};
 use crate::types::*;
-use crate::util::{collapse_continuation_lines, find_class_at_offset, position_to_offset};
+use crate::util::{find_class_at_offset, position_to_offset};
 use crate::virtual_members::laravel::{
     ELOQUENT_BUILDER_FQN, accessor_method_candidates, count_property_to_relationship_method,
     extends_eloquent_model, is_accessor_method,
@@ -95,41 +94,11 @@ pub(super) enum MemberAccessHint {
 impl Backend {
     // ─── Member Definition Resolution ───────────────────────────────────────
 
-    /// Try to resolve a member access pattern and jump to the member's
-    /// declaration.
-    ///
-    /// Detects `::`, `->`, and `?->` before the word under the cursor,
-    /// resolves the owning class, and finds the member position in the
-    /// class's source file.
-    pub(super) fn resolve_member_definition(
-        &self,
-        uri: &str,
-        content: &str,
-        position: Position,
-        member_name: &str,
-    ) -> Option<Location> {
-        // 1. Detect the access operator and extract the subject (left side).
-        let (subject, access_kind) = self.lookup_member_access_context(uri, content, position)?;
-
-        // Determine whether this looks like a method call or property access.
-        let access_hint = Self::detect_member_access_hint(content, position, member_name);
-
-        let ctx = MemberDefinitionCtx {
-            member_name,
-            subject: &subject,
-            access_kind,
-            access_hint,
-        };
-        self.resolve_member_definition_with(uri, content, position, &ctx)
-    }
-
     /// Resolve a member access to its definition using pre-extracted context.
     ///
-    /// This is the core implementation shared by the text-based path
-    /// ([`resolve_member_definition`]) and the symbol-map path.  The caller
-    /// provides a [`MemberDefinitionCtx`] bundling the subject text, access
-    /// kind, and access hint so that both code paths can use the same
-    /// resolution logic without re-extracting context from the source text.
+    /// The caller provides a [`MemberDefinitionCtx`] bundling the subject
+    /// text, access kind, and access hint so that the symbol-map path can
+    /// drive resolution without re-extracting context from the source text.
     pub(super) fn resolve_member_definition_with(
         &self,
         uri: &str,
@@ -518,26 +487,10 @@ impl Backend {
 
     // ─── Member Access Context Extraction ───────────────────────────────────
 
-    /// Check whether the cursor is on the right-hand side of a member
-    /// access operator (`->`, `?->`, or `::`).
-    ///
-    /// Consults the precomputed symbol map first (O(log n) lookup), then
-    /// falls back to the text scanner for broken-AST / missing-map cases.
-    pub(crate) fn check_member_access_context(
-        &self,
-        uri: &str,
-        content: &str,
-        position: Position,
-    ) -> bool {
-        self.lookup_member_access_context(uri, content, position)
-            .is_some()
-    }
-
     /// Extract the subject and access kind for the member access under
     /// the cursor.
     ///
-    /// Consults the precomputed symbol map first (O(log n) lookup), then
-    /// falls back to the text scanner for broken-AST / missing-map cases.
+    /// Consults the precomputed symbol map (O(log n) lookup).
     ///
     /// Returns `(subject, AccessKind)` or `None` if the cursor is not on
     /// the RHS of a member access operator.
@@ -549,7 +502,7 @@ impl Backend {
     ) -> Option<(String, AccessKind)> {
         let offset = position_to_offset(content, position);
 
-        // Try the symbol map first (primary path).
+        // Try the symbol map (primary path).
         if let Some(result) = self.member_access_from_symbol_map(uri, offset) {
             return Some(result);
         }
@@ -561,9 +514,7 @@ impl Backend {
             return Some(result);
         }
 
-        // Fallback: text-based extraction (parser panicked, map missing,
-        // cursor in a gap between spans, etc.).
-        Self::extract_member_access_context(content, position)
+        None
     }
 
     /// Look up a `MemberAccess` symbol at `offset` in the symbol map and
@@ -591,41 +542,6 @@ impl Backend {
             }
             _ => None,
         }
-    }
-
-    /// Detect the access operator (`::`, `->`, `?->`) immediately before the
-    /// word under the cursor and extract the subject to its left.
-    ///
-    /// Returns `(subject, AccessKind)` or `None` if no operator is found.
-    ///
-    /// This is the text-based scanner kept as a fallback for the broken-AST
-    /// case.  Prefer [`lookup_member_access_context`] which consults the
-    /// precomputed symbol map first.
-    ///
-    /// This works by:
-    ///   1. Finding the start of the identifier under the cursor.
-    ///   2. Skipping a `$` prefix if present (for `::$staticProp`).
-    ///   3. Checking for `::`, `->`, or `?->` immediately before.
-    ///   4. Extracting the subject expression to the left of the operator.
-    pub(crate) fn extract_member_access_context(
-        content: &str,
-        position: Position,
-    ) -> Option<(String, AccessKind)> {
-        let lines: Vec<&str> = content.lines().collect();
-        if position.line as usize >= lines.len() {
-            return None;
-        }
-
-        // Collapse multi-line method chains so that continuation lines
-        // (starting with `->` or `?->`) are joined with preceding lines.
-        let (line, col) = collapse_continuation_lines(
-            &lines,
-            position.line as usize,
-            position.character as usize,
-        );
-        let chars: Vec<char> = line.chars().collect();
-
-        detect_access_operator(&chars, col, OperatorScanMode::OnMember)
     }
 
     // ─── Member Classification ──────────────────────────────────────────────
@@ -714,55 +630,6 @@ impl Backend {
             .any(|(name, _)| name == member_name);
 
         (has_method, has_property)
-    }
-
-    /// Determine whether the member name at the given position is followed by
-    /// `(` (indicating a method call) or not (indicating property / constant
-    /// access).
-    fn detect_member_access_hint(
-        content: &str,
-        position: Position,
-        member_name: &str,
-    ) -> MemberAccessHint {
-        let lines: Vec<&str> = content.lines().collect();
-        let line = match lines.get(position.line as usize) {
-            Some(l) => *l,
-            None => return MemberAccessHint::Unknown,
-        };
-        let chars: Vec<char> = line.chars().collect();
-        let col = (position.character as usize).min(chars.len());
-
-        // Find the end of the member name by walking right from the cursor.
-        let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
-
-        let mut end = col;
-        // If cursor is on a word char, walk right to end of word.
-        if end < chars.len() && is_word_char(chars[end]) {
-            while end < chars.len() && is_word_char(chars[end]) {
-                end += 1;
-            }
-        } else if end > 0 && is_word_char(chars[end - 1]) {
-            // Cursor is just past the word; `end` is already correct.
-        } else {
-            // Try to find the member name by searching forward from col.
-            if let Some(idx) = line[col..].find(member_name) {
-                end = col + idx + member_name.len();
-            } else {
-                return MemberAccessHint::Unknown;
-            }
-        }
-
-        // Skip whitespace after the word.
-        let mut i = end;
-        while i < chars.len() && chars[i].is_whitespace() {
-            i += 1;
-        }
-
-        if i < chars.len() && chars[i] == '(' {
-            MemberAccessHint::MethodCall
-        } else {
-            MemberAccessHint::PropertyAccess
-        }
     }
 
     // ─── Scope Name Mapping ─────────────────────────────────────────────────

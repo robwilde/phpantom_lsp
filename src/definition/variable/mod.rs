@@ -73,52 +73,6 @@ impl Backend {
     // Variable go-to-definition helpers
     // ──────────────────────────────────────────────────────────────────────
 
-    /// Returns `true` when the cursor is sitting on a `$variable` token.
-    ///
-    /// `extract_word_at_position` strips `$`, so we peek at the character
-    /// immediately before the word to see if it is `$`.
-    pub(super) fn cursor_is_on_variable(content: &str, position: Position, _word: &str) -> bool {
-        let lines: Vec<&str> = content.lines().collect();
-        let line_idx = position.line as usize;
-        if line_idx >= lines.len() {
-            return false;
-        }
-        let line = lines[line_idx];
-        let chars: Vec<char> = line.chars().collect();
-        let col = (position.character as usize).min(chars.len());
-
-        // Find where `word` starts on this line (same logic as
-        // extract_word_at_position: walk left from cursor).
-        let is_word_char = |c: char| c.is_alphanumeric() || c == '_' || c == '\\';
-        let mut start = col;
-        if start < chars.len() && is_word_char(chars[start]) {
-            // on a word char
-        } else if start > 0 && is_word_char(chars[start - 1]) {
-            start -= 1;
-        } else {
-            return false;
-        }
-        while start > 0 && is_word_char(chars[start - 1]) {
-            start -= 1;
-        }
-
-        // The character just before the word must be `$`.
-        if start == 0 {
-            return false;
-        }
-        if chars[start - 1] != '$' {
-            return false;
-        }
-
-        // If the `$` is preceded by `::`, this is a static property access
-        // (e.g. `Config::$defaultLocale`), not a local variable.
-        if start >= 3 && chars[start - 2] == ':' && chars[start - 3] == ':' {
-            return false;
-        }
-
-        true
-    }
-
     /// Find the most recent assignment or declaration of `$var_name` before
     /// `position` and return its location.
     ///
@@ -139,8 +93,8 @@ impl Backend {
     /// Returns:
     /// - `Some(Some(location))` — found a prior definition, jump there
     /// - `Some(None)` — cursor is at a definition site (fall through to type-hint)
-    ///   OR no definition found in the AST (don't fall back to text)
-    /// - `None` — AST parse failed, caller should try the text-based fallback
+    ///   OR no definition found in the AST
+    /// - `None` — AST parse failed
     fn resolve_variable_definition_ast(
         content: &str,
         uri: &str,
@@ -183,29 +137,11 @@ impl Backend {
         }
     }
 
-    /// Find a whole-word occurrence of `var_name` in `line`, skipping
-    /// partial matches like `$item` inside `$items`.
-    fn find_whole_var(line: &str, var_name: &str) -> Option<usize> {
-        let is_ident_char = |c: char| c.is_alphanumeric() || c == '_';
-        let mut start = 0;
-        while let Some(pos) = line[start..].find(var_name) {
-            let abs = start + pos;
-            let after = abs + var_name.len();
-            let boundary_ok =
-                after >= line.len() || !line[after..].starts_with(|c: char| is_ident_char(c));
-            if boundary_ok {
-                return Some(abs);
-            }
-            start = abs + 1;
-        }
-        None
-    }
-
     // ─── Type-Hint Resolution at Variable Definition ────────────────────
 
     /// When the cursor is on a variable that is already at its definition
-    /// site (parameter, property, promoted property), extract the type hint
-    /// and jump to the first class-like type in it.
+    /// site (parameter, property, promoted property, catch variable),
+    /// extract the type hint and jump to the first class-like type in it.
     ///
     /// For example, given `public readonly HtmlString|string $content,`
     /// this returns the location of the `HtmlString` class definition.
@@ -216,15 +152,7 @@ impl Backend {
         position: Position,
         var_name: &str,
     ) -> Option<Location> {
-        // Try AST-based type-hint extraction first.
-        if let Some(result) =
-            self.resolve_type_hint_at_variable_ast(uri, content, position, var_name)
-        {
-            return Some(result);
-        }
-
-        // Fall back to text-based extraction.
-        self.resolve_type_hint_at_variable_text(uri, content, position, var_name)
+        self.resolve_type_hint_at_variable_ast(uri, content, position, var_name)
     }
 
     /// AST-based type-hint resolution: extract the type hint from the AST
@@ -246,41 +174,6 @@ impl Backend {
 
         let type_hint = type_hint_str?;
         self.resolve_type_hint_string_to_location(uri, content, &type_hint)
-    }
-
-    /// Text-based type-hint resolution (original implementation).
-    fn resolve_type_hint_at_variable_text(
-        &self,
-        uri: &str,
-        content: &str,
-        position: Position,
-        var_name: &str,
-    ) -> Option<Location> {
-        let lines: Vec<&str> = content.lines().collect();
-        let line_idx = position.line as usize;
-        if line_idx >= lines.len() {
-            return None;
-        }
-        let line = lines[line_idx];
-
-        let var_pos = Self::find_whole_var(line, var_name)?;
-
-        let before_raw = line[..var_pos].trim_end();
-
-        let before = match before_raw.rfind('(') {
-            Some(pos) => before_raw[pos + 1..].trim_start(),
-            None => before_raw,
-        };
-
-        let type_hint = match before.rsplit_once(char::is_whitespace) {
-            Some((_, t)) => t,
-            None => before,
-        };
-        if type_hint.is_empty() {
-            return None;
-        }
-
-        self.resolve_type_hint_string_to_location(uri, content, type_hint)
     }
 
     /// Given a type-hint string (e.g. `HtmlString|string`, `?Foo`),

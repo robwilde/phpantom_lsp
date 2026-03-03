@@ -501,68 +501,32 @@ fn extract_double_colon_subject(chars: &[char], colon_pos: usize) -> String {
 /// position in an already-collapsed character slice, and extract the
 /// subject expression to the operator's left.
 ///
-/// This is the shared core used by both completion target extraction and
-/// go-to-definition member access context detection.
+/// The cursor is expected to sit *after* the operator, possibly with a
+/// partial identifier already typed (used by completion).
 ///
 /// # Parameters
 ///
 /// * `chars` — the collapsed line as a char slice.
 /// * `col` — the cursor's character offset within `chars`.
-/// * `mode` — whether the cursor sits *after* the operator
-///   ([`OperatorScanMode::AfterOperator`], completion) or *on* the
-///   member name to the right of the operator
-///   ([`OperatorScanMode::OnMember`], go-to-definition).
 ///
 /// # Returns
 ///
 /// `Some((subject, AccessKind))` when an operator is found, `None`
 /// otherwise.
-pub(crate) fn detect_access_operator(
-    chars: &[char],
-    col: usize,
-    mode: OperatorScanMode,
-) -> Option<(String, AccessKind)> {
+pub(crate) fn detect_access_operator(chars: &[char], col: usize) -> Option<(String, AccessKind)> {
     let col = col.min(chars.len());
 
     if chars.is_empty() {
         return None;
     }
 
-    let operator_end = match mode {
-        OperatorScanMode::AfterOperator => {
-            // Walk backwards past any partial identifier the user has typed.
-            let mut i = col;
-            while i > 0 && (chars[i - 1].is_alphanumeric() || chars[i - 1] == '_') {
-                i -= 1;
-            }
-            i
+    // Walk backwards past any partial identifier the user has typed.
+    let operator_end = {
+        let mut i = col;
+        while i > 0 && (chars[i - 1].is_alphanumeric() || chars[i - 1] == '_') {
+            i -= 1;
         }
-        OperatorScanMode::OnMember => {
-            let mut i = col;
-
-            // If the cursor is on or past the end of a word, adjust.
-            if i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
-                // on a word char — walk left
-            } else if i > 0 && (chars[i - 1].is_alphanumeric() || chars[i - 1] == '_') {
-                i -= 1;
-            } else {
-                return None;
-            }
-
-            // Walk left past identifier characters.
-            while i > 0 && (chars[i - 1].is_alphanumeric() || chars[i - 1] == '_') {
-                i -= 1;
-            }
-
-            let mut end = i;
-
-            // Skip `$` prefix (for `Class::$staticProp`).
-            if end > 0 && chars[end - 1] == '$' {
-                end -= 1;
-            }
-
-            end
-        }
+        i
     };
 
     // Try `::`.
@@ -594,18 +558,6 @@ pub(crate) fn detect_access_operator(
     }
 
     None
-}
-
-/// Controls how [`detect_access_operator`] locates the access operator
-/// relative to the cursor position.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OperatorScanMode {
-    /// The cursor is right after `->` / `::` (possibly with a partial
-    /// identifier typed).  Used by completion.
-    AfterOperator,
-    /// The cursor is on the member name to the right of the operator.
-    /// Used by go-to-definition.
-    OnMember,
 }
 
 #[cfg(test)]

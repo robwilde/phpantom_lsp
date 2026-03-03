@@ -7,8 +7,7 @@
 /// # Resolution strategy
 ///
 /// 1. **Determine the target symbol** — consult the precomputed `SymbolMap`
-///    for the word under the cursor (falling back to `extract_word_at_position`
-///    when no symbol map exists for the file).
+///    for the word under the cursor.
 /// 2. **Identify the target type** — resolve the symbol to a `ClassInfo` and
 ///    check whether it is an interface or abstract class.
 /// 3. **Scan for implementors** — walk all classes known to the server
@@ -115,24 +114,8 @@ impl Backend {
             }
         }
 
-        // Fallback: text-based extraction when no symbol map exists.
-        #[allow(deprecated)]
-        let word = Self::extract_word_at_position(content, position)?;
-        if word.is_empty() {
-            return None;
-        }
-
-        // ── 2. Gather file context ──────────────────────────────────────
-        let ctx = self.file_context(uri);
-
-        // ── 3. Check for member access context (->method, ::method) ─────
-        let is_member_access = self.check_member_access_context(uri, content, position);
-        if is_member_access {
-            return self.resolve_member_implementations(uri, content, position, &word, &ctx);
-        }
-
-        // ── 4. Not a member access — the cursor is on a class/interface name ─
-        self.resolve_class_implementation(uri, content, &word, &ctx)
+        // No symbol map span covers the cursor — nothing to resolve.
+        None
     }
 
     /// Resolve go-to-implementation for a class/interface name.

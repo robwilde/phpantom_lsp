@@ -2238,3 +2238,410 @@ fn phpstan_assert_tag_produces_class_reference() {
         panic!("Expected ClassReference for Rock, got {:?}", span.kind);
     }
 }
+
+// ── Top-level const statement ───────────────────────────────────────────────
+
+#[test]
+fn top_level_const_value_produces_class_reference() {
+    let php = "<?php\nconst MY_CLASS = Foo::class;\n";
+    let map = parse_and_extract(php);
+    let foo_offset = php.find("Foo").unwrap() as u32;
+    let hit = map.lookup(foo_offset);
+    assert!(hit.is_some(), "Should find Foo in const value expression");
+    if let SymbolKind::ClassReference { ref name, .. } = hit.unwrap().kind {
+        assert_eq!(name, "Foo");
+    } else {
+        panic!(
+            "Expected ClassReference for Foo, got {:?}",
+            hit.unwrap().kind
+        );
+    }
+}
+
+#[test]
+fn top_level_const_multiple_items() {
+    let php = "<?php\nconst A = Foo::class, B = Bar::class;\n";
+    let map = parse_and_extract(php);
+
+    let foo_offset = php.find("Foo").unwrap() as u32;
+    let hit_foo = map.lookup(foo_offset);
+    assert!(hit_foo.is_some(), "Should find Foo in first const item");
+    if let SymbolKind::ClassReference { ref name, .. } = hit_foo.unwrap().kind {
+        assert_eq!(name, "Foo");
+    } else {
+        panic!("Expected ClassReference for Foo");
+    }
+
+    let bar_offset = php.find("Bar").unwrap() as u32;
+    let hit_bar = map.lookup(bar_offset);
+    assert!(hit_bar.is_some(), "Should find Bar in second const item");
+    if let SymbolKind::ClassReference { ref name, .. } = hit_bar.unwrap().kind {
+        assert_eq!(name, "Bar");
+    } else {
+        panic!("Expected ClassReference for Bar");
+    }
+}
+
+// ── Anonymous class ─────────────────────────────────────────────────────────
+
+#[test]
+fn anonymous_class_extends_produces_class_reference() {
+    let php = concat!(
+        "<?php\n",
+        "function test() {\n",
+        "    return new class extends Foo implements Bar {};\n",
+        "}\n",
+    );
+    let map = parse_and_extract(php);
+
+    let foo_offset = php.find("Foo").unwrap() as u32;
+    let hit = map.lookup(foo_offset);
+    assert!(hit.is_some(), "Should find Foo in anonymous class extends");
+    if let SymbolKind::ClassReference { ref name, .. } = hit.unwrap().kind {
+        assert_eq!(name, "Foo");
+    } else {
+        panic!("Expected ClassReference for Foo");
+    }
+
+    let bar_offset = php.find("Bar").unwrap() as u32;
+    let hit2 = map.lookup(bar_offset);
+    assert!(
+        hit2.is_some(),
+        "Should find Bar in anonymous class implements"
+    );
+    if let SymbolKind::ClassReference { ref name, .. } = hit2.unwrap().kind {
+        assert_eq!(name, "Bar");
+    } else {
+        panic!("Expected ClassReference for Bar");
+    }
+}
+
+#[test]
+fn anonymous_class_members_are_extracted() {
+    let php = concat!(
+        "<?php\n",
+        "function test() {\n",
+        "    return new class {\n",
+        "        public function run(Baz $b) {}\n",
+        "    };\n",
+        "}\n",
+    );
+    let map = parse_and_extract(php);
+
+    let baz_offset = php.find("Baz").unwrap() as u32;
+    let hit = map.lookup(baz_offset);
+    assert!(
+        hit.is_some(),
+        "Should find Baz in anonymous class method param type"
+    );
+    if let SymbolKind::ClassReference { ref name, .. } = hit.unwrap().kind {
+        assert_eq!(name, "Baz");
+    } else {
+        panic!("Expected ClassReference for Baz");
+    }
+}
+
+#[test]
+fn anonymous_class_constructor_args_are_extracted() {
+    let php = concat!(
+        "<?php\n",
+        "function test() {\n",
+        "    return new class(new Qux()) {};\n",
+        "}\n",
+    );
+    let map = parse_and_extract(php);
+
+    let qux_offset = php.find("Qux").unwrap() as u32;
+    let hit = map.lookup(qux_offset);
+    assert!(
+        hit.is_some(),
+        "Should find Qux in anonymous class constructor arg"
+    );
+    if let SymbolKind::ClassReference { ref name, .. } = hit.unwrap().kind {
+        assert_eq!(name, "Qux");
+    } else {
+        panic!("Expected ClassReference for Qux");
+    }
+}
+
+// ── Language constructs ─────────────────────────────────────────────────────
+
+#[test]
+fn construct_isset_extracts_inner_expressions() {
+    let php = "<?php\nfunction t() { isset($foo->bar); }\n";
+    let map = parse_and_extract(php);
+
+    let bar_offset = php.find("bar").unwrap() as u32;
+    let hit = map.lookup(bar_offset);
+    assert!(hit.is_some(), "Should find bar in isset()");
+    if let SymbolKind::MemberAccess {
+        ref member_name, ..
+    } = hit.unwrap().kind
+    {
+        assert_eq!(member_name, "bar");
+    } else {
+        panic!("Expected MemberAccess for bar, got {:?}", hit.unwrap().kind);
+    }
+}
+
+#[test]
+fn construct_empty_extracts_inner_expression() {
+    let php = "<?php\nfunction t() { empty($foo->name); }\n";
+    let map = parse_and_extract(php);
+
+    let name_offset = php.find("name").unwrap() as u32;
+    let hit = map.lookup(name_offset);
+    assert!(hit.is_some(), "Should find name in empty()");
+    if let SymbolKind::MemberAccess {
+        ref member_name, ..
+    } = hit.unwrap().kind
+    {
+        assert_eq!(member_name, "name");
+    } else {
+        panic!(
+            "Expected MemberAccess for name, got {:?}",
+            hit.unwrap().kind
+        );
+    }
+}
+
+#[test]
+fn construct_print_extracts_inner_expression() {
+    let php = "<?php\nfunction t(Foo $x) { print $x->label; }\n";
+    let map = parse_and_extract(php);
+
+    let label_offset = php.find("label").unwrap() as u32;
+    let hit = map.lookup(label_offset);
+    assert!(hit.is_some(), "Should find label in print expression");
+    if let SymbolKind::MemberAccess {
+        ref member_name, ..
+    } = hit.unwrap().kind
+    {
+        assert_eq!(member_name, "label");
+    } else {
+        panic!("Expected MemberAccess for label");
+    }
+}
+
+// ── Composite strings (interpolation) ───────────────────────────────────────
+
+#[test]
+fn composite_string_extracts_variable() {
+    let php = "<?php\nfunction t() { $x = 1; echo \"val={$x}\"; }\n";
+    let map = parse_and_extract(php);
+
+    // The $x inside the interpolated string should have a Variable span.
+    // Find the second occurrence of $x (the one inside the string).
+    let first_x = php.find("$x").unwrap();
+    let second_x = php[first_x + 2..].find("$x").unwrap() + first_x + 2;
+    let hit = map.lookup(second_x as u32);
+    assert!(hit.is_some(), "Should find $x inside interpolated string");
+    if let SymbolKind::Variable { ref name } = hit.unwrap().kind {
+        assert_eq!(name, "x");
+    } else {
+        panic!("Expected Variable for $x, got {:?}", hit.unwrap().kind);
+    }
+}
+
+#[test]
+fn composite_string_braced_expression_extracts_member_access() {
+    let php = "<?php\nfunction t() { echo \"name={$obj->name}\"; }\n";
+    let map = parse_and_extract(php);
+
+    let name_offset = php.find("name}").unwrap() as u32;
+    let hit = map.lookup(name_offset);
+    assert!(
+        hit.is_some(),
+        "Should find member access inside braced string expression"
+    );
+    if let SymbolKind::MemberAccess {
+        ref member_name, ..
+    } = hit.unwrap().kind
+    {
+        assert_eq!(member_name, "name");
+    } else {
+        panic!(
+            "Expected MemberAccess for name, got {:?}",
+            hit.unwrap().kind
+        );
+    }
+}
+
+// ── Array append ────────────────────────────────────────────────────────────
+
+#[test]
+fn array_append_extracts_array_variable() {
+    let php = "<?php\nfunction t() { $arr[] = 1; }\n";
+    let map = parse_and_extract(php);
+
+    let arr_offset = php.find("$arr").unwrap() as u32;
+    let hit = map.lookup(arr_offset);
+    assert!(hit.is_some(), "Should find $arr in array append LHS");
+    if let SymbolKind::Variable { ref name } = hit.unwrap().kind {
+        assert_eq!(name, "arr");
+    } else {
+        panic!("Expected Variable for $arr, got {:?}", hit.unwrap().kind);
+    }
+}
+
+// ── Standalone constant access ──────────────────────────────────────────────
+
+#[test]
+fn constant_access_produces_constant_reference() {
+    let php = "<?php\nfunction t() { echo PHP_EOL; }\n";
+    let map = parse_and_extract(php);
+
+    let eol_offset = php.find("PHP_EOL").unwrap() as u32;
+    let hit = map.lookup(eol_offset);
+    assert!(hit.is_some(), "Should find PHP_EOL as ConstantReference");
+    if let SymbolKind::ConstantReference { ref name } = hit.unwrap().kind {
+        assert_eq!(name, "PHP_EOL");
+    } else {
+        panic!(
+            "Expected ConstantReference for PHP_EOL, got {:?}",
+            hit.unwrap().kind
+        );
+    }
+}
+
+#[test]
+fn namespaced_constant_access_produces_class_reference() {
+    // A namespaced constant access like `\App\SOME_CONST` should be treated
+    // as a ClassReference since it could be a class name.
+    let php = "<?php\nfunction t() { echo \\App\\MyClass::FOO; }\n";
+    let map = parse_and_extract(php);
+
+    // `\App\MyClass` is the class part, which should be a ClassReference.
+    let class_offset = php.find("\\App\\MyClass").unwrap() as u32;
+    let hit = map.lookup(class_offset);
+    assert!(hit.is_some(), "Should find \\App\\MyClass");
+    if let SymbolKind::ClassReference { ref name, is_fqn } = hit.unwrap().kind {
+        assert_eq!(name, "App\\MyClass");
+        assert!(is_fqn);
+    } else {
+        panic!(
+            "Expected ClassReference for App\\MyClass, got {:?}",
+            hit.unwrap().kind
+        );
+    }
+}
+
+// ── Pipe operator ───────────────────────────────────────────────────────────
+
+// Note: PHP 8.5 pipe operator support. The parser may or may not handle
+// this syntax depending on the mago_syntax version. The extraction code
+// is in place for when it does.
+
+// ── First-class callable / partial application ──────────────────────────────
+
+#[test]
+fn first_class_callable_function_produces_function_call() {
+    let php = "<?php\nfunction t() { $fn = strlen(...); }\n";
+    let map = parse_and_extract(php);
+
+    let strlen_offset = php.find("strlen").unwrap() as u32;
+    let hit = map.lookup(strlen_offset);
+    assert!(hit.is_some(), "Should find strlen in first-class callable");
+    if let SymbolKind::FunctionCall { ref name } = hit.unwrap().kind {
+        assert_eq!(name, "strlen");
+    } else {
+        panic!(
+            "Expected FunctionCall for strlen, got {:?}",
+            hit.unwrap().kind
+        );
+    }
+}
+
+#[test]
+fn first_class_callable_static_method_produces_member_access() {
+    let php = "<?php\nfunction t() { $fn = Foo::bar(...); }\n";
+    let map = parse_and_extract(php);
+
+    // `Foo` should be a ClassReference.
+    let foo_offset = php.find("Foo").unwrap() as u32;
+    let hit_foo = map.lookup(foo_offset);
+    assert!(hit_foo.is_some(), "Should find Foo class reference");
+    if let SymbolKind::ClassReference { ref name, .. } = hit_foo.unwrap().kind {
+        assert_eq!(name, "Foo");
+    } else {
+        panic!("Expected ClassReference for Foo");
+    }
+
+    // `bar` should be a MemberAccess.
+    let bar_offset = php.find("bar").unwrap() as u32;
+    let hit_bar = map.lookup(bar_offset);
+    assert!(
+        hit_bar.is_some(),
+        "Should find bar in static first-class callable"
+    );
+    if let SymbolKind::MemberAccess {
+        ref member_name,
+        is_static,
+        is_method_call,
+        ..
+    } = hit_bar.unwrap().kind
+    {
+        assert_eq!(member_name, "bar");
+        assert!(is_static);
+        assert!(is_method_call);
+    } else {
+        panic!(
+            "Expected MemberAccess for bar, got {:?}",
+            hit_bar.unwrap().kind
+        );
+    }
+}
+
+#[test]
+fn first_class_callable_instance_method_produces_member_access() {
+    let php = "<?php\nfunction t($obj) { $fn = $obj->baz(...); }\n";
+    let map = parse_and_extract(php);
+
+    let baz_offset = php.find("baz").unwrap() as u32;
+    let hit = map.lookup(baz_offset);
+    assert!(
+        hit.is_some(),
+        "Should find baz in instance first-class callable"
+    );
+    if let SymbolKind::MemberAccess {
+        ref member_name,
+        is_static,
+        is_method_call,
+        ..
+    } = hit.unwrap().kind
+    {
+        assert_eq!(member_name, "baz");
+        assert!(!is_static);
+        assert!(is_method_call);
+    } else {
+        panic!("Expected MemberAccess for baz, got {:?}", hit.unwrap().kind);
+    }
+}
+
+// ── Echo tag (short open tag) ───────────────────────────────────────────────
+
+// Note: `<?= $expr ?>` parsing depends on the parser treating it as an
+// EchoTag statement. The extraction code handles it; a full integration
+// test would require a PHP file with short echo tags that the parser
+// recognises.
+
+// ── Declare statement ───────────────────────────────────────────────────────
+
+#[test]
+fn declare_statement_body_extracts_symbols() {
+    let php = concat!(
+        "<?php\n",
+        "declare(strict_types=1);\n",
+        "function test(Foo $x) {}\n",
+    );
+    let map = parse_and_extract(php);
+
+    let foo_offset = php.find("Foo").unwrap() as u32;
+    let hit = map.lookup(foo_offset);
+    assert!(hit.is_some(), "Should find Foo after declare statement");
+    if let SymbolKind::ClassReference { ref name, .. } = hit.unwrap().kind {
+        assert_eq!(name, "Foo");
+    } else {
+        panic!("Expected ClassReference for Foo");
+    }
+}

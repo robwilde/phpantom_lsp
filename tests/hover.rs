@@ -3018,3 +3018,229 @@ class FluentCollection {
         text
     );
 }
+
+// ── Anonymous class ─────────────────────────────────────────────────────────
+
+#[test]
+fn hover_anonymous_class_extends() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class Animal {
+    public string $species;
+}
+function make() {
+    return new class extends Animal {};
+}
+"#;
+
+    // Hover on `Animal` in `new class extends Animal` (line 5, col ~30).
+    let hover = hover_at(&backend, uri, content, 5, 31).expect("expected hover on Animal");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("Animal"),
+        "should show Animal class info, got: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_anonymous_class_implements() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+interface Runnable {
+    public function run(): void;
+}
+function make() {
+    return new class implements Runnable {
+        public function run(): void {}
+    };
+}
+"#;
+
+    // Hover on `Runnable` in `new class implements Runnable` (line 5).
+    let hover = hover_at(&backend, uri, content, 5, 34).expect("expected hover on Runnable");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("Runnable"),
+        "should show Runnable interface info, got: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_anonymous_class_method_param_type() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class Widget {}
+function make() {
+    return new class {
+        public function process(Widget $w): void {}
+    };
+}
+"#;
+
+    // Hover on `Widget` in anonymous class method param (line 4).
+    let hover = hover_at(&backend, uri, content, 4, 32).expect("expected hover on Widget");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("Widget"),
+        "should show Widget class info, got: {}",
+        text
+    );
+}
+
+// ── Top-level const ─────────────────────────────────────────────────────────
+
+#[test]
+fn hover_class_in_top_level_const_value() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class Handler {}
+const DEFAULT_HANDLER = Handler::class;
+"#;
+
+    // Hover on `Handler` in `Handler::class` (line 2, col ~24).
+    let hover = hover_at(&backend, uri, content, 2, 24).expect("expected hover on Handler");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("Handler"),
+        "should show Handler class info, got: {}",
+        text
+    );
+}
+
+// ── Language constructs ─────────────────────────────────────────────────────
+
+#[test]
+fn hover_variable_inside_isset() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class Config {
+    public string $key;
+}
+function check(Config $cfg) {
+    isset($cfg->key);
+}
+"#;
+
+    // Hover on `key` inside `isset($cfg->key)` (line 5).
+    let hover = hover_at(&backend, uri, content, 5, 16).expect("expected hover on key");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("key"),
+        "should show property info for key, got: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_variable_inside_empty() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class Box {
+    public string $label;
+}
+function check(Box $b) {
+    empty($b->label);
+}
+"#;
+
+    // Hover on `label` inside `empty($b->label)` (line 5).
+    let hover = hover_at(&backend, uri, content, 5, 15).expect("expected hover on label");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("label"),
+        "should show property info for label, got: {}",
+        text
+    );
+}
+
+// ── String interpolation ────────────────────────────────────────────────────
+
+#[test]
+fn hover_variable_inside_interpolated_string() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class Greeter {
+    public string $name;
+}
+function greet(Greeter $g) {
+    echo "Hello {$g->name}!";
+}
+"#;
+
+    // Hover on `name` inside the interpolated string (line 5).
+    let hover = hover_at(&backend, uri, content, 5, 22).expect("expected hover on name");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("name"),
+        "should show property info for name, got: {}",
+        text
+    );
+}
+
+// ── First-class callable ────────────────────────────────────────────────────
+
+#[test]
+fn hover_first_class_callable_static_method() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class Formatter {
+    public static function bold(string $text): string {
+        return "<b>$text</b>";
+    }
+}
+function test() {
+    $fn = Formatter::bold(...);
+}
+"#;
+
+    // Hover on `Formatter` in `Formatter::bold(...)` (line 7).
+    let hover = hover_at(&backend, uri, content, 7, 10).expect("expected hover on Formatter");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("Formatter"),
+        "should show Formatter class info, got: {}",
+        text
+    );
+
+    // Hover on `bold` in `Formatter::bold(...)` (line 7).
+    let hover2 = hover_at(&backend, uri, content, 7, 22).expect("expected hover on bold");
+    let text2 = hover_text(&hover2);
+    assert!(
+        text2.contains("bold"),
+        "should show bold method info, got: {}",
+        text2
+    );
+}
+
+#[test]
+fn hover_first_class_callable_instance_method() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class Printer {
+    public function printLine(string $line): void {}
+}
+function test(Printer $p) {
+    $fn = $p->printLine(...);
+}
+"#;
+
+    // Hover on `printLine` in `$p->printLine(...)` (line 5).
+    let hover = hover_at(&backend, uri, content, 5, 15).expect("expected hover on printLine");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("printLine"),
+        "should show printLine method info, got: {}",
+        text
+    );
+}
