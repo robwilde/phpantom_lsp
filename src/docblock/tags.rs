@@ -22,7 +22,9 @@ use mago_syntax::ast::*;
 
 use crate::types::{AssertionKind, TypeAssertion};
 
-use super::types::{base_class_name, clean_type, is_scalar, split_type_token, strip_nullable};
+use super::types::{
+    base_class_name, clean_type, is_scalar, normalize_nullable, split_type_token, strip_nullable,
+};
 
 // ─── Public API ─────────────────────────────────────────────────────────────
 
@@ -371,15 +373,244 @@ pub fn extract_param_raw_type(docblock: &str, var_name: &str) -> Option<String> 
             let (type_token, remainder) = split_type_token(rest);
 
             // The next token should be the parameter name.
-            if let Some(name) = remainder.split_whitespace().next()
-                && name == var_name
-            {
-                return Some(type_token.to_string());
+            // Handle `...$name` (variadic) by stripping the leading `...`.
+            if let Some(name) = remainder.split_whitespace().next() {
+                let name = name.strip_prefix("...").unwrap_or(name);
+                if name == var_name {
+                    return Some(type_token.to_string());
+                }
             }
         }
     }
 
     None
+}
+
+/// Extract the human-readable description from a `@param` tag for a
+/// specific parameter.
+///
+/// Given a docblock and a parameter name (with `$` prefix), returns the
+/// description text that follows the type and `$name` on the `@param` line,
+/// including any multi-line continuation (lines that don't start with `@`).
+///
+/// HTML tags like `<p>`, `</p>`, `<i>`, `</i>` are stripped.
+///
+/// Example:
+///   `@param callable|null $callback Callback function to run for each element.`
+///   with var_name `"$callback"` → `Some("Callback function to run for each element.")`
+pub fn extract_param_description(docblock: &str, var_name: &str) -> Option<String> {
+    let inner = docblock
+        .trim()
+        .strip_prefix("/**")
+        .unwrap_or(docblock)
+        .strip_suffix("*/")
+        .unwrap_or(docblock);
+
+    let lines: Vec<&str> = inner.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        let trimmed = lines[i].trim().trim_start_matches('*').trim();
+
+        if let Some(rest) = trimmed.strip_prefix("@param") {
+            let rest = rest.trim_start();
+            if rest.is_empty() {
+                i += 1;
+                continue;
+            }
+
+            // Skip the type token.
+            let (_type_token, remainder) = split_type_token(rest);
+            let remainder = remainder.trim_start();
+
+            // Check if the next token is our parameter name.
+            // Handle `...$name` (variadic) by stripping the leading `...`.
+            let name_token = remainder.split_whitespace().next().unwrap_or("");
+            let name_stripped = name_token.strip_prefix("...").unwrap_or(name_token);
+            if name_stripped != var_name {
+                i += 1;
+                continue;
+            }
+
+            // Skip past the parameter name to get the description.
+            let after_name = remainder.get(name_token.len()..).unwrap_or("").trim_start();
+
+            let mut desc_parts: Vec<String> = Vec::new();
+            if !after_name.is_empty() {
+                desc_parts.push(strip_html_tags(after_name));
+            }
+
+            // Collect continuation lines (until next `@tag` or empty trimmed line).
+            let mut j = i + 1;
+            while j < lines.len() {
+                let cont = lines[j].trim().trim_start_matches('*').trim();
+                if cont.is_empty() || cont.starts_with('@') {
+                    break;
+                }
+                desc_parts.push(strip_html_tags(cont));
+                j += 1;
+            }
+
+            let desc = desc_parts.join(" ").trim().to_string();
+            if desc.is_empty() {
+                return None;
+            }
+            return Some(desc);
+        }
+        i += 1;
+    }
+
+    None
+}
+
+/// Extract the human-readable description from the `@return` tag in a
+/// docblock.
+///
+/// Returns the text that follows the type on the `@return` line,
+/// including any multi-line continuation (lines that don't start with `@`).
+///
+/// HTML tags like `<p>`, `</p>`, `<i>`, `</i>` are stripped.
+///
+/// Example:
+///   `@return array an array containing all the elements`
+///   → `Some("an array containing all the elements")`
+pub fn extract_return_description(docblock: &str) -> Option<String> {
+    let inner = docblock
+        .trim()
+        .strip_prefix("/**")
+        .unwrap_or(docblock)
+        .strip_suffix("*/")
+        .unwrap_or(docblock);
+
+    let lines: Vec<&str> = inner.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        let trimmed = lines[i].trim().trim_start_matches('*').trim();
+
+        if let Some(rest) = trimmed.strip_prefix("@return") {
+            let rest = rest.trim_start();
+            if rest.is_empty() {
+                i += 1;
+                continue;
+            }
+
+            // Skip PHPStan conditional return types.
+            if rest.starts_with('(') {
+                return None;
+            }
+
+            // Skip the type token.
+            let (_type_token, remainder) = split_type_token(rest);
+            let remainder = remainder.trim_start();
+
+            let mut desc_parts: Vec<String> = Vec::new();
+            if !remainder.is_empty() {
+                desc_parts.push(strip_html_tags(remainder));
+            }
+
+            // Collect continuation lines.
+            let mut j = i + 1;
+            while j < lines.len() {
+                let cont = lines[j].trim().trim_start_matches('*').trim();
+                if cont.is_empty() || cont.starts_with('@') {
+                    break;
+                }
+                desc_parts.push(strip_html_tags(cont));
+                j += 1;
+            }
+
+            let desc = desc_parts.join(" ").trim().to_string();
+            if desc.is_empty() {
+                return None;
+            }
+            return Some(desc);
+        }
+        i += 1;
+    }
+
+    None
+}
+
+/// Extract the URL from a `@link` tag in a docblock.
+///
+/// Example:
+///   `@link https://php.net/manual/en/function.array-map.php`
+///   → `Some("https://php.net/manual/en/function.array-map.php")`
+pub fn extract_link_url(docblock: &str) -> Option<String> {
+    let inner = docblock
+        .trim()
+        .strip_prefix("/**")
+        .unwrap_or(docblock)
+        .strip_suffix("*/")
+        .unwrap_or(docblock);
+
+    for line in inner.lines() {
+        let trimmed = line.trim().trim_start_matches('*').trim();
+
+        if let Some(rest) = trimmed.strip_prefix("@link") {
+            let rest = rest.trim_start();
+            // Take the first whitespace-delimited token as the URL.
+            if let Some(url) = rest.split_whitespace().next()
+                && !url.is_empty()
+            {
+                return Some(url.to_string());
+            }
+        }
+    }
+
+    None
+}
+
+/// Strip common HTML tags from a docblock description string.
+///
+/// Removes `<p>`, `</p>`, `<i>`, `</i>`, `<b>`, `</b>`, `<br>`, `<br/>`,
+/// `<br />`, `<li>`, `</li>`, `<ul>`, `</ul>`, `<ol>`, `</ol>`,
+/// `<code>`, `</code>`, `<em>`, `</em>`, and `<strong>`, `</strong>`.
+fn strip_html_tags(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        if c == '<' {
+            // Find the closing `>`.
+            if let Some(end) = s[i..].find('>') {
+                let tag = &s[i..i + end + 1];
+                let tag_lower = tag.to_ascii_lowercase();
+                let is_html = tag_lower == "<p>"
+                    || tag_lower == "</p>"
+                    || tag_lower == "<i>"
+                    || tag_lower == "</i>"
+                    || tag_lower == "<b>"
+                    || tag_lower == "</b>"
+                    || tag_lower == "<br>"
+                    || tag_lower == "<br/>"
+                    || tag_lower == "<br />"
+                    || tag_lower == "<li>"
+                    || tag_lower == "</li>"
+                    || tag_lower == "<ul>"
+                    || tag_lower == "</ul>"
+                    || tag_lower == "<ol>"
+                    || tag_lower == "</ol>"
+                    || tag_lower == "<code>"
+                    || tag_lower == "</code>"
+                    || tag_lower == "<em>"
+                    || tag_lower == "</em>"
+                    || tag_lower == "<strong>"
+                    || tag_lower == "</strong>"
+                    || tag_lower == "<span>"
+                    || tag_lower == "</span>";
+                if is_html {
+                    // Skip past the closing `>`.
+                    for _ in 0..end {
+                        chars.next();
+                    }
+                    continue;
+                }
+            }
+            result.push(c);
+        } else {
+            result.push(c);
+        }
+    }
+    result
 }
 
 /// Search backward through `content` (up to `before_offset`) for any
@@ -670,6 +901,15 @@ fn strip_trailing_modifiers(s: &str) -> &str {
 /// bare `object`), and `false` when overriding would lose precision
 /// (e.g. both are scalars).
 pub fn should_override_type(docblock_type: &str, native_type: &str) -> bool {
+    // If the docblock type is semantically equivalent to the native type
+    // after normalizing nullable syntax (`?X` ↔ `X|null`), there is no
+    // value in overriding — the docblock doesn't carry any extra
+    // information.  For example `callable|null` vs `?callable`, or
+    // `null|string` vs `?string`.
+    if normalize_nullable(docblock_type) == normalize_nullable(native_type) {
+        return false;
+    }
+
     // If the docblock type is itself a scalar, there's no value in
     // overriding — it wouldn't help with class resolution anyway.
     // However, a scalar base with generic parameters (e.g.

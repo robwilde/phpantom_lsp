@@ -120,6 +120,8 @@ impl VirtualMemberProvider for PHPDocProvider {
                     } else {
                         Some(type_str)
                     },
+                    native_type_hint: None,
+                    description: None,
                     is_static: false,
                     visibility: Visibility::Public,
                     is_deprecated: false,

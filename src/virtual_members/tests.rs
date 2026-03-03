@@ -45,6 +45,9 @@ fn virtual_members_not_empty_with_constant() {
             type_hint: None,
             visibility: Visibility::Public,
             is_deprecated: false,
+            description: None,
+            is_enum_case: false,
+            enum_value: None,
         }],
     };
     assert!(!vm.is_empty());

@@ -78,8 +78,30 @@ pub struct ParameterInfo {
     pub name: String,
     /// Whether this parameter is required (no default value and not variadic).
     pub is_required: bool,
-    /// Optional type hint string (e.g. "string", "int", "?Foo").
+    /// Effective type hint string after docblock override (e.g. "list<User>").
+    ///
+    /// When a `@param` tag is present in the docblock and is more specific
+    /// than the native PHP type hint, this holds the docblock type.
+    /// Otherwise it holds the native type hint unchanged.
     pub type_hint: Option<String>,
+    /// The native PHP type hint as written in source code (e.g. "array", "string").
+    ///
+    /// Preserved separately so that hover can show the actual PHP declaration
+    /// in the code block while displaying the richer docblock type alongside
+    /// the FQN header.  `None` when no type hint is present in source.
+    pub native_type_hint: Option<String>,
+    /// Human-readable description extracted from the `@param` tag.
+    ///
+    /// For `@param list<User> $users The active users`, this would be
+    /// `Some("The active users")`.  `None` when no description text
+    /// follows the parameter name in the `@param` tag.
+    pub description: Option<String>,
+    /// The source text of the default value expression (e.g. `"0"`, `"null"`,
+    /// `"[]"`, `"'hello'"`).
+    ///
+    /// Extracted from the AST span when the parameter has a default value.
+    /// `None` when the parameter has no default.
+    pub default_value: Option<String>,
     /// Whether this parameter is variadic (has `...`).
     pub is_variadic: bool,
     /// Whether this parameter is passed by reference (has `&`).
@@ -99,8 +121,35 @@ pub struct MethodInfo {
     pub name_offset: u32,
     /// The parameters of the method.
     pub parameters: Vec<ParameterInfo>,
-    /// Optional return type hint string (e.g. "void", "string", "?int").
+    /// Effective return type hint after docblock override (e.g. "Collection<User>").
+    ///
+    /// When a `@return` tag is present in the docblock and is more specific
+    /// than the native PHP return type hint, this holds the docblock type.
+    /// Otherwise it holds the native type hint unchanged.
     pub return_type: Option<String>,
+    /// The native PHP return type hint as written in source code (e.g. "array", "self").
+    ///
+    /// Preserved separately so that hover can show the actual PHP declaration
+    /// in the code block while displaying the richer docblock type alongside
+    /// the FQN header.  `None` when no return type hint is present in source.
+    pub native_return_type: Option<String>,
+    /// Human-readable description extracted from the method's docblock.
+    ///
+    /// This is the free-text portion of the docblock (before any `@tag` lines).
+    /// `None` when the docblock has no description or no docblock is present.
+    pub description: Option<String>,
+    /// Human-readable description extracted from the `@return` tag.
+    ///
+    /// For `@return list<User> The active users`, this would be
+    /// `Some("The active users")`.  `None` when no description text
+    /// follows the type in the `@return` tag.
+    pub return_description: Option<String>,
+    /// URL from the `@link` tag in the docblock.
+    ///
+    /// For `@link https://php.net/manual/en/function.array-map.php`,
+    /// this would be `Some("https://php.net/manual/en/function.array-map.php")`.
+    /// `None` when no `@link` tag is present.
+    pub link: Option<String>,
     /// Whether the method is static.
     pub is_static: bool,
     /// Visibility of the method (public, protected, or private).
@@ -167,6 +216,10 @@ impl MethodInfo {
             name_offset: 0,
             parameters: Vec::new(),
             return_type: return_type.map(|s| s.to_string()),
+            native_return_type: None,
+            description: None,
+            return_description: None,
+            link: None,
             is_static: false,
             visibility: Visibility::Public,
             conditional_return: None,
@@ -190,8 +243,23 @@ pub struct PropertyInfo {
     /// A value of `0` means "not available" — callers should fall back to
     /// text search.
     pub name_offset: u32,
-    /// Optional type hint string (e.g. "string", "int").
+    /// Effective type hint string after docblock override (e.g. "list<User>").
+    ///
+    /// When a `@var` tag is present in the docblock and is more specific
+    /// than the native PHP type hint, this holds the docblock type.
+    /// Otherwise it holds the native type hint unchanged.
     pub type_hint: Option<String>,
+    /// The native PHP type hint as written in source code (e.g. "array", "string").
+    ///
+    /// Preserved separately so that hover can show the actual PHP declaration
+    /// in the code block while displaying the richer docblock type alongside
+    /// the FQN header.  `None` when no type hint is present in source.
+    pub native_type_hint: Option<String>,
+    /// Human-readable description extracted from the property's docblock.
+    ///
+    /// This is the free-text portion of the docblock (before any `@tag` lines).
+    /// `None` when the docblock has no description or no docblock is present.
+    pub description: Option<String>,
     /// Whether the property is static.
     pub is_static: bool,
     /// Visibility of the property (public, protected, or private).
@@ -219,6 +287,8 @@ impl PropertyInfo {
             name: name.to_string(),
             name_offset: 0,
             type_hint: type_hint.map(|s| s.to_string()),
+            native_type_hint: None,
+            description: None,
             is_static: false,
             visibility: Visibility::Public,
             is_deprecated: false,
@@ -243,6 +313,17 @@ pub struct ConstantInfo {
     pub visibility: Visibility,
     /// Whether this constant is marked `@deprecated` in its PHPDoc.
     pub is_deprecated: bool,
+    /// Human-readable description extracted from the constant's docblock.
+    ///
+    /// This is the free-text portion of the docblock (before any `@tag` lines).
+    /// `None` when the docblock has no description or no docblock is present.
+    pub description: Option<String>,
+    /// Whether this constant is an enum case rather than a regular class constant.
+    pub is_enum_case: bool,
+    /// The literal value of a backed enum case (e.g. `"'pending'"` for
+    /// `case Pending = 'pending';`).  `None` for unit enum cases and
+    /// regular class constants.
+    pub enum_value: Option<String>,
 }
 
 /// Describes the access operator that triggered completion.
@@ -310,8 +391,35 @@ pub struct FunctionInfo {
     pub name_offset: u32,
     /// The parameters of the function.
     pub parameters: Vec<ParameterInfo>,
-    /// Optional return type hint string (e.g. "void", "string", "?int").
+    /// Effective return type hint after docblock override (e.g. "Collection<User>").
+    ///
+    /// When a `@return` tag is present in the docblock and is more specific
+    /// than the native PHP return type hint, this holds the docblock type.
+    /// Otherwise it holds the native type hint unchanged.
     pub return_type: Option<String>,
+    /// The native PHP return type hint as written in source code (e.g. "array", "self").
+    ///
+    /// Preserved separately so that hover can show the actual PHP declaration
+    /// in the code block while displaying the richer docblock type alongside
+    /// the FQN header.  `None` when no return type hint is present in source.
+    pub native_return_type: Option<String>,
+    /// Human-readable description extracted from the function's docblock.
+    ///
+    /// This is the free-text portion of the docblock (before any `@tag` lines).
+    /// `None` when the docblock has no description or no docblock is present.
+    pub description: Option<String>,
+    /// Human-readable description extracted from the `@return` tag.
+    ///
+    /// For `@return list<User> The active users`, this would be
+    /// `Some("The active users")`.  `None` when no description text
+    /// follows the type in the `@return` tag.
+    pub return_description: Option<String>,
+    /// URL from the `@link` tag in the docblock.
+    ///
+    /// For `@link https://php.net/manual/en/function.array-map.php`,
+    /// this would be `Some("https://php.net/manual/en/function.array-map.php")`.
+    /// `None` when no `@link` tag is present.
+    pub link: Option<String>,
     /// The namespace this function is declared in, if any.
     /// For example, `Amp\delay` would have namespace `Some("Amp")`.
     pub namespace: Option<String>,
@@ -605,6 +713,12 @@ pub struct ClassInfo {
     pub is_abstract: bool,
     /// Whether this class is marked `@deprecated` in its PHPDoc.
     pub is_deprecated: bool,
+    /// URL from the `@link` tag in the class-level docblock.
+    ///
+    /// For `@link https://php.net/manual/en/reserved.classes.php`,
+    /// this would be `Some("https://php.net/manual/en/reserved.classes.php")`.
+    /// `None` when no `@link` tag is present.
+    pub link: Option<String>,
     /// Template parameter names declared via `@template` / `@template-covariant`
     /// / `@template-contravariant` tags in the class-level docblock.
     ///
@@ -690,6 +804,9 @@ pub struct ClassInfo {
     /// namespace blocks (e.g. `Illuminate\Database\Eloquent\Builder` vs
     /// `Illuminate\Database\Query\Builder`).
     pub file_namespace: Option<String>,
+    /// The backing type of a backed enum (e.g. `"string"` or `"int"`).
+    /// `None` for unit enums and non-enum class-like declarations.
+    pub backed_type: Option<String>,
     /// Laravel-specific metadata (custom collections, casts, attribute
     /// defaults, column names). `None` for non-Laravel classes to avoid
     /// per-class allocation overhead.

@@ -154,6 +154,9 @@ fn format_param_simple() {
     let p = ParameterInfo {
         name: "$x".to_string(),
         type_hint: Some("int".to_string()),
+        native_type_hint: Some("int".to_string()),
+        description: None,
+        default_value: None,
         is_required: true,
         is_variadic: false,
         is_reference: false,
@@ -166,6 +169,9 @@ fn format_param_variadic() {
     let p = ParameterInfo {
         name: "$items".to_string(),
         type_hint: Some("string".to_string()),
+        native_type_hint: Some("string".to_string()),
+        description: None,
+        default_value: None,
         is_required: false,
         is_variadic: true,
         is_reference: false,
@@ -178,6 +184,9 @@ fn format_param_reference() {
     let p = ParameterInfo {
         name: "$arr".to_string(),
         type_hint: Some("array".to_string()),
+        native_type_hint: Some("array".to_string()),
+        description: None,
+        default_value: None,
         is_required: true,
         is_variadic: false,
         is_reference: true,
@@ -190,6 +199,9 @@ fn format_param_no_type() {
     let p = ParameterInfo {
         name: "$x".to_string(),
         type_hint: None,
+        native_type_hint: None,
+        description: None,
+        default_value: None,
         is_required: true,
         is_variadic: false,
         is_reference: false,
@@ -205,6 +217,9 @@ fn build_signature_label() {
         ParameterInfo {
             name: "$name".to_string(),
             type_hint: Some("string".to_string()),
+            native_type_hint: Some("string".to_string()),
+            description: None,
+            default_value: None,
             is_required: true,
             is_variadic: false,
             is_reference: false,
@@ -212,6 +227,9 @@ fn build_signature_label() {
         ParameterInfo {
             name: "$age".to_string(),
             type_hint: Some("int".to_string()),
+            native_type_hint: Some("int".to_string()),
+            description: None,
+            default_value: None,
             is_required: true,
             is_variadic: false,
             is_reference: false,
@@ -227,6 +245,9 @@ fn build_signature_parameter_offsets() {
         ParameterInfo {
             name: "$a".to_string(),
             type_hint: None,
+            native_type_hint: None,
+            description: None,
+            default_value: None,
             is_required: true,
             is_variadic: false,
             is_reference: false,
@@ -234,6 +255,9 @@ fn build_signature_parameter_offsets() {
         ParameterInfo {
             name: "$b".to_string(),
             type_hint: None,
+            native_type_hint: None,
+            description: None,
+            default_value: None,
             is_required: true,
             is_variadic: false,
             is_reference: false,
@@ -262,6 +286,9 @@ fn clamp_within_range() {
         ParameterInfo {
             name: "$a".to_string(),
             type_hint: None,
+            native_type_hint: None,
+            description: None,
+            default_value: None,
             is_required: true,
             is_variadic: false,
             is_reference: false,
@@ -269,6 +296,9 @@ fn clamp_within_range() {
         ParameterInfo {
             name: "$b".to_string(),
             type_hint: None,
+            native_type_hint: None,
+            description: None,
+            default_value: None,
             is_required: true,
             is_variadic: false,
             is_reference: false,
@@ -283,6 +313,9 @@ fn clamp_exceeds_range() {
     let params = vec![ParameterInfo {
         name: "$a".to_string(),
         type_hint: None,
+        native_type_hint: None,
+        description: None,
+        default_value: None,
         is_required: true,
         is_variadic: false,
         is_reference: false,

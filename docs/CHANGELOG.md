@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Resolution engine rewritten on AST.** Variable type inference, subject dispatch, call return type resolution, member-access detection, and go-to-definition lookups all run through the AST walker now. The text-based scanner and its line-by-line fallbacks have been removed entirely. This fixes a class of edge-case bugs with null-safe chains, parenthesized `new` expressions, chained method calls, and complex array access patterns.
 - **Go-to-definition uses byte offsets exclusively.** All definition lookups use AST-derived byte offsets instead of text search, including for built-in stubs and `define()` constants.
+- **Hover redesigned.** Hover popups use short names with a `namespace` line, show actual default values instead of `= ...`, display `@link` URLs, and highlight the precise hovered token. `new ClassName` shows the constructor signature. `@template` parameters show their declaration and bound. Fully-qualified names in docblocks resolve correctly in namespaced files.
 
 ### Added
 

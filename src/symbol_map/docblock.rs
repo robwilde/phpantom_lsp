@@ -146,7 +146,7 @@ pub(super) fn extract_docblock_symbols(
     docblock: &str,
     base_offset: u32,
     spans: &mut Vec<SymbolSpan>,
-) -> Vec<(String, u32)> {
+) -> Vec<(String, u32, Option<String>)> {
     // Tags whose immediate next token is a type.
     const TYPE_FIRST_TAGS: &[&str] = &[
         "@param",
@@ -168,10 +168,16 @@ pub(super) fn extract_docblock_symbols(
         "@psalm-param",
         "@phpstan-var",
         "@psalm-var",
+        "@phpstan-assert",
+        "@phpstan-assert-if-true",
+        "@phpstan-assert-if-false",
+        "@psalm-assert",
+        "@psalm-assert-if-true",
+        "@psalm-assert-if-false",
     ];
 
     let mut line_start: usize = 0;
-    let mut template_params: Vec<(String, u32)> = Vec::new();
+    let mut template_params: Vec<(String, u32, Option<String>)> = Vec::new();
 
     for line in docblock.split('\n') {
         if let Some(at_pos) = line.find('@') {
@@ -233,14 +239,36 @@ pub(super) fn extract_docblock_symbols(
                 if !after_tag_trimmed.is_empty() {
                     let type_start_in_line =
                         tag_start_in_line + tag_end + (after_tag.len() - after_tag_trimmed.len());
+                    let type_start_in_docblock = line_start + type_start_in_line;
 
-                    let (type_token, _remainder) = split_type_token(after_tag_trimmed);
+                    // Build a (possibly multiline) type string and its
+                    // offset map so that `emit_type_spans` produces
+                    // correct file-level offsets even when the type
+                    // spans continuation lines.
+                    let (joined, offset_map) =
+                        join_multiline_type(docblock, type_start_in_docblock);
+
+                    let (type_token, _remainder) = split_type_token(&joined);
                     if !type_token.is_empty() {
-                        emit_type_spans(
-                            type_token,
-                            base_offset + (line_start + type_start_in_line) as u32,
-                            spans,
-                        );
+                        let mut local_spans: Vec<SymbolSpan> = Vec::new();
+                        emit_type_spans(type_token, 0, &mut local_spans);
+                        // Remap offsets from the joined string back to
+                        // original docblock positions.
+                        for mut sp in local_spans {
+                            sp.start = base_offset
+                                + offset_map
+                                    .get(sp.start as usize)
+                                    .copied()
+                                    .unwrap_or(sp.start as usize)
+                                    as u32;
+                            sp.end = base_offset
+                                + offset_map
+                                    .get(sp.end as usize)
+                                    .copied()
+                                    .unwrap_or(sp.end as usize)
+                                    as u32;
+                            spans.push(sp);
+                        }
                     }
                 }
             }
@@ -256,6 +284,116 @@ pub(super) fn extract_docblock_symbols(
 
 /// Emit `SymbolSpan` entries for a type token, splitting unions and
 /// intersections and skipping scalars.
+/// Build a contiguous type string from a potentially multiline docblock
+/// region, starting at `start_in_docblock` (byte offset within the
+/// docblock text).
+///
+/// Returns `(joined_text, offset_map)` where `offset_map[i]` is the byte
+/// offset in the original `docblock` that corresponds to byte `i` in
+/// `joined_text`.  Continuation-line prefixes (`* `) are stripped so that
+/// `split_type_token` / `emit_type_spans` see a clean type string.
+fn join_multiline_type(docblock: &str, start_in_docblock: usize) -> (String, Vec<usize>) {
+    let mut joined = String::new();
+    // offset_map[i] = byte offset in `docblock` for byte `i` in `joined`.
+    // We only add the one-past-end sentinel at the very end so that
+    // continuation chunks don't shift indices.
+    let mut offset_map: Vec<usize> = Vec::new();
+
+    let first_line_rest = &docblock[start_in_docblock..];
+    // Take text up to (but not including) the newline on the first line.
+    let first_nl = first_line_rest.find('\n').unwrap_or(first_line_rest.len());
+    let first_chunk = &first_line_rest[..first_nl];
+    for (i, _) in first_chunk.char_indices() {
+        offset_map.push(start_in_docblock + i);
+    }
+    joined.push_str(first_chunk);
+
+    // Check whether the first chunk has unclosed `<`, `(`, or `{`.
+    if !has_unclosed_delimiters(&joined) {
+        // Push one-past-end sentinel.
+        offset_map.push(start_in_docblock + first_chunk.len());
+        return (joined, offset_map);
+    }
+
+    // Consume continuation lines.
+    let mut pos = start_in_docblock + first_nl;
+    while pos < docblock.len() {
+        // Skip the `\n`.
+        if docblock.as_bytes().get(pos) == Some(&b'\n') {
+            pos += 1;
+        }
+        if pos >= docblock.len() {
+            break;
+        }
+
+        let line_end = docblock[pos..]
+            .find('\n')
+            .map_or(docblock.len(), |p| pos + p);
+        let raw_line = &docblock[pos..line_end];
+
+        // Strip the leading `* ` (with optional whitespace before `*`).
+        let stripped = raw_line.trim_start();
+        if stripped.starts_with("*/") {
+            // End of docblock.
+            break;
+        }
+        let content_after_star = if let Some(rest) = stripped.strip_prefix('*') {
+            // Skip one optional space after `*`.
+            rest.strip_prefix(' ').unwrap_or(rest)
+        } else {
+            stripped
+        };
+
+        // If the continuation line starts with `@`, it's a new tag — stop.
+        if content_after_star.trim_start().starts_with('@') {
+            break;
+        }
+
+        let content_start_in_docblock = pos + (raw_line.len() - content_after_star.len());
+
+        // Append a space to represent the line break in the joined string,
+        // mapped to the newline position.
+        offset_map.push(pos.saturating_sub(1));
+        joined.push(' ');
+
+        for (i, _) in content_after_star.char_indices() {
+            offset_map.push(content_start_in_docblock + i);
+        }
+        joined.push_str(content_after_star);
+
+        pos = line_end;
+
+        if !has_unclosed_delimiters(&joined) {
+            break;
+        }
+    }
+
+    // One-past-end sentinel so that `sp.end` lookups work.
+    let last_mapped = offset_map.last().copied().unwrap_or(start_in_docblock);
+    offset_map.push(last_mapped + 1);
+
+    (joined, offset_map)
+}
+
+/// Returns `true` when `s` has more opening `<`, `(`, or `{` than closing.
+fn has_unclosed_delimiters(s: &str) -> bool {
+    let mut angle = 0i32;
+    let mut paren = 0i32;
+    let mut brace = 0i32;
+    for b in s.bytes() {
+        match b {
+            b'<' => angle += 1,
+            b'>' => angle -= 1,
+            b'(' => paren += 1,
+            b')' => paren -= 1,
+            b'{' => brace += 1,
+            b'}' => brace -= 1,
+            _ => {}
+        }
+    }
+    angle > 0 || paren > 0 || brace > 0
+}
+
 pub(super) fn emit_type_spans(
     type_token: &str,
     token_file_offset: u32,
@@ -347,6 +485,12 @@ pub(super) fn emit_type_spans(
                 }
             }
         }
+
+        // Not a conditional type — this is a parenthesized group used for
+        // grouping in union/intersection/DNF types, e.g. `(\Closure(static): mixed)`
+        // or `(A&B)`.  Strip the outer parens and recurse into the inner content.
+        emit_type_spans(inner, token_file_offset + 1, spans);
+        return;
     }
 
     // Single type — strip nullable prefix.
@@ -369,6 +513,23 @@ pub(super) fn emit_type_spans(
             end,
             kind: SymbolKind::SelfStaticParent {
                 keyword: "static".to_string(),
+            },
+        });
+        return;
+    }
+
+    // Handle `static`, `self`, and `parent` keywords in docblock types.
+    // These are in NON_NAVIGABLE so they won't be emitted as ClassReference
+    // spans, but they should still produce SelfStaticParent spans so that
+    // hover works when they appear inside generic args (e.g. `Builder<static>`).
+    if type_name == "static" || type_name == "self" || type_name == "parent" {
+        let start = token_file_offset + extra_offset;
+        let end = start + type_name.len() as u32;
+        spans.push(SymbolSpan {
+            start,
+            end,
+            kind: SymbolKind::SelfStaticParent {
+                keyword: type_name.to_string(),
             },
         });
         return;
@@ -611,7 +772,7 @@ fn extract_template_tag_symbols(
     line_start: usize,
     base_offset: u32,
     spans: &mut Vec<SymbolSpan>,
-) -> Option<(String, u32)> {
+) -> Option<(String, u32, Option<String>)> {
     // Skip the tag itself to get to the template parameter name.
     let after_tag = &after_at[tag_end..];
     let after_tag_trimmed = after_tag.trim_start();
@@ -630,21 +791,19 @@ fn extract_template_tag_symbols(
     let param_file_offset =
         base_offset + (line_start + tag_start_in_line + param_offset_in_after_at) as u32;
 
-    let result = Some((param_name.to_string(), param_file_offset));
-
     let after_param = &after_tag_trimmed[param_end..];
     let after_param_trimmed = after_param.trim_start();
 
     // Check for `of` keyword.
     if !after_param_trimmed.starts_with("of ") && !after_param_trimmed.starts_with("of\t") {
-        return result;
+        return Some((param_name.to_string(), param_file_offset, None));
     }
 
     // Skip `of` and whitespace to get to the bound type.
     let after_of = &after_param_trimmed[2..]; // skip "of"
     let after_of_trimmed = after_of.trim_start();
     if after_of_trimmed.is_empty() {
-        return result;
+        return Some((param_name.to_string(), param_file_offset, None));
     }
 
     // Compute the offset of the bound type within the original line.
@@ -656,15 +815,18 @@ fn extract_template_tag_symbols(
     let bound_start_in_line = tag_start_in_line + bound_offset_in_after_at;
 
     let (type_token, _remainder) = split_type_token(after_of_trimmed);
-    if !type_token.is_empty() {
+    let bound = if !type_token.is_empty() {
         emit_type_spans(
             type_token,
             base_offset + (line_start + bound_start_in_line) as u32,
             spans,
         );
-    }
+        Some(type_token.to_string())
+    } else {
+        None
+    };
 
-    result
+    Some((param_name.to_string(), param_file_offset, bound))
 }
 
 // ─── @method tag extraction ─────────────────────────────────────────────────

@@ -35,6 +35,7 @@ pub fn make_class(name: &str) -> ClassInfo {
         is_final: false,
         is_abstract: false,
         is_deprecated: false,
+        link: None,
         template_params: Vec::new(),
         template_param_bounds: HashMap::new(),
         extends_generics: Vec::new(),
@@ -45,6 +46,7 @@ pub fn make_class(name: &str) -> ClassInfo {
         trait_aliases: Vec::new(),
         class_docblock: None,
         file_namespace: None,
+        backed_type: None,
         laravel: None,
     }
 }
@@ -88,6 +90,9 @@ pub fn make_constant(name: &str) -> ConstantInfo {
         type_hint: None,
         visibility: Visibility::Public,
         is_deprecated: false,
+        description: None,
+        is_enum_case: false,
+        enum_value: None,
     }
 }
 
@@ -100,6 +105,9 @@ pub fn make_param(name: &str, type_hint: Option<&str>, is_required: bool) -> Par
         name: name.to_string(),
         is_required,
         type_hint: type_hint.map(|s| s.to_string()),
+        native_type_hint: type_hint.map(|s| s.to_string()),
+        description: None,
+        default_value: None,
         is_variadic: false,
         is_reference: false,
     }

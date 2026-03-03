@@ -172,6 +172,8 @@ fn type_hint_to_classes_depth(
                 name: e.key,
                 name_offset: 0,
                 type_hint: Some(e.value_type),
+                native_type_hint: None,
+                description: None,
                 is_static: false,
                 visibility: Visibility::Public,
                 is_deprecated: false,

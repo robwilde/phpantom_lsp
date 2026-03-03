@@ -422,10 +422,11 @@ fn extract_from_class<'a>(class: &'a Class<'a>, ctx: &mut ExtractionCtx<'a>) {
     {
         let tpl_params = extract_docblock_symbols(doc_text, doc_offset, &mut ctx.spans);
         let scope_end = class.right_brace.end.offset;
-        for (name, name_offset) in tpl_params {
+        for (name, name_offset, bound) in tpl_params {
             ctx.template_defs.push(TemplateParamDef {
                 name_offset,
                 name,
+                bound,
                 scope_start: doc_offset,
                 scope_end,
             });
@@ -466,10 +467,11 @@ fn extract_from_interface<'a>(iface: &'a Interface<'a>, ctx: &mut ExtractionCtx<
     {
         let tpl_params = extract_docblock_symbols(doc_text, doc_offset, &mut ctx.spans);
         let scope_end = iface.right_brace.end.offset;
-        for (name, name_offset) in tpl_params {
+        for (name, name_offset, bound) in tpl_params {
             ctx.template_defs.push(TemplateParamDef {
                 name_offset,
                 name,
+                bound,
                 scope_start: doc_offset,
                 scope_end,
             });
@@ -498,10 +500,11 @@ fn extract_from_trait<'a>(trait_def: &'a Trait<'a>, ctx: &mut ExtractionCtx<'a>)
     {
         let tpl_params = extract_docblock_symbols(doc_text, doc_offset, &mut ctx.spans);
         let scope_end = trait_def.right_brace.end.offset;
-        for (name, name_offset) in tpl_params {
+        for (name, name_offset, bound) in tpl_params {
             ctx.template_defs.push(TemplateParamDef {
                 name_offset,
                 name,
+                bound,
                 scope_start: doc_offset,
                 scope_end,
             });
@@ -541,10 +544,11 @@ fn extract_from_enum<'a>(enum_def: &'a Enum<'a>, ctx: &mut ExtractionCtx<'a>) {
     {
         let tpl_params = extract_docblock_symbols(doc_text, doc_offset, &mut ctx.spans);
         let scope_end = enum_def.right_brace.end.offset;
-        for (name, name_offset) in tpl_params {
+        for (name, name_offset, bound) in tpl_params {
             ctx.template_defs.push(TemplateParamDef {
                 name_offset,
                 name,
+                bound,
                 scope_start: doc_offset,
                 scope_end,
             });
@@ -600,6 +604,14 @@ fn extract_from_class_member<'a>(member: &'a ClassLikeMember<'a>, ctx: &mut Extr
             extract_from_class_constant(constant, ctx);
         }
         ClassLikeMember::TraitUse(trait_use) => {
+            // Process the docblock attached to the trait use statement
+            // so that `@use Trait<TModel>` generic args get spans.
+            if let Some((doc_text, doc_offset)) =
+                get_docblock_text_with_offset(ctx.trivias, ctx.content, trait_use)
+            {
+                let _tpl = extract_docblock_symbols(doc_text, doc_offset, &mut ctx.spans);
+            }
+
             for ident in trait_use.trait_names.iter() {
                 let raw = ident.value().to_string();
                 ctx.spans.push(class_ref_span(
@@ -637,10 +649,11 @@ fn extract_from_method<'a>(method: &'a Method<'a>, ctx: &mut ExtractionCtx<'a>) 
             // Use the method span end as a reasonable bound.
             method.span().end.offset
         };
-        for (name, name_offset) in tpl_params {
+        for (name, name_offset, bound) in tpl_params {
             ctx.template_defs.push(TemplateParamDef {
                 name_offset,
                 name,
+                bound,
                 scope_start: doc_offset,
                 scope_end,
             });
@@ -708,7 +721,7 @@ fn extract_inline_docblock(node: &impl HasSpan, ctx: &mut ExtractionCtx<'_>) {
     }
 }
 
-fn extract_from_property(property: &Property<'_>, ctx: &mut ExtractionCtx<'_>) {
+fn extract_from_property<'a>(property: &Property<'a>, ctx: &mut ExtractionCtx<'a>) {
     // NOTE: Property attributes (PHP 8) are not extracted here because
     // `Property` is an enum without a direct `attribute_lists` field.
     // This can be added later by matching on the property variant.
@@ -727,22 +740,53 @@ fn extract_from_property(property: &Property<'_>, ctx: &mut ExtractionCtx<'_>) {
         extract_from_hint(hint, &mut ctx.spans);
     }
 
-    // Property variable names.
-    for var in property.variables().iter() {
-        let name = var.name.strip_prefix('$').unwrap_or(var.name).to_string();
-        let var_offset = var.span.start.offset;
-        ctx.spans.push(SymbolSpan {
-            start: var_offset,
-            end: var.span.end.offset,
-            kind: SymbolKind::Variable { name: name.clone() },
-        });
-        ctx.var_defs.push(VarDefSite {
-            offset: var_offset,
-            name,
-            kind: VarDefKind::Property,
-            scope_start: 0,
-            effective_from: var_offset,
-        });
+    // Property variable names and default value expressions.
+    match property {
+        Property::Plain(plain) => {
+            for item in plain.items.iter() {
+                let var = item.variable();
+                let name = var.name.strip_prefix('$').unwrap_or(var.name).to_string();
+                let var_offset = var.span.start.offset;
+                ctx.spans.push(SymbolSpan {
+                    start: var_offset,
+                    end: var.span.end.offset,
+                    kind: SymbolKind::Variable { name: name.clone() },
+                });
+                ctx.var_defs.push(VarDefSite {
+                    offset: var_offset,
+                    name,
+                    kind: VarDefKind::Property,
+                    scope_start: 0,
+                    effective_from: var_offset,
+                });
+                // Walk the default value expression so that class
+                // references like `Foo::class` in property defaults
+                // produce navigable spans.
+                if let PropertyItem::Concrete(concrete) = item {
+                    extract_from_expression(concrete.value, ctx, 0);
+                }
+            }
+        }
+        Property::Hooked(hooked) => {
+            let var = hooked.item.variable();
+            let name = var.name.strip_prefix('$').unwrap_or(var.name).to_string();
+            let var_offset = var.span.start.offset;
+            ctx.spans.push(SymbolSpan {
+                start: var_offset,
+                end: var.span.end.offset,
+                kind: SymbolKind::Variable { name: name.clone() },
+            });
+            ctx.var_defs.push(VarDefSite {
+                offset: var_offset,
+                name,
+                kind: VarDefKind::Property,
+                scope_start: 0,
+                effective_from: var_offset,
+            });
+            if let PropertyItem::Concrete(concrete) = &hooked.item {
+                extract_from_expression(concrete.value, ctx, 0);
+            }
+        }
     }
 }
 
@@ -788,10 +832,11 @@ fn extract_from_function<'a>(func: &'a Function<'a>, ctx: &mut ExtractionCtx<'a>
     {
         let tpl_params = extract_docblock_symbols(doc_text, doc_offset, &mut ctx.spans);
         let scope_end = func.body.right_brace.end.offset;
-        for (name, name_offset) in tpl_params {
+        for (name, name_offset, bound) in tpl_params {
             ctx.template_defs.push(TemplateParamDef {
                 name_offset,
                 name,
+                bound,
                 scope_start: doc_offset,
                 scope_end,
             });

@@ -21,8 +21,8 @@ pub(crate) use super::type_strings::SCALAR_TYPES;
 pub use super::type_strings::split_intersection_depth0;
 pub use super::type_strings::{base_class_name, clean_type, replace_self_in_type};
 pub(crate) use super::type_strings::{
-    is_scalar, split_generic_args, split_type_token, split_union_depth0, strip_generics,
-    strip_nullable,
+    is_scalar, normalize_nullable, split_generic_args, split_type_token, split_union_depth0,
+    strip_generics, strip_nullable,
 };
 
 // ─── Re-exports: generics ───────────────────────────────────────────────────

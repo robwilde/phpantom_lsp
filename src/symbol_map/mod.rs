@@ -108,6 +108,9 @@ pub(crate) struct TemplateParamDef {
     pub name_offset: u32,
     /// Template parameter name (e.g. `"TKey"`, `"TModel"`).
     pub name: String,
+    /// Upper bound from the `of` clause (e.g. `"array-key"` in
+    /// `@template TKey of array-key`), or `None` when unbounded.
+    pub bound: Option<String>,
     /// Start of the scope where this template parameter is visible.
     /// For class-level templates this is the docblock start offset;
     /// for method/function-level templates it is the docblock start offset.

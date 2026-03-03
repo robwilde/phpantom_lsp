@@ -204,6 +204,10 @@ pub fn extract_method_tags(docblock: &str) -> Vec<MethodInfo> {
             name_offset: 0,
             parameters,
             return_type,
+            native_return_type: None,
+            description: None,
+            return_description: None,
+            link: None,
             is_static,
             visibility: Visibility::Public,
             conditional_return: None,
@@ -279,7 +283,10 @@ fn parse_method_tag_params(params_str: &str) -> Vec<ParameterInfo> {
         result.push(ParameterInfo {
             name: param_name,
             is_required,
-            type_hint,
+            type_hint: type_hint.clone(),
+            native_type_hint: type_hint,
+            description: None,
+            default_value: None,
             is_variadic,
             is_reference: false,
         });

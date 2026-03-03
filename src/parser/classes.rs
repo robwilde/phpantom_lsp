@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use mago_span::HasSpan;
 use mago_syntax::ast::attribute::AttributeList;
+use mago_syntax::ast::class_like::enum_case::EnumCaseItem;
 use mago_syntax::ast::class_like::member::ClassLikeMember;
 use mago_syntax::ast::class_like::method::{Method, MethodBody};
 use mago_syntax::ast::class_like::property::{Property, PropertyItem};
@@ -76,6 +77,8 @@ struct ClassDocblockInfo {
     type_aliases: HashMap<String, String>,
     /// Mixin class names from `@mixin` tags.
     mixins: Vec<String>,
+    /// URL from the `@link` tag in the class-level docblock.
+    link: Option<String>,
     /// Raw class-level docblock text, preserved for deferred `@method` /
     /// `@property` parsing by the `PHPDocProvider`.
     raw_docblock: Option<String>,
@@ -113,6 +116,7 @@ fn extract_class_docblock<'a>(
         use_generics: docblock::extract_generics_tag(doc_text, "@use"),
         type_aliases: docblock::extract_type_aliases(doc_text),
         mixins: docblock::extract_mixin_tags(doc_text),
+        link: docblock::extract_link_url(doc_text),
         raw_docblock: Some(doc_text.to_string()),
     }
 }
@@ -703,6 +707,7 @@ impl Backend {
                         is_final: class.modifiers.contains_final(),
                         is_abstract: class.modifiers.contains_abstract(),
                         is_deprecated: doc_info.is_deprecated,
+                        link: doc_info.link,
                         template_params: doc_info.template_params,
                         template_param_bounds: doc_info.template_param_bounds,
                         extends_generics: doc_info.extends_generics,
@@ -713,6 +718,7 @@ impl Backend {
                         trait_aliases,
                         class_docblock: doc_info.raw_docblock,
                         file_namespace: None,
+                        backed_type: None,
                         laravel: Some(Box::new(LaravelMetadata {
                             custom_collection,
                             casts_definitions,
@@ -777,6 +783,7 @@ impl Backend {
                         is_final: false,
                         is_abstract: false,
                         is_deprecated: doc_info.is_deprecated,
+                        link: doc_info.link,
                         template_params: doc_info.template_params,
                         template_param_bounds: doc_info.template_param_bounds,
                         extends_generics: doc_info.extends_generics,
@@ -791,6 +798,7 @@ impl Backend {
                         trait_aliases,
                         class_docblock: doc_info.raw_docblock,
                         file_namespace: None,
+                        backed_type: None,
                         laravel: None,
                     });
 
@@ -832,6 +840,7 @@ impl Backend {
                         is_final: false,
                         is_abstract: false,
                         is_deprecated: doc_info.is_deprecated,
+                        link: doc_info.link,
                         template_params: doc_info.template_params,
                         template_param_bounds: doc_info.template_param_bounds,
                         extends_generics: vec![],
@@ -846,6 +855,7 @@ impl Backend {
                         trait_aliases,
                         class_docblock: doc_info.raw_docblock,
                         file_namespace: None,
+                        backed_type: None,
                         laravel: None,
                     });
 
@@ -909,6 +919,7 @@ impl Backend {
                         is_final: true,
                         is_abstract: false,
                         is_deprecated: doc_info.is_deprecated,
+                        link: doc_info.link,
                         template_params: vec![],
                         template_param_bounds: HashMap::new(),
                         extends_generics: vec![],
@@ -919,6 +930,10 @@ impl Backend {
                         trait_aliases: vec![],
                         class_docblock: doc_info.raw_docblock,
                         file_namespace: None,
+                        backed_type: enum_def
+                            .backing_type_hint
+                            .as_ref()
+                            .map(|h| crate::parser::extract_hint_string(&h.hint)),
                         laravel: None,
                     });
 
@@ -1004,8 +1019,10 @@ impl Backend {
             type_aliases: HashMap::new(),
             trait_precedences,
             trait_aliases,
+            link: None,
             class_docblock: None,
             file_namespace: None,
+            backed_type: None,
             laravel: None,
         }
     }
@@ -1433,7 +1450,8 @@ impl Backend {
                 ClassLikeMember::Method(method) => {
                     let name = method.name.value.to_string();
                     let name_offset = method.name.span.start.offset;
-                    let mut parameters = extract_parameters(&method.parameter_list);
+                    let mut parameters =
+                        extract_parameters(&method.parameter_list, doc_ctx.map(|ctx| ctx.content));
                     let native_return_type = method
                         .return_type_hint
                         .as_ref()
@@ -1505,7 +1523,13 @@ impl Backend {
 
                         (effective, conditional, deprecated, tpl_params, tpl_bindings)
                     } else {
-                        (native_return_type, None, false, Vec::new(), Vec::new())
+                        (
+                            native_return_type.clone(),
+                            None,
+                            false,
+                            Vec::new(),
+                            Vec::new(),
+                        )
                     };
 
                     // Extract promoted properties from constructor parameters.
@@ -1529,6 +1553,7 @@ impl Backend {
                                     raw_name.strip_prefix('$').unwrap_or(&raw_name).to_string();
                                 let native_hint =
                                     param.hint.as_ref().map(|h| extract_hint_string(h));
+                                let saved_native_hint = native_hint.clone();
                                 let prop_visibility = extract_visibility(param.modifiers.iter());
 
                                 // Check for a `@param` docblock annotation
@@ -1548,7 +1573,9 @@ impl Backend {
                                 properties.push(PropertyInfo {
                                     name: prop_name,
                                     name_offset: prop_name_offset,
+                                    native_type_hint: saved_native_hint,
                                     type_hint,
+                                    description: None,
                                     is_static: false,
                                     visibility: prop_visibility,
                                     is_deprecated: false,
@@ -1594,11 +1621,37 @@ impl Backend {
 
                     let has_scope_attr = has_scope_attribute(method);
 
+                    // Extract description, return description, link, and
+                    // per-parameter descriptions from the method's docblock.
+                    let method_docblock_text = doc_ctx.and_then(|ctx| {
+                        docblock::get_docblock_text_for_node(ctx.trivias, ctx.content, method)
+                    });
+
+                    let method_description = method_docblock_text
+                        .and_then(|doc| crate::hover::extract_docblock_description(Some(doc)));
+
+                    let return_description =
+                        method_docblock_text.and_then(docblock::extract_return_description);
+
+                    let link = method_docblock_text.and_then(docblock::extract_link_url);
+
+                    // Populate per-parameter descriptions from `@param` tags.
+                    if let Some(doc_text) = method_docblock_text {
+                        for param in &mut parameters {
+                            param.description =
+                                docblock::extract_param_description(doc_text, &param.name);
+                        }
+                    }
+
                     methods.push(MethodInfo {
                         name,
                         name_offset,
                         parameters,
+                        native_return_type: native_return_type.clone(),
                         return_type,
+                        description: method_description,
+                        return_description,
+                        link,
                         is_static,
                         visibility,
                         conditional_return,
@@ -1611,7 +1664,8 @@ impl Backend {
                 ClassLikeMember::Property(property) => {
                     let mut prop_infos = extract_property_info(property);
 
-                    // Apply PHPDoc `@var` override and `@deprecated` for each property.
+                    // Apply PHPDoc `@var` override, `@deprecated`, and description
+                    // for each property.
                     if let Some(ctx) = doc_ctx
                         && let Some(doc_text) =
                             docblock::get_docblock_text_for_node(ctx.trivias, ctx.content, member)
@@ -1630,6 +1684,14 @@ impl Backend {
                                 prop.is_deprecated = true;
                             }
                         }
+                        let description =
+                            crate::hover::extract_docblock_description(Some(doc_text))
+                                .or_else(|| crate::hover::extract_var_description(doc_text));
+                        if description.is_some() {
+                            for prop in &mut prop_infos {
+                                prop.description = description.clone();
+                            }
+                        }
                     }
 
                     properties.append(&mut prop_infos);
@@ -1643,6 +1705,11 @@ impl Backend {
                     } else {
                         false
                     };
+                    let const_description = doc_ctx
+                        .and_then(|ctx| {
+                            docblock::get_docblock_text_for_node(ctx.trivias, ctx.content, member)
+                        })
+                        .and_then(|doc| crate::hover::extract_docblock_description(Some(doc)));
                     for item in constant.items.iter() {
                         constants.push(ConstantInfo {
                             name: item.name.value.to_string(),
@@ -1650,18 +1717,33 @@ impl Backend {
                             type_hint: type_hint.clone(),
                             visibility,
                             is_deprecated,
+                            description: const_description.clone(),
+                            is_enum_case: false,
+                            enum_value: None,
                         });
                     }
                 }
                 ClassLikeMember::EnumCase(enum_case) => {
                     let case_name = enum_case.item.name().value.to_string();
                     let case_name_offset = enum_case.item.name().span.start.offset;
+                    let enum_value = if let EnumCaseItem::Backed(backed) = &enum_case.item {
+                        let start = backed.value.span().start.offset as usize;
+                        let end = backed.value.span().end.offset as usize;
+                        doc_ctx
+                            .and_then(|ctx| ctx.content.get(start..end))
+                            .map(|s| s.to_string())
+                    } else {
+                        None
+                    };
                     constants.push(ConstantInfo {
                         name: case_name,
                         name_offset: case_name_offset,
                         type_hint: None,
                         visibility: Visibility::Public,
                         is_deprecated: false,
+                        description: None,
+                        is_enum_case: true,
+                        enum_value,
                     });
                 }
                 ClassLikeMember::TraitUse(trait_use) => {

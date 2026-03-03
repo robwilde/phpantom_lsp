@@ -406,6 +406,9 @@ fn make_param(name: &str, type_hint: Option<&str>, required: bool) -> ParameterI
         name: format!("${}", name),
         is_required: required,
         type_hint: type_hint.map(|s| s.to_string()),
+        native_type_hint: type_hint.map(|s| s.to_string()),
+        description: None,
+        default_value: None,
         is_variadic: false,
         is_reference: false,
     }
@@ -532,6 +535,9 @@ fn completions_variadic_detail() {
         name: "$items".to_string(),
         is_required: true,
         type_hint: Some("string".to_string()),
+        native_type_hint: Some("string".to_string()),
+        description: None,
+        default_value: None,
         is_variadic: true,
         is_reference: false,
     }];

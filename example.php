@@ -205,7 +205,7 @@ class AssertNarrowingDemo
         }
 
         $maybe = pickRockOrBanana();
-        if (isBanana($maybe)) {                   // @phpstan-assert-if-false Rock
+        if (isNotRock($maybe)) {                   // @phpstan-assert-if-false Rock
             $maybe->peel();
         } else {
             $maybe->crush();
@@ -2627,7 +2627,7 @@ function isRock(mixed $value): bool
 }
 
 /** @phpstan-assert-if-false Rock $value */
-function isBanana(mixed $value): bool
+function isNotRock(mixed $value): bool
 {
     return !$value instanceof Rock;
 }

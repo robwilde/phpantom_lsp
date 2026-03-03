@@ -29,7 +29,8 @@ impl Backend {
                 Statement::Function(func) => {
                     let name = func.name.value.to_string();
                     let name_offset = func.name.span.start.offset;
-                    let parameters = extract_parameters(&func.parameter_list);
+                    let mut parameters =
+                        extract_parameters(&func.parameter_list, doc_ctx.map(|ctx| ctx.content));
                     let native_return_type = func
                         .return_type_hint
                         .as_ref()
@@ -38,60 +39,113 @@ impl Backend {
                     // Apply PHPDoc `@return` override for the function.
                     // Also extract PHPStan conditional return types,
                     // type assertion annotations, and `@deprecated` if present.
-                    let (return_type, conditional_return, type_assertions, is_deprecated) =
-                        if let Some(ctx) = doc_ctx {
-                            let docblock_text = docblock::get_docblock_text_for_node(
-                                ctx.trivias,
-                                ctx.content,
-                                func,
-                            );
+                    let (
+                        return_type,
+                        conditional_return,
+                        type_assertions,
+                        is_deprecated,
+                        description,
+                        return_description,
+                        link,
+                    ) = if let Some(ctx) = doc_ctx {
+                        let docblock_text =
+                            docblock::get_docblock_text_for_node(ctx.trivias, ctx.content, func);
 
-                            let doc_type = docblock_text.and_then(docblock::extract_return_type);
+                        let doc_type = docblock_text.and_then(docblock::extract_return_type);
 
-                            let effective = docblock::resolve_effective_type(
-                                native_return_type.as_deref(),
-                                doc_type.as_deref(),
-                            );
+                        let effective = docblock::resolve_effective_type(
+                            native_return_type.as_deref(),
+                            doc_type.as_deref(),
+                        );
 
-                            let conditional =
-                                docblock_text.and_then(docblock::extract_conditional_return_type);
+                        let conditional =
+                            docblock_text.and_then(docblock::extract_conditional_return_type);
 
-                            // If no explicit conditional return type was found,
-                            // try to synthesize one from function-level @template
-                            // annotations.  For example:
-                            //   @template T
-                            //   @param class-string<T> $class
-                            //   @return T
-                            // becomes a conditional that resolves T from the
-                            // call-site argument (e.g. resolve(User::class) → User).
-                            let conditional = conditional.or_else(|| {
-                                let doc = docblock_text?;
-                                let tpl_params = docblock::extract_template_params(doc);
-                                docblock::synthesize_template_conditional(
-                                    doc,
-                                    &tpl_params,
-                                    effective.as_deref(),
-                                    false,
-                                )
-                            });
+                        // If no explicit conditional return type was found,
+                        // try to synthesize one from function-level @template
+                        // annotations.  For example:
+                        //   @template T
+                        //   @param class-string<T> $class
+                        //   @return T
+                        // becomes a conditional that resolves T from the
+                        // call-site argument (e.g. resolve(User::class) → User).
+                        let conditional = conditional.or_else(|| {
+                            let doc = docblock_text?;
+                            let tpl_params = docblock::extract_template_params(doc);
+                            docblock::synthesize_template_conditional(
+                                doc,
+                                &tpl_params,
+                                effective.as_deref(),
+                                false,
+                            )
+                        });
 
-                            let assertions = docblock_text
-                                .map(docblock::extract_type_assertions)
-                                .unwrap_or_default();
+                        let assertions = docblock_text
+                            .map(docblock::extract_type_assertions)
+                            .unwrap_or_default();
 
-                            let deprecated =
-                                docblock_text.is_some_and(docblock::has_deprecated_tag);
+                        let deprecated = docblock_text.is_some_and(docblock::has_deprecated_tag);
 
-                            (effective, conditional, assertions, deprecated)
-                        } else {
-                            (native_return_type, None, Vec::new(), false)
-                        };
+                        let desc = docblock_text
+                            .and_then(|doc| crate::hover::extract_docblock_description(Some(doc)));
+
+                        let ret_desc = docblock_text.and_then(docblock::extract_return_description);
+
+                        let link_url = docblock_text.and_then(docblock::extract_link_url);
+
+                        (
+                            effective,
+                            conditional,
+                            assertions,
+                            deprecated,
+                            desc,
+                            ret_desc,
+                            link_url,
+                        )
+                    } else {
+                        (
+                            native_return_type.clone(),
+                            None,
+                            Vec::new(),
+                            false,
+                            None,
+                            None,
+                            None,
+                        )
+                    };
+
+                    // Merge `@param` docblock types into parameter type
+                    // hints and populate per-parameter descriptions.
+                    if let Some(ctx) = doc_ctx
+                        && let Some(doc_text) =
+                            docblock::get_docblock_text_for_node(ctx.trivias, ctx.content, func)
+                    {
+                        for param in &mut parameters {
+                            let param_doc_type =
+                                docblock::extract_param_raw_type(doc_text, &param.name);
+                            if let Some(ref doc_type) = param_doc_type {
+                                let effective = docblock::resolve_effective_type(
+                                    param.type_hint.as_deref(),
+                                    Some(doc_type),
+                                );
+                                if effective.is_some() {
+                                    param.type_hint = effective;
+                                }
+                            }
+                            param.description =
+                                docblock::extract_param_description(doc_text, &param.name);
+                        }
+                    }
 
                     functions.push(FunctionInfo {
                         name,
                         name_offset,
                         parameters,
+                        native_return_type,
                         return_type,
+                        description,
+                        return_description,
+                        link,
                         namespace: current_namespace.clone(),
                         conditional_return,
                         type_assertions,

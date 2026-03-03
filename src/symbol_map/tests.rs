@@ -1431,9 +1431,15 @@ fn template_param_def_recorded_for_class() {
         "TKey",
         "name_offset should point to the TKey text"
     );
+    assert_eq!(
+        tkey.bound.as_deref(),
+        Some("array-key"),
+        "TKey should have bound 'array-key'"
+    );
 
     let tmodel = map.template_defs.iter().find(|d| d.name == "TModel");
     assert!(tmodel.is_some(), "Should find TModel template def");
+    assert_eq!(tmodel.unwrap().bound, None, "TModel should have no bound");
 }
 
 #[test]
@@ -1508,6 +1514,68 @@ fn template_param_def_method_level() {
     assert!(
         found.is_some(),
         "Should find T from within the method docblock"
+    );
+}
+
+#[test]
+fn callable_param_type_spans_are_tight() {
+    // Verify that TKey inside `callable(TValue, TKey): mixed` gets a
+    // ClassReference span that covers exactly `TKey`, not `TKey): mixed …`.
+    let php = concat!(
+        "<?php\n",
+        "/**\n",
+        " * @template TKey of array-key\n",
+        " * @template TValue\n",
+        " */\n",
+        "class Col {\n",
+        "    /**\n",
+        "     * @param callable(TValue, TKey): mixed $callback\n",
+        "     * @return static\n",
+        "     */\n",
+        "    public function each(callable $callback): static { return $this; }\n",
+        "}\n",
+    );
+    let map = parse_and_extract(php);
+
+    // Find the byte offset of `TKey` inside the @param callable line.
+    let param_line = php.find("@param callable(TValue, TKey): mixed").unwrap();
+    let tkey_offset = php[param_line..].find("TKey").unwrap() + param_line;
+
+    // There should be a ClassReference span starting exactly at tkey_offset.
+    let span = map
+        .spans
+        .iter()
+        .find(|s| s.start == tkey_offset as u32)
+        .unwrap_or_else(|| {
+            panic!(
+                "Should find a span starting at TKey offset {}; spans: {:?}",
+                tkey_offset,
+                map.spans
+                    .iter()
+                    .filter(|s| {
+                        matches!(
+                            &s.kind,
+                            SymbolKind::ClassReference { name, .. } if name == "TKey" || name == "TValue"
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            )
+        });
+
+    assert_eq!(
+        span.end - span.start,
+        4,
+        "TKey span should be exactly 4 bytes wide, but was {} ({}..{}), covering {:?}",
+        span.end - span.start,
+        span.start,
+        span.end,
+        &php[span.start as usize..span.end as usize],
+    );
+
+    assert!(
+        matches!(&span.kind, SymbolKind::ClassReference { name, .. } if name == "TKey"),
+        "span at TKey offset should be a ClassReference for TKey, got {:?}",
+        span.kind,
     );
 }
 
@@ -1912,5 +1980,261 @@ fn docblock_closure_fqn_callable_produces_class_reference() {
         assert_eq!(name, "Result");
     } else {
         panic!("Expected ClassReference for Result");
+    }
+}
+
+#[test]
+fn template_param_in_use_tag_generic_arg() {
+    // `TModel` inside `@use Foo<TModel>` should produce a ClassReference span,
+    // and the template def scope should cover it so hover can resolve it.
+    let php = concat!(
+        "<?php\n",
+        "/**\n",
+        " * @template TModel of \\stdClass\n",
+        " */\n",
+        "class Builder {\n",
+        "    /** @use SomeTrait<TModel> */\n",
+        "    use SomeTrait;\n",
+        "}\n",
+    );
+    let map = parse_and_extract(php);
+
+    // TModel inside the generic arg should be in the symbol map.
+    let use_line_offset = php.find("@use").unwrap();
+    let tmodel_in_use = php[use_line_offset..].find("TModel").unwrap() + use_line_offset;
+    let hit = map.lookup(tmodel_in_use as u32);
+    assert!(
+        hit.is_some(),
+        "Should find TModel in @use generic arg in symbol map"
+    );
+    if let SymbolKind::ClassReference { ref name, .. } = hit.unwrap().kind {
+        assert_eq!(name, "TModel");
+    } else {
+        panic!(
+            "Expected ClassReference for TModel, got {:?}",
+            hit.unwrap().kind
+        );
+    }
+
+    // The template def scope should cover the TModel usage.
+    let found = map.find_template_def("TModel", tmodel_in_use as u32);
+    assert!(
+        found.is_some(),
+        "Template def for TModel should cover the @use line"
+    );
+}
+
+#[test]
+fn static_keyword_in_generic_arg_produces_span() {
+    // `static` inside `@return Builder<static>` should produce a
+    // SelfStaticParent span so that hover works.
+    let php = concat!(
+        "<?php\n",
+        "class Model {\n",
+        "    /** @return Builder<static> */\n",
+        "    public static function query() {}\n",
+        "}\n",
+    );
+    let map = parse_and_extract(php);
+
+    let return_line_offset = php.find("@return").unwrap();
+    let static_in_generic = php[return_line_offset..].find("static").unwrap() + return_line_offset;
+    let hit = map.lookup(static_in_generic as u32);
+    assert!(
+        hit.is_some(),
+        "Should find `static` in generic arg in symbol map"
+    );
+    match &hit.unwrap().kind {
+        SymbolKind::SelfStaticParent { keyword } => {
+            assert_eq!(keyword, "static");
+        }
+        SymbolKind::ClassReference { name, .. } => {
+            // `static` is in NON_NAVIGABLE, so it should NOT be a ClassReference.
+            panic!(
+                "static should be SelfStaticParent, not ClassReference({})",
+                name
+            );
+        }
+        other => {
+            panic!("Expected SelfStaticParent for static, got {:?}", other);
+        }
+    }
+}
+
+#[test]
+fn docblock_parenthesized_callable_in_union_produces_class_reference() {
+    // `(\Closure(static): mixed)|string|array` — the outer parens are
+    // grouping parens, not a conditional type.  `\Closure` inside should
+    // still be recognised as a navigable ClassReference.
+    let php = concat!(
+        "<?php\n",
+        "class Builder {\n",
+        "    /**\n",
+        "     * @param  (\\Closure(static): mixed)|string|array  $column\n",
+        "     * @return $this\n",
+        "     */\n",
+        "    public function where($column) {}\n",
+        "}\n",
+    );
+    let map = parse_and_extract(php);
+
+    let docblock_start = php.find("/**").unwrap();
+
+    // `\Closure` inside the parenthesized callable should be a ClassReference.
+    let closure_in_doc = php[docblock_start..].find("\\Closure").unwrap() + docblock_start;
+    let hit = map.lookup(closure_in_doc as u32);
+    assert!(
+        hit.is_some(),
+        "Should find \\Closure inside parenthesized callable as ClassReference"
+    );
+    if let SymbolKind::ClassReference { ref name, is_fqn } = hit.unwrap().kind {
+        assert_eq!(name, "Closure");
+        assert!(is_fqn, "\\Closure should be FQN");
+        // The span should cover exactly `\Closure`, not `(\Closure`.
+        let span = hit.unwrap();
+        let span_text = &php[span.start as usize..span.end as usize];
+        assert_eq!(span_text, "\\Closure", "Span should cover only \\Closure");
+    } else {
+        panic!(
+            "Expected ClassReference for \\Closure, got {:?}",
+            hit.unwrap().kind
+        );
+    }
+}
+
+#[test]
+fn class_const_class_in_property_default_produces_class_reference() {
+    // `Foo::class` inside a property default value should produce a
+    // ClassReference span for `Foo`.
+    let php = concat!(
+        "<?php\n",
+        "class Foo {}\n",
+        "class Bar {\n",
+        "    protected $casts = [\n",
+        "        'icing' => Foo::class,\n",
+        "    ];\n",
+        "}\n",
+    );
+    let map = parse_and_extract(php);
+
+    let foo_in_casts = php.find("Foo::class").unwrap();
+    let hit = map.lookup(foo_in_casts as u32);
+    assert!(
+        hit.is_some(),
+        "Should find Foo in Foo::class as a ClassReference"
+    );
+    if let SymbolKind::ClassReference { name, .. } = &hit.unwrap().kind {
+        assert_eq!(name, "Foo");
+    } else {
+        panic!(
+            "Expected ClassReference for Foo, got {:?}",
+            hit.unwrap().kind
+        );
+    }
+}
+
+#[test]
+fn multiline_docblock_generic_arg_produces_class_reference() {
+    // A class name inside a multiline `@return` generic type should
+    // produce a ClassReference span.  Template parameters used inside
+    // the multiline type should also be navigable.
+    let php = concat!(
+        "<?php\n",
+        "class SomeCollection {}\n",
+        "/**\n",
+        " * @template TValue\n",
+        " */\n",
+        "class Demo {\n",
+        "    /**\n",
+        "     * @return array<\n",
+        "     *   string,\n",
+        "     *   SomeCollection<int, TValue>\n",
+        "     * >\n",
+        "     */\n",
+        "    public function grouped() {}\n",
+        "}\n",
+    );
+    let map = parse_and_extract(php);
+
+    let doc_start = php.find("     * @return").unwrap();
+    let some_coll = php[doc_start..].find("SomeCollection").unwrap() + doc_start;
+    let hit = map.lookup(some_coll as u32);
+    assert!(
+        hit.is_some(),
+        "Should find SomeCollection in multiline @return generic arg"
+    );
+    let span = hit.unwrap();
+    if let SymbolKind::ClassReference { name, .. } = &span.kind {
+        assert_eq!(name, "SomeCollection");
+        // Verify the span text matches the original source exactly.
+        let span_text = &php[span.start as usize..span.end as usize];
+        assert_eq!(
+            span_text, "SomeCollection",
+            "Span text should be exactly 'SomeCollection', got {:?}",
+            span_text
+        );
+    } else {
+        panic!(
+            "Expected ClassReference for SomeCollection, got {:?}",
+            span.kind
+        );
+    }
+
+    // TValue inside the multiline generic arg should also be navigable.
+    let tvalue_pos = php[doc_start..].find("TValue").unwrap() + doc_start;
+    let hit2 = map.lookup(tvalue_pos as u32);
+    assert!(
+        hit2.is_some(),
+        "Should find TValue in multiline @return generic arg"
+    );
+    let span2 = hit2.unwrap();
+    if let SymbolKind::ClassReference { name, .. } = &span2.kind {
+        assert_eq!(name, "TValue");
+        let span_text = &php[span2.start as usize..span2.end as usize];
+        assert_eq!(
+            span_text, "TValue",
+            "Span text should be exactly 'TValue', got {:?}",
+            span_text
+        );
+    } else {
+        panic!("Expected ClassReference for TValue, got {:?}", span2.kind);
+    }
+
+    // The template def scope should cover the TValue usage.
+    let found = map.find_template_def("TValue", tvalue_pos as u32);
+    assert!(
+        found.is_some(),
+        "Template def for TValue should cover the multiline @return usage"
+    );
+}
+
+#[test]
+fn phpstan_assert_tag_produces_class_reference() {
+    // `@phpstan-assert-if-false Rock $value` should produce a
+    // ClassReference span for `Rock`.
+    let php = concat!(
+        "<?php\n",
+        "class Rock {}\n",
+        "class Checker {\n",
+        "    /** @phpstan-assert-if-false Rock $value */\n",
+        "    public function isValid($value): bool { return true; }\n",
+        "}\n",
+    );
+    let map = parse_and_extract(php);
+
+    let doc_start = php.find("@phpstan-assert-if-false").unwrap();
+    let rock_pos = php[doc_start..].find("Rock").unwrap() + doc_start;
+    let hit = map.lookup(rock_pos as u32);
+    assert!(
+        hit.is_some(),
+        "Should find Rock in @phpstan-assert-if-false as a ClassReference"
+    );
+    let span = hit.unwrap();
+    if let SymbolKind::ClassReference { name, .. } = &span.kind {
+        assert_eq!(name, "Rock");
+        let span_text = &php[span.start as usize..span.end as usize];
+        assert_eq!(span_text, "Rock");
+    } else {
+        panic!("Expected ClassReference for Rock, got {:?}", span.kind);
     }
 }

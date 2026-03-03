@@ -428,6 +428,27 @@ pub(crate) fn strip_nullable(type_str: &str) -> &str {
     type_str.strip_prefix('?').unwrap_or(type_str)
 }
 
+/// Normalize nullable syntax to a canonical `X|null` form.
+///
+/// `?Foo` becomes `Foo|null`, `null|Foo` becomes `Foo|null`, and
+/// already-canonical forms are returned unchanged.  This lets callers
+/// compare two type strings for semantic equivalence regardless of
+/// which nullable notation was used.
+pub(crate) fn normalize_nullable(type_str: &str) -> String {
+    // Expand `?X` → `X|null`
+    let expanded = if let Some(inner) = type_str.strip_prefix('?') {
+        format!("{inner}|null")
+    } else {
+        type_str.to_string()
+    };
+
+    // Sort the union parts so that `null|string` and `string|null`
+    // compare equal.
+    let mut parts: Vec<&str> = expanded.split('|').map(|s| s.trim()).collect();
+    parts.sort_unstable();
+    parts.join("|")
+}
+
 /// Check whether a type name is a built-in scalar (i.e. can never be an object).
 pub(crate) fn is_scalar(type_name: &str) -> bool {
     // Strip generic parameters and array shape braces before checking so

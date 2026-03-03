@@ -17,6 +17,7 @@ mod classes;
 mod functions;
 mod use_statements;
 
+use mago_span::HasSpan;
 use mago_syntax::ast::*;
 
 use crate::types::*;
@@ -103,7 +104,15 @@ pub(crate) fn extract_hint_string(hint: &Hint) -> String {
 }
 
 /// Extract parameter information from a method's parameter list.
-pub(crate) fn extract_parameters(parameter_list: &FunctionLikeParameterList) -> Vec<ParameterInfo> {
+///
+/// When `content` is provided, default value expressions are extracted
+/// from the source text using AST span offsets.  Pass `None` when the
+/// source text is not available (the `default_value` field will be `None`
+/// for every parameter in that case).
+pub(crate) fn extract_parameters(
+    parameter_list: &FunctionLikeParameterList,
+    content: Option<&str>,
+) -> Vec<ParameterInfo> {
     parameter_list
         .parameters
         .iter()
@@ -116,10 +125,21 @@ pub(crate) fn extract_parameters(parameter_list: &FunctionLikeParameterList) -> 
 
             let type_hint = param.hint.as_ref().map(|h| extract_hint_string(h));
 
+            let default_value = content.and_then(|src| {
+                let dv = param.default_value.as_ref()?;
+                let span = dv.value.span();
+                let start = span.start.offset as usize;
+                let end = span.end.offset as usize;
+                src.get(start..end).map(|s| s.trim().to_string())
+            });
+
             ParameterInfo {
                 name,
                 is_required,
+                native_type_hint: type_hint.clone(),
                 type_hint,
+                description: None,
+                default_value,
                 is_variadic,
                 is_reference,
             }
@@ -170,6 +190,8 @@ pub(crate) fn extract_property_info(property: &Property) -> Vec<PropertyInfo> {
                 name,
                 name_offset: var.span.start.offset,
                 type_hint: type_hint.clone(),
+                native_type_hint: type_hint.clone(),
+                description: None,
                 is_static,
                 visibility,
                 is_deprecated: false,

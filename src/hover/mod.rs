@@ -14,7 +14,7 @@ use crate::Backend;
 use crate::completion::resolver::ResolutionCtx;
 use crate::symbol_map::{SymbolKind, SymbolSpan};
 use crate::types::*;
-use crate::util::{find_class_at_offset, position_to_offset};
+use crate::util::{find_class_at_offset, offset_to_position, position_to_offset};
 
 impl Backend {
     /// Handle a `textDocument/hover` request.
@@ -27,11 +27,12 @@ impl Backend {
 
         // Fast path: consult precomputed symbol map.
         if let Some(symbol) = self.lookup_symbol_map_for_hover(uri, offset)
-            && let Some(Some(hover)) =
+            && let Some(Some(mut hover)) =
                 crate::util::catch_panic_unwind_safe("hover", uri, Some(position), || {
-                    self.hover_from_symbol(&symbol.kind, uri, content, offset)
+                    self.hover_from_symbol(&symbol, uri, content, offset)
                 })
         {
+            hover.range = Some(symbol_span_to_range(content, &symbol));
             return Some(hover);
         }
 
@@ -39,11 +40,12 @@ impl Backend {
         // heuristic as go-to-definition).
         if offset > 0
             && let Some(symbol) = self.lookup_symbol_map_for_hover(uri, offset - 1)
-            && let Some(Some(hover)) =
+            && let Some(Some(mut hover)) =
                 crate::util::catch_panic_unwind_safe("hover", uri, Some(position), || {
-                    self.hover_from_symbol(&symbol.kind, uri, content, offset - 1)
+                    self.hover_from_symbol(&symbol, uri, content, offset - 1)
                 })
         {
+            hover.range = Some(symbol_span_to_range(content, &symbol));
             return Some(hover);
         }
 
@@ -60,11 +62,12 @@ impl Backend {
     /// Dispatch a symbol-map hit to the appropriate hover path.
     fn hover_from_symbol(
         &self,
-        kind: &SymbolKind,
+        symbol: &SymbolSpan,
         uri: &str,
         content: &str,
         cursor_offset: u32,
     ) -> Option<Hover> {
+        let kind = &symbol.kind;
         let ctx = self.file_context(uri);
         let current_class = find_class_at_offset(&ctx.classes, cursor_offset);
         let class_loader = self.class_loader(&ctx);
@@ -140,13 +143,49 @@ impl Backend {
             }
 
             SymbolKind::ClassReference { name, is_fqn } => {
-                self.hover_class_reference(name, *is_fqn, uri, &ctx, &class_loader)
+                // Check whether this class reference is in a `new ClassName` context.
+                // If so, show the __construct method hover instead of the class hover.
+                let before = &content[..symbol.start as usize];
+                let trimmed = before.trim_end();
+                let is_new_context = trimmed.ends_with("new")
+                    && trimmed
+                        .as_bytes()
+                        .get(trimmed.len().wrapping_sub(4))
+                        .is_none_or(|&b| !b.is_ascii_alphanumeric() && b != b'_');
+
+                let resolved_name;
+                let lookup_name = if *is_fqn {
+                    resolved_name = format!("\\{}", name);
+                    &resolved_name
+                } else {
+                    name.as_str()
+                };
+
+                if is_new_context && let Some(cls) = class_loader(lookup_name) {
+                    let merged = crate::virtual_members::resolve_class_fully(&cls, &class_loader);
+                    if let Some(constructor) = merged
+                        .methods
+                        .iter()
+                        .find(|m| m.name.eq_ignore_ascii_case("__construct"))
+                    {
+                        return Some(self.hover_for_method(constructor, &merged));
+                    }
+                }
+
+                self.hover_class_reference(
+                    lookup_name,
+                    *is_fqn,
+                    uri,
+                    &ctx,
+                    &class_loader,
+                    cursor_offset,
+                )
             }
 
-            SymbolKind::ClassDeclaration { name } => {
-                // Find the class in the current file's classes
-                let cls = ctx.classes.iter().find(|c| c.name == *name)?;
-                Some(self.hover_for_class_info(cls))
+            SymbolKind::ClassDeclaration { .. } => {
+                // The user is already at the definition site — showing
+                // hover here would just repeat what they can already see.
+                None
             }
 
             SymbolKind::FunctionCall { name } => {
@@ -173,32 +212,41 @@ impl Backend {
                     _ => None,
                 };
                 if let Some(cls) = resolved {
-                    let fqn = format_fqn(&cls.name, &cls.file_namespace);
-                    let label = if is_this {
-                        format!("$this: {}", fqn)
-                    } else {
-                        format!("{} ({})", keyword, fqn)
-                    };
-                    let mut lines = vec![format!("```php\n{}\n```", label)];
+                    let mut lines = Vec::new();
+
                     if let Some(desc) = extract_docblock_description(cls.class_docblock.as_deref())
                     {
                         lines.push(desc);
                     }
+
+                    if cls.is_deprecated {
+                        lines.push("**@deprecated**".to_string());
+                    }
+
+                    let ns_line = namespace_line(&cls.file_namespace);
+                    if is_this {
+                        lines.push(format!(
+                            "```php\n<?php\n{}$this = {}\n```",
+                            ns_line, cls.name
+                        ));
+                    } else {
+                        lines.push(format!(
+                            "```php\n<?php\n{}{} = {}\n```",
+                            ns_line, keyword, cls.name
+                        ));
+                    }
+
                     Some(make_hover(lines.join("\n\n")))
                 } else {
                     let display = if is_this { "$this" } else { keyword };
-                    Some(make_hover(format!("```php\n{}\n```", display)))
+                    Some(make_hover(format!("```php\n<?php\n{}\n```", display)))
                 }
             }
 
             SymbolKind::ConstantReference { name } => {
                 // Try to find the constant in global defines
-                let defines = self.global_defines.lock().ok()?;
-                if defines.contains_key(name.as_str()) {
-                    Some(make_hover(format!("```php\nconst {}\n```", name)))
-                } else {
-                    Some(make_hover(format!("```php\n{}\n```", name)))
-                }
+                let _defines = self.global_defines.lock().ok()?;
+                Some(make_hover(format!("```php\n<?php\nconst {};\n```", name)))
             }
         }
     }
@@ -218,10 +266,13 @@ impl Backend {
         // $this resolves to the enclosing class
         if name == "this" {
             if let Some(cc) = current_class {
-                let fqn = format_fqn(&cc.name, &cc.file_namespace);
-                return Some(make_hover(format!("```php\n$this: {}\n```", fqn)));
+                let ns_line = namespace_line(&cc.file_namespace);
+                return Some(make_hover(format!(
+                    "```php\n<?php\n{}$this = {}\n```",
+                    ns_line, cc.name
+                )));
             }
-            return Some(make_hover("```php\n$this\n```".to_string()));
+            return Some(make_hover("```php\n<?php\n$this\n```".to_string()));
         }
 
         let class_loader = self.class_loader(ctx);
@@ -248,17 +299,14 @@ impl Backend {
         );
 
         if types.is_empty() {
-            return Some(make_hover(format!("```php\n{}\n```", var_name)));
+            return Some(make_hover(format!("```php\n<?php\n{}\n```", var_name)));
         }
 
-        let type_names: Vec<String> = types
-            .iter()
-            .map(|c| format_fqn(&c.name, &c.file_namespace))
-            .collect();
+        let type_names: Vec<&str> = types.iter().map(|c| c.name.as_str()).collect();
         let type_str = type_names.join("|");
 
         Some(make_hover(format!(
-            "```php\n{}: {}\n```",
+            "```php\n<?php\n{} = {}\n```",
             var_name, type_str
         )))
     }
@@ -268,19 +316,54 @@ impl Backend {
         &self,
         name: &str,
         _is_fqn: bool,
-        _uri: &str,
+        uri: &str,
         _ctx: &FileContext,
         class_loader: &dyn Fn(&str) -> Option<ClassInfo>,
+        cursor_offset: u32,
     ) -> Option<Hover> {
-        // Try to resolve the class
+        // The caller already prepends `\` for FQN names, so we can
+        // call class_loader directly.
         let class_info = class_loader(name);
 
         if let Some(cls) = class_info {
             Some(self.hover_for_class_info(&cls))
         } else {
+            // Check whether this is a template parameter in scope.
+            let bare_name = name.strip_prefix('\\').unwrap_or(name);
+            if let Some(tpl) = self.find_template_def_for_hover(uri, bare_name, cursor_offset) {
+                return Some(tpl);
+            }
             // Unknown class, just show the name
-            Some(make_hover(format!("```php\n{}\n```", name)))
+            Some(make_hover(format!(
+                "```php\n<?php\nclass {};\n```",
+                bare_name
+            )))
         }
+    }
+
+    /// Check whether `name` is a `@template` parameter in scope at
+    /// `cursor_offset` and, if so, produce a hover showing the template
+    /// name and its upper bound.
+    fn find_template_def_for_hover(
+        &self,
+        uri: &str,
+        name: &str,
+        cursor_offset: u32,
+    ) -> Option<Hover> {
+        let maps = self.symbol_maps.lock().ok()?;
+        let map = maps.get(uri)?;
+        let def = map.find_template_def(name, cursor_offset)?;
+
+        let bound_display = if let Some(ref bound) = def.bound {
+            format!(" of `{}`", bound)
+        } else {
+            String::new()
+        };
+
+        Some(make_hover(format!(
+            "**template** `{}`{}",
+            def.name, bound_display
+        )))
     }
 
     /// Produce hover information for a function call.
@@ -293,7 +376,10 @@ impl Backend {
         if let Some(func) = function_loader(name) {
             Some(hover_for_function(&func))
         } else {
-            Some(make_hover(format!("```php\nfunction {}()\n```", name)))
+            Some(make_hover(format!(
+                "```php\n<?php\nfunction {}();\n```",
+                name
+            )))
         }
     }
 
@@ -301,26 +387,52 @@ impl Backend {
     fn hover_for_method(&self, method: &MethodInfo, owner: &ClassInfo) -> Hover {
         let visibility = format_visibility(method.visibility);
         let static_kw = if method.is_static { "static " } else { "" };
-        let params = format_params(&method.parameters);
-        let ret = method
-            .return_type
+        let native_params = format_native_params(&method.parameters);
+
+        // Use native return type in the code block, effective type as docblock annotation.
+        let native_ret = method
+            .native_return_type
             .as_ref()
             .map(|r| format!(": {}", r))
             .unwrap_or_default();
 
-        let signature = format!(
-            "{}{} function {}({}){}",
-            visibility, static_kw, method.name, params, ret
+        let member_line = format!(
+            "{}{}function {}({}){};",
+            visibility, static_kw, method.name, native_params, native_ret
         );
 
-        let owner_fqn = format_fqn(&owner.name, &owner.file_namespace);
+        let mut lines = Vec::new();
 
-        let mut lines = vec![format!("```php\n{}\n```", signature)];
-        lines.push(format!("Class: `{}`", owner_fqn));
+        if let Some(ref desc) = method.description {
+            lines.push(desc.clone());
+        }
 
         if method.is_deprecated {
             lines.push("**@deprecated**".to_string());
         }
+
+        if let Some(ref url) = method.link {
+            lines.push(format!("[{}]({})", url, url));
+        }
+
+        // Build the readable param/return section as markdown.
+        if let Some(section) = build_param_return_section(
+            &method.parameters,
+            method.return_type.as_deref(),
+            method.native_return_type.as_deref(),
+            method.return_description.as_deref(),
+        ) {
+            lines.push(section);
+        }
+
+        let code = build_class_member_block(
+            &owner.name,
+            &owner.file_namespace,
+            owner_kind_keyword(owner),
+            &owner_name_suffix(owner),
+            &member_line,
+        );
+        lines.push(code);
 
         make_hover(lines.join("\n\n"))
     }
@@ -329,48 +441,86 @@ impl Backend {
     fn hover_for_property(&self, property: &PropertyInfo, owner: &ClassInfo) -> Hover {
         let visibility = format_visibility(property.visibility);
         let static_kw = if property.is_static { "static " } else { "" };
-        let type_hint = property
-            .type_hint
+
+        // Use native type hint in the code block, effective type as docblock annotation.
+        let native_type = property
+            .native_type_hint
             .as_ref()
             .map(|t| format!("{} ", t))
             .unwrap_or_default();
 
-        let signature = format!(
-            "{}{} {}${}",
-            visibility, static_kw, type_hint, property.name
+        let member_line = format!(
+            "{}{}{}${};",
+            visibility, static_kw, native_type, property.name
         );
 
-        let owner_fqn = format_fqn(&owner.name, &owner.file_namespace);
+        // Build the docblock annotation showing the effective type
+        // when it differs from the native one.
+        let var_annotation = build_var_annotation(
+            property.type_hint.as_deref(),
+            property.native_type_hint.as_deref(),
+        );
 
-        let mut lines = vec![format!("```php\n{}\n```", signature)];
-        lines.push(format!("Class: `{}`", owner_fqn));
+        let mut lines = Vec::new();
+
+        if let Some(ref desc) = property.description {
+            lines.push(desc.clone());
+        }
 
         if property.is_deprecated {
             lines.push("**@deprecated**".to_string());
         }
+
+        let code = build_class_member_block_with_var(
+            &owner.name,
+            &owner.file_namespace,
+            owner_kind_keyword(owner),
+            &owner_name_suffix(owner),
+            &var_annotation,
+            &member_line,
+        );
+        lines.push(code);
 
         make_hover(lines.join("\n\n"))
     }
 
     /// Build hover content for a class constant.
     fn hover_for_constant(&self, constant: &ConstantInfo, owner: &ClassInfo) -> Hover {
-        let visibility = format_visibility(constant.visibility);
-        let type_hint = constant
-            .type_hint
-            .as_ref()
-            .map(|t| format!(": {}", t))
-            .unwrap_or_default();
+        let member_line = if constant.is_enum_case {
+            if let Some(ref val) = constant.enum_value {
+                format!("case {} = {};", constant.name, val)
+            } else {
+                format!("case {};", constant.name)
+            }
+        } else {
+            let visibility = format_visibility(constant.visibility);
+            let type_hint = constant
+                .type_hint
+                .as_ref()
+                .map(|t| format!(": {}", t))
+                .unwrap_or_default();
+            format!("{}const {}{};", visibility, constant.name, type_hint)
+        };
 
-        let signature = format!("{} const {}{}", visibility, constant.name, type_hint);
+        let mut lines = Vec::new();
 
-        let owner_fqn = format_fqn(&owner.name, &owner.file_namespace);
-
-        let mut lines = vec![format!("```php\n{}\n```", signature)];
-        lines.push(format!("Class: `{}`", owner_fqn));
+        if let Some(ref desc) = constant.description {
+            lines.push(desc.clone());
+        }
 
         if constant.is_deprecated {
             lines.push("**@deprecated**".to_string());
         }
+
+        // Constants don't have a native vs effective type split, so no doc annotation.
+        let code = build_class_member_block(
+            &owner.name,
+            &owner.file_namespace,
+            owner_kind_keyword(owner),
+            &owner_name_suffix(owner),
+            &member_line,
+        );
+        lines.push(code);
 
         make_hover(lines.join("\n\n"))
     }
@@ -392,12 +542,10 @@ impl Backend {
             ClassLikeKind::Enum => "enum",
         };
 
-        let fqn = format_fqn(&cls.name, &cls.file_namespace);
-
-        let mut signature = format!("{} {}", kind_str, fqn);
+        let mut extends_implements = String::new();
 
         if let Some(ref parent) = cls.parent_class {
-            signature.push_str(&format!(" extends {}", parent));
+            extends_implements.push_str(&format!(" extends {}", short_name(parent)));
         }
 
         if !cls.interfaces.is_empty() {
@@ -406,24 +554,42 @@ impl Backend {
             } else {
                 "implements"
             };
-            signature.push_str(&format!(" {} {}", keyword, cls.interfaces.join(", ")));
+            let short_ifaces: Vec<&str> = cls.interfaces.iter().map(|i| short_name(i)).collect();
+            extends_implements.push_str(&format!(" {} {}", keyword, short_ifaces.join(", ")));
         }
 
-        let mut lines = vec![format!("```php\n{}\n```", signature)];
+        let signature = format!("{} {}{}", kind_str, cls.name, extends_implements);
+        let ns_line = namespace_line(&cls.file_namespace);
+
+        let mut lines = Vec::new();
+
+        if let Some(desc) = extract_docblock_description(cls.class_docblock.as_deref()) {
+            lines.push(desc);
+        }
 
         if cls.is_deprecated {
             lines.push("**@deprecated**".to_string());
         }
 
-        if let Some(desc) = extract_docblock_description(cls.class_docblock.as_deref()) {
-            lines.push(desc);
+        if let Some(ref url) = cls.link {
+            lines.push(format!("[{}]({})", url, url));
         }
+
+        lines.push(format!("```php\n<?php\n{}{}\n```", ns_line, signature));
 
         make_hover(lines.join("\n\n"))
     }
 }
 
 // ─── Free helper functions ──────────────────────────────────────────────────
+
+/// Convert a `SymbolSpan`'s byte offsets to an LSP `Range`.
+fn symbol_span_to_range(content: &str, symbol: &SymbolSpan) -> Range {
+    Range {
+        start: offset_to_position(content, symbol.start as usize),
+        end: offset_to_position(content, symbol.end as usize),
+    }
+}
 
 /// Create a `Hover` with Markdown content.
 fn make_hover(contents: String) -> Hover {
@@ -445,13 +611,39 @@ fn format_visibility(vis: Visibility) -> &'static str {
     }
 }
 
-/// Format a parameter list for display.
+/// Format a parameter list for display using effective (docblock-overridden) types.
+///
+/// Used in the FQN header line and signature help where the richer
+/// docblock type information is most useful.
+#[allow(dead_code)]
 fn format_params(params: &[ParameterInfo]) -> String {
+    format_params_inner(params, false)
+}
+
+/// Format a parameter list using native PHP type hints only.
+///
+/// Used inside `<?php` code blocks so the displayed declaration matches
+/// what the actual PHP source code looks like.
+fn format_native_params(params: &[ParameterInfo]) -> String {
+    format_params_inner(params, true)
+}
+
+/// Shared implementation for parameter formatting.
+///
+/// When `use_native` is true, uses `native_type_hint` (falling back to
+/// `type_hint` when no native hint is stored — e.g. for virtual members
+/// synthesised from docblocks).  Otherwise uses `type_hint` (effective).
+fn format_params_inner(params: &[ParameterInfo], use_native: bool) -> String {
     params
         .iter()
         .map(|p| {
             let mut parts = Vec::new();
-            if let Some(ref th) = p.type_hint {
+            let hint = if use_native {
+                p.native_type_hint.as_ref()
+            } else {
+                p.type_hint.as_ref()
+            };
+            if let Some(th) = hint {
                 parts.push(th.clone());
             }
             if p.is_variadic {
@@ -463,7 +655,11 @@ fn format_params(params: &[ParameterInfo]) -> String {
             }
             let param_str = parts.join(" ");
             if !p.is_required && !p.is_variadic {
-                format!("{} = ...", param_str)
+                if let Some(ref dv) = p.default_value {
+                    format!("{} = {}", param_str, dv)
+                } else {
+                    format!("{} = ...", param_str)
+                }
             } else {
                 param_str
             }
@@ -472,46 +668,334 @@ fn format_params(params: &[ParameterInfo]) -> String {
         .join(", ")
 }
 
-/// Build a fully-qualified name from a short name and optional namespace.
-fn format_fqn(name: &str, namespace: &Option<String>) -> String {
+/// Build a `namespace Foo;\n` line for use inside PHP code blocks.
+/// Returns an empty string when the namespace is global (None).
+fn namespace_line(namespace: &Option<String>) -> String {
     if let Some(ns) = namespace {
-        format!("{}\\{}", ns, name)
+        format!("namespace {};\n", ns)
     } else {
-        name.to_string()
+        String::new()
     }
+}
+
+/// Build a `@var` docblock annotation when the effective type differs from
+/// the native type.  Returns `None` when they are identical or when there
+/// is no effective type.
+fn build_var_annotation(effective: Option<&str>, native: Option<&str>) -> Option<String> {
+    let eff = effective?;
+    if native.is_some_and(|n| types_equivalent(n, eff)) {
+        return None;
+    }
+    Some(format!("@var {}", shorten_type_string(eff)))
+}
+
+/// Build a readable markdown section showing parameter and return type
+/// information.
+///
+/// Produces output like:
+///
+/// ```text
+/// **$callback** `(callable(TItem): TReturn)|null`
+///     Callback function to run for each element.
+/// **$array** `array<string|int, TItem>`
+///     An array to run through the callback function.
+/// **$arrays** `array<string|int, TItem>` ...
+/// **return** `array<string|int, TReturn>`
+///     an array containing all the elements of arr1 ...
+/// ```
+///
+/// A parameter entry is emitted when:
+///   - the effective type differs from the native type, OR
+///   - the parameter has a description.
+///
+/// When types are the same, the type is shown alongside the description.
+/// When types differ but there is no description, only the type is shown.
+///
+/// A return entry is emitted when:
+///   - the effective return type differs from the native return type, OR
+///   - there is a return description.
+///
+/// Returns `None` when there is nothing to show.
+fn build_param_return_section(
+    params: &[ParameterInfo],
+    effective_return: Option<&str>,
+    native_return: Option<&str>,
+    return_description: Option<&str>,
+) -> Option<String> {
+    let mut entries = Vec::new();
+
+    for p in params {
+        let type_differs = match (p.type_hint.as_deref(), p.native_type_hint.as_deref()) {
+            (Some(eff), Some(nat)) => !types_equivalent(eff, nat),
+            (Some(_), None) => true,
+            _ => false,
+        };
+        let has_desc = p.description.as_ref().is_some_and(|d| !d.is_empty());
+
+        if !type_differs && !has_desc {
+            continue;
+        }
+
+        let mut entry = format!("**{}**", p.name);
+        if type_differs {
+            if let Some(ref eff) = p.type_hint {
+                entry.push_str(&format!(" `{}`", shorten_type_string(eff)));
+            }
+            if p.is_variadic {
+                entry.push_str(" ...");
+            }
+            if has_desc {
+                entry.push_str("  \n\u{00a0}\u{00a0}\u{00a0}\u{00a0}");
+                entry.push_str(p.description.as_deref().unwrap());
+            }
+        } else if has_desc {
+            // Types match — show description directly after the name.
+            entry.push(' ');
+            entry.push_str(p.description.as_deref().unwrap());
+        }
+        entries.push(entry);
+    }
+
+    // return entry
+    let ret_type_differs = match (effective_return, native_return) {
+        (Some(eff), Some(nat)) => !types_equivalent(eff, nat),
+        (Some(_), None) => true,
+        _ => false,
+    };
+    let has_ret_desc = return_description.is_some_and(|d| !d.is_empty());
+
+    if ret_type_differs || has_ret_desc {
+        let mut entry = String::from("**return**");
+        if ret_type_differs {
+            if let Some(eff) = effective_return {
+                entry.push_str(&format!(" `{}`", shorten_type_string(eff)));
+            }
+            if has_ret_desc {
+                entry.push_str("  \n\u{00a0}\u{00a0}\u{00a0}\u{00a0}");
+                entry.push_str(return_description.unwrap());
+            }
+        } else if has_ret_desc {
+            entry.push(' ');
+            entry.push_str(return_description.unwrap());
+        }
+        entries.push(entry);
+    }
+
+    if entries.is_empty() {
+        None
+    } else {
+        Some(entries.join("  \n"))
+    }
+}
+
+/// Build a PHP code block wrapping a member inside its owning class.
+///
+/// Produces a fenced `php` block containing:
+///
+///   - `<?php`
+///   - `namespace Foo;` (omitted when global)
+///   - `class ShortName {`
+///   - (optional) `    /** @var effective_type */`
+///   - `    public string $name;`
+///   - `}`
+///
+/// When `doc_annotation` is `None`, the docblock line is omitted.
+fn build_class_member_block(
+    owner_name: &str,
+    owner_namespace: &Option<String>,
+    kind_keyword: &str,
+    name_suffix: &str,
+    member_line: &str,
+) -> String {
+    let mut body = String::new();
+    let ns_line = namespace_line(owner_namespace);
+    body.push_str("```php\n<?php\n");
+    body.push_str(&ns_line);
+    body.push_str(kind_keyword);
+    body.push(' ');
+    body.push_str(owner_name);
+    body.push_str(name_suffix);
+    body.push_str(" {\n    ");
+    body.push_str(member_line);
+    body.push_str("\n}\n```");
+    body
+}
+
+/// Return the PHP keyword for a class-like owner.
+///
+/// Produces `"class"`, `"interface"`, `"trait"`, or `"enum"`.
+fn owner_kind_keyword(owner: &ClassInfo) -> &'static str {
+    match owner.kind {
+        ClassLikeKind::Interface => "interface",
+        ClassLikeKind::Trait => "trait",
+        ClassLikeKind::Enum => "enum",
+        _ => "class",
+    }
+}
+
+/// Return the suffix after the owner name for backed enums (e.g. `": string"`).
+///
+/// Returns an empty string for non-enums and unit enums.
+fn owner_name_suffix(owner: &ClassInfo) -> String {
+    if let Some(ref bt) = owner.backed_type {
+        format!(": {}", bt)
+    } else {
+        String::new()
+    }
+}
+
+/// Build a PHP code block wrapping a member inside its owning class,
+/// with an optional single-line `/** @var ... */` annotation above it.
+///
+/// Used for properties where the effective (docblock) type differs from
+/// the native PHP type hint.
+fn build_class_member_block_with_var(
+    owner_name: &str,
+    owner_namespace: &Option<String>,
+    kind_keyword: &str,
+    name_suffix: &str,
+    var_annotation: &Option<String>,
+    member_line: &str,
+) -> String {
+    let mut body = String::new();
+    let ns_line = namespace_line(owner_namespace);
+    body.push_str("```php\n<?php\n");
+    body.push_str(&ns_line);
+    body.push_str(kind_keyword);
+    body.push(' ');
+    body.push_str(owner_name);
+    body.push_str(name_suffix);
+    body.push_str(" {\n");
+    if let Some(annotation) = var_annotation {
+        body.push_str("    /** ");
+        body.push_str(annotation);
+        body.push_str(" */\n");
+    }
+    body.push_str("    ");
+    body.push_str(member_line);
+    body.push_str("\n}\n```");
+    body
 }
 
 /// Build hover content for a standalone function.
 fn hover_for_function(func: &FunctionInfo) -> Hover {
-    let params = format_params(&func.parameters);
-    let ret = func
-        .return_type
+    let native_params = format_native_params(&func.parameters);
+
+    // Use native return type in the code block.
+    let native_ret = func
+        .native_return_type
         .as_ref()
         .map(|r| format!(": {}", r))
         .unwrap_or_default();
 
-    let fqn = if let Some(ref ns) = func.namespace {
-        format!("{}\\{}", ns, func.name)
-    } else {
-        func.name.clone()
-    };
+    let signature = format!("function {}({}){}", func.name, native_params, native_ret);
+    let ns_line = namespace_line(&func.namespace);
 
-    let signature = format!("function {}({}){}", fqn, params, ret);
+    let mut lines = Vec::new();
 
-    let mut lines = vec![format!("```php\n{}\n```", signature)];
+    if let Some(ref desc) = func.description {
+        lines.push(desc.clone());
+    }
 
     if func.is_deprecated {
         lines.push("**@deprecated**".to_string());
     }
 
+    if let Some(ref url) = func.link {
+        lines.push(format!("[{}]({})", url, url));
+    }
+
+    // Build the readable param/return section as markdown.
+    if let Some(section) = build_param_return_section(
+        &func.parameters,
+        func.return_type.as_deref(),
+        func.native_return_type.as_deref(),
+        func.return_description.as_deref(),
+    ) {
+        lines.push(section);
+    }
+
+    // Build a clean code block with just the signature.
+    let code = format!("```php\n<?php\n{}{};\n```", ns_line, signature);
+    lines.push(code);
+
     make_hover(lines.join("\n\n"))
+}
+
+/// Extract the trailing description from a `@var` tag line.
+///
+/// Handles formats like:
+///   - `/** @var list<Pen> The batches */`       → `Some("The batches")`
+///   - `/** @var list<Pen> $batch The batches */` → `Some("The batches")`
+///   - `/** @var list<Pen> */`                    → `None`
+///
+/// Only looks at the `@var` line itself.  For multi-line docblocks where
+/// the description precedes the `@var` tag, use `extract_docblock_description`.
+pub(crate) fn extract_var_description(docblock: &str) -> Option<String> {
+    let inner = docblock
+        .trim()
+        .strip_prefix("/**")
+        .unwrap_or(docblock)
+        .strip_suffix("*/")
+        .unwrap_or(docblock);
+
+    for line in inner.lines() {
+        let trimmed = line.trim().trim_start_matches('*').trim();
+        if let Some(rest) = trimmed.strip_prefix("@var") {
+            let rest = rest.trim_start();
+            if rest.is_empty() {
+                return None;
+            }
+            // Skip past the type token (respecting `<…>` nesting).
+            let after_type = skip_type_token(rest);
+            let after_type = after_type.trim_start();
+            if after_type.is_empty() {
+                return None;
+            }
+            // Skip an optional `$variable` name.
+            let after_var = if after_type.starts_with('$') {
+                after_type
+                    .split_once(|c: char| c.is_whitespace())
+                    .map(|(_, rest)| rest.trim_start())
+                    .unwrap_or("")
+            } else {
+                after_type
+            };
+            if after_var.is_empty() {
+                return None;
+            }
+            return Some(after_var.to_string());
+        }
+    }
+    None
+}
+
+/// Skip past a type token in a docblock string, respecting `<…>` nesting.
+///
+/// Returns the remainder of the string after the type token.
+fn skip_type_token(s: &str) -> &str {
+    let mut depth = 0i32;
+    let mut end = 0;
+    for (i, c) in s.char_indices() {
+        match c {
+            '<' | '(' | '{' => depth += 1,
+            '>' | ')' | '}' => depth -= 1,
+            _ if c.is_whitespace() && depth == 0 => {
+                end = i;
+                break;
+            }
+            _ => {}
+        }
+        end = i + c.len_utf8();
+    }
+    &s[end..]
 }
 
 /// Extract the human-readable description text from a raw docblock string.
 ///
 /// Strips the `/**` and `*/` delimiters, leading `*` characters, and all
 /// `@tag` lines. Returns `None` if no description text remains.
-fn extract_docblock_description(docblock: Option<&str>) -> Option<String> {
+pub(crate) fn extract_docblock_description(docblock: Option<&str>) -> Option<String> {
     let raw = docblock?;
     let inner = raw
         .trim()
@@ -529,7 +1013,7 @@ fn extract_docblock_description(docblock: Option<&str>) -> Option<String> {
             continue;
         }
 
-        // Stop at the first @tag (they come after the description)
+        // Stop at the first @tag
         if trimmed.starts_with('@') {
             break;
         }
@@ -547,6 +1031,85 @@ fn extract_docblock_description(docblock: Option<&str>) -> Option<String> {
     } else {
         Some(lines.join("\n"))
     }
+}
+
+/// Shorten all namespace-qualified class names in a type string to their
+/// short (unqualified) form.
+///
+/// Handles union (`|`), intersection (`&`), nullable (`?`), and generic
+/// (`<`, `,`) type syntax.  For example:
+///
+///   - `"App\\Models\\User"` → `"User"`
+///   - `"list<App\\Models\\User>"` → `"list<User>"`
+///   - `"App\\Foo|App\\Bar|null"` → `"Foo|Bar|null"`
+fn shorten_type_string(ty: &str) -> String {
+    let mut result = String::with_capacity(ty.len());
+    let mut segment_start = 0;
+    let bytes = ty.as_bytes();
+
+    for (i, &b) in bytes.iter().enumerate() {
+        if matches!(
+            b,
+            b'|' | b'&' | b'<' | b'>' | b',' | b' ' | b'?' | b'{' | b'}' | b':'
+        ) {
+            if i > segment_start {
+                result.push_str(short_name(&ty[segment_start..i]));
+            }
+            result.push(b as char);
+            segment_start = i + 1;
+        }
+    }
+    // Flush trailing segment.
+    if segment_start < ty.len() {
+        result.push_str(short_name(&ty[segment_start..]));
+    }
+    result
+}
+
+/// Check whether two type strings refer to the same type, ignoring
+/// namespace qualification differences.
+///
+/// Returns `true` when the only difference between `a` and `b` is that
+/// one uses a fully-qualified class name (e.g. `App\Models\User`) while
+/// the other uses the short name (`User`).  Handles nullable (`?`),
+/// union (`|`), and intersection (`&`) types by comparing each component
+/// after stripping namespace prefixes and a leading `\`.
+fn types_equivalent(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+
+    // Strip nullable `?` prefix from both sides.
+    let a = a.strip_prefix('?').unwrap_or(a);
+    let b = b.strip_prefix('?').unwrap_or(b);
+
+    // Split on `|` and `&` to handle union and intersection types.
+    // We compare component counts first, then each pair after
+    // normalising namespace prefixes.
+    let parts_a: Vec<&str> = a.split('|').flat_map(|part| part.split('&')).collect();
+    let parts_b: Vec<&str> = b.split('|').flat_map(|part| part.split('&')).collect();
+
+    if parts_a.len() != parts_b.len() {
+        return false;
+    }
+
+    // Sort both sides so that `Foo|null` matches `null|Foo`.
+    let mut sorted_a: Vec<&str> = parts_a.iter().map(|s| short_name(s)).collect();
+    let mut sorted_b: Vec<&str> = parts_b.iter().map(|s| short_name(s)).collect();
+    sorted_a.sort_unstable();
+    sorted_b.sort_unstable();
+
+    sorted_a == sorted_b
+}
+
+/// Return the short (unqualified) class name from a potentially
+/// namespace-qualified type string.  Strips a leading `\` and returns
+/// only the part after the last `\`.  Non-class types (scalars,
+/// `array`, etc.) pass through unchanged.
+fn short_name(ty: &str) -> &str {
+    let t = ty.trim();
+    let t = t.strip_prefix('\\').unwrap_or(t);
+    t.rsplit('\\').next().unwrap_or(t)
 }
 
 #[cfg(test)]
