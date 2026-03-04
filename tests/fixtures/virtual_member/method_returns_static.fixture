@@ -1,0 +1,22 @@
+// test: @method returning static resolves to the concrete child class
+// feature: completion
+// ignore: @method with static return type does not resolve to child class for chained calls yet
+// Adapted from phpactor virtual_member/virtual-method-returns-static.test
+// expect: coolMethod(
+---
+<?php
+
+/**
+ * @method static sendMessage(string $text)
+ */
+class Mailer
+{
+}
+
+class CoolMailer extends Mailer
+{
+    public function coolMethod(): void {}
+}
+
+$coolMailer = new CoolMailer();
+$coolMailer->sendMessage('hi')-><>

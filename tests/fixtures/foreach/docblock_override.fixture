@@ -1,0 +1,19 @@
+// test: @var docblock overrides collection item type in foreach
+// feature: completion
+// ignore: @var on foreach loop variable with untyped collection not yet resolved
+// Adapted from phpactor foreach/with_docblock.test
+// expect: hello(
+---
+<?php
+
+class Foobar
+{
+    public function hello(): void {}
+}
+
+$collection = [];
+
+/** @var Foobar $foobar */
+foreach ($collection as $foobar) {
+    $foobar-><>
+}

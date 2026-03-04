@@ -1,0 +1,36 @@
+// test: constructor param combined with extends infers template type
+// feature: completion
+// ignore: needs todo.md §2 (function-level @template constructor inference)
+// Adapted from phpactor generics/constructor-param-and-extend.test
+// expect: bMethod(
+---
+<?php
+
+class B {
+    public function bMethod(): void {}
+}
+
+/**
+ * @template T
+ */
+class Bar {
+    /**
+     * @return T
+     */
+    public function b() {}
+}
+
+/**
+ * @template T
+ * @extends Bar<T>
+ */
+class Foo extends Bar {
+    /** @param T $a */
+    public function __construct($a) {}
+
+    /** @return T */
+    public function a() {}
+}
+
+$f = new Foo(new B());
+$f->b()-><>

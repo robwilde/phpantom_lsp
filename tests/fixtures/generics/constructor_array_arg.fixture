@@ -1,0 +1,34 @@
+// test: constructor array argument infers template type
+// feature: completion
+// ignore: needs todo.md §2 (function-level @template constructor inference)
+// Adapted from phpactor generics/constructor-array_arg.test
+// expect: aMethod(
+---
+<?php
+
+class StringResult {
+    public function aMethod(): void {}
+}
+
+/**
+ * @template T
+ */
+class Foo {
+    /**
+     * @var T[]
+     */
+    private $a;
+
+    /** @param T[] $a */
+    public function __construct(array $a) {
+        $this->a = $a;
+    }
+
+    /**
+     * @return T
+     */
+    public function a() {}
+}
+
+$f = new Foo([new StringResult()]);
+$f->a()-><>

@@ -221,28 +221,28 @@ For each `.test` file in `phpactor/lib/WorseReflection/Tests/Inference/<category
 
 #### generics/ (43 files)
 
-- [ ] `class_extend1` — `@extends Parent<Concrete>` resolves template on inherited method
-- [ ] `class_extend2` — chained extends with two template params
-- [ ] `class_implements_single1` — `@implements Interface<Concrete>`
-- [ ] `class_implements_multiple1` — multiple `@implements` with generics
-- [ ] `class_template_extends1` — child re-templates parent's template
+- [x] `class_extend1` — ✅ `generics/class_extend_template.fixture` — `@extends Parent<Concrete>` resolves template on inherited method
+- [x] `class_extend2` — ✅ `generics/class_extend2_first.fixture` + `class_extend2_second.fixture` — chained extends with two template params (split into 2 fixtures for the 2 assertions)
+- [x] `class_implements_single1` — ❌ `generics/class_implements_single.fixture` (ignored: @implements generic resolution not yet supported)
+- [x] `class_implements_multiple1` — ❌ `generics/class_implements_multiple.fixture` (ignored: @implements generic resolution not yet supported)
+- [x] `class_template_extends1` — ❌ `generics/class_template_extends.fixture` (ignored: @template-extends syntax not recognized, only @extends)
 - [ ] `class_template_implements1` — child re-templates interface's template
-- [ ] `constructor-params` — ⏭️ **skip/ignore:** needs constructor argument inference (not in our architecture; link to todo.md §2)
-- [ ] `constructor-array_arg` — ⏭️ **skip/ignore:** same as above
-- [ ] `constructor-generic-arg` — ⏭️ **skip/ignore:** same as above
-- [ ] `constructor-param-and-extend` — ⏭️ **skip/ignore:** same as above
-- [ ] `class-string-generic` — `class-string<T>` resolves T from `Foo::class`
+- [x] `constructor-params` — ❌ `generics/constructor_params.fixture` (ignored: needs todo.md §2)
+- [x] `constructor-array_arg` — ❌ `generics/constructor_array_arg.fixture` (ignored: needs todo.md §2)
+- [x] `constructor-generic-arg` — ❌ `generics/constructor_generic_arg.fixture` (ignored: needs todo.md §2)
+- [x] `constructor-param-and-extend` — ❌ `generics/constructor_param_and_extend.fixture` (ignored: needs todo.md §2)
+- [x] `class-string-generic` — ✅ `generics/class_string_generic.fixture` — `class-string<T>` resolves T from `Foo::class`
 - [ ] `class-string-generic-union` — class-string with union return
 - [ ] `class-string-generic-nested-return` — class-string with nested return type
-- [ ] `class-string-generic-decared-interface` — class-string on interface
-- [ ] `method_generic` — method-level `@template`
-- [ ] `method_generic_class-string-2nd-arg` — class-string as 2nd parameter
+- [x] `class-string-generic-decared-interface` — ❌ `generics/class_string_generic_interface.fixture` (ignored: class-string<T> on interface method not inherited by implementing class)
+- [x] `method_generic` — ❌ `generics/method_generic.fixture` (ignored: needs todo.md §2 function-level @template argument inference)
+- [x] `method_generic_class-string-2nd-arg` — ✅ `generics/class_string_2nd_arg.fixture` — class-string as 2nd parameter
 - [ ] `method_generic_class-string-union_return` — class-string method with union return
 - [ ] `method_generic_covariant` — `@template-covariant`
 - [ ] `method_returns_collection` — method returning a generic collection
 - [ ] `method_returns_collection2` — variant of collection return
 - [ ] `method_returns_templated_generic` — method returns `Generic<T>`
-- [ ] `nullable_template_param` — `?T` template usage
+- [x] `nullable_template_param` — ✅ `generics/nullable_template_param.fixture` — `?T` template usage
 - [ ] `parameter` — template parameter type resolution
 - [ ] `type_from_template_in_class` — template used as property type
 - [ ] `generic_with_this` — template resolving to `$this`
@@ -257,13 +257,13 @@ For each `.test` file in `phpactor/lib/WorseReflection/Tests/Inference/<category
 - [ ] `iterator_aggregate2` — aggregate with custom iterator (relevant to todo.md §16)
 - [ ] `array_access1` — `ArrayAccess<K, V>` offset get
 - [ ] `array_access_resolve_method_type1` — ArrayAccess method resolution
-- [ ] `phpactor_reflection_collection` — ⏭️ **skip:** Phpactor-internal
-- [ ] `phpactor_reflection_of_type` — ⏭️ **skip:** Phpactor-internal
-- [ ] `gh-1530-example` — GitHub issue regression
-- [ ] `gh-1771` — GitHub issue regression
-- [ ] `gh-1800` — GitHub issue regression
-- [ ] `gh-1875` — GitHub issue regression
-- [ ] `gh-2295-test` — GitHub issue regression
+- [x] `phpactor_reflection_collection` — ⏭️ **skip:** Phpactor-internal
+- [x] `phpactor_reflection_of_type` — ⏭️ **skip:** Phpactor-internal
+- [x] `gh-1530-example` — ✅ `generics/collection_chain_gh1530.fixture` — Collection first() through generic interface chain
+- [ ] `gh-1771` — GitHub issue regression (uses wrAssertOffset, not applicable)
+- [x] `gh-1800` — ❌ `generics/reflection_collection_chain.fixture` (ignored: needs @implements generic resolution and complex generic chain)
+- [ ] `gh-1875` — GitHub issue regression (nested generic iterator, relevant to todo.md §16)
+- [x] `gh-2295-test` — ✅ `generics/nested_factory_extends.fixture` — nested factory extends resolves through inheritance chain
 
 #### if-statement/ (35 files)
 
@@ -271,45 +271,45 @@ For each `.test` file in `phpactor/lib/WorseReflection/Tests/Inference/<category
 >
 > Exceptions that are genuine gaps: `property` / `property_negated` (narrowing on `$this->prop`, not bare variables), `is_*()` function narrowing (depends on todo.md §3), and `variable_introduced_in_branch`.
 
-- [ ] `instanceof` — basic `instanceof` narrows type (likely already covered)
-- [ ] `instanceof_removes_null` — `instanceof` strips null from union (likely already covered)
-- [ ] `instanceof_removes_scalar` — `instanceof` strips scalar from union
-- [ ] `type_after_return` — type narrows after early return (likely already covered; needs splitting into 2 fixtures for the 2 assertions)
-- [ ] `type_after_break` — type narrows after break
-- [ ] `type_after_continue` — type narrows after continue
-- [ ] `type_after_exception` — type narrows after throw
-- [ ] `die` — type narrows after `die()`/`exit()`
-- [ ] `else` — else branch gets the negated type
-- [ ] `else_assign` — variable assigned in else
-- [ ] `elseif` — elseif chain
-- [ ] `elseifdie` — elseif with die
-- [ ] `and` — `&&` compound narrowing (likely already covered)
-- [ ] `bang` — `!` negation
-- [ ] `bangbang` — `!!` double negation
-- [ ] `false` — `=== false` check
-- [ ] `if_or` — `||` in condition
+- [x] `instanceof` — ✅ `narrowing/instanceof_narrows_type.fixture` — basic `instanceof` narrows type
+- [x] `instanceof_removes_null` — ✅ `narrowing/instanceof_removes_null.fixture` — `instanceof` strips null from union
+- [x] `instanceof_removes_scalar` — ✅ `narrowing/instanceof_removes_scalar.fixture` — `instanceof` strips scalar from union
+- [x] `type_after_return` — ✅ `narrowing/type_after_early_return.fixture` — type narrows after early return (single assertion; original had 2)
+- [x] `type_after_break` — ✅ `narrowing/type_after_break.fixture` — type narrows after break
+- [x] `type_after_continue` — ✅ `narrowing/type_after_continue.fixture` — type narrows after continue
+- [x] `type_after_exception` — ✅ `narrowing/type_after_throw.fixture` — type narrows after throw
+- [x] `die` — ✅ `narrowing/type_after_die.fixture` — type narrows after `die()`/`exit()`
+- [ ] `else` — else branch gets the negated type (uses `is_string`, depends on todo.md §3)
+- [ ] `else_assign` — variable assigned in else (literal string types, low priority)
+- [ ] `elseif` — elseif chain (uses `is_string`/`is_int`, depends on todo.md §3)
+- [ ] `elseifdie` — elseif with die (uses `is_string`/`is_int`, depends on todo.md §3)
+- [x] `and` — ✅ `narrowing/and_compound.fixture` — `&&` compound narrowing
+- [x] `bang` — ✅ `narrowing/bang_negated_instanceof_die.fixture` — `!` negation with die
+- [ ] `bangbang` — `!!` double negation (low priority edge case)
+- [x] `false` — ✅ `narrowing/false_comparison_narrowing.fixture` — `=== false` check with die
+- [ ] `if_or` — `||` in condition (uses untyped `$foo`, low priority)
 - [ ] `is_not_string_and_not_instanceof` — compound negated checks (depends on todo.md §3 for `is_string` part)
-- [ ] `multile_nested` — deeply nested if/else
-- [ ] `multiple_statements` — sequential if blocks
-- [ ] `multiple_statements_open_branches` — multiple non-terminating branches
-- [ ] `multiple_statements_with_class` — narrowing inside class method
-- [ ] `namespace` — narrowing with namespaced types
-- [ ] `no_vars` — if without variables
-- [ ] `non-terminating-branch` — branch that doesn't terminate
-- [ ] `nullable` — null check narrowing
-- [ ] `property` — **gap:** narrowing on `$this->prop` (our narrowing operates on variables, not member access chains)
-- [ ] `property_negated` — **gap:** negated property narrowing (same issue)
-- [ ] `remove_null_type1` — `!== null` strips null
-- [ ] `remove_null_type2` — `!= null` strips null
-- [ ] `union_and` — `instanceof A && instanceof B` → **adjust:** we show union of members, not intersection
-- [ ] `union_and_else` — intersection with else branch → **adjust:** same
-- [ ] `union_or` — `instanceof A || instanceof B` → union
-- [ ] `union_or_else` — union with else branch
+- [ ] `multile_nested` — deeply nested if/else (low priority, no completion impact)
+- [x] `multiple_statements` — ✅ `narrowing/sequential_narrowing.fixture` — sequential if blocks with returns
+- [x] `multiple_statements_open_branches` — ✅ `narrowing/open_branches_no_leak.fixture` — multiple non-terminating branches
+- [x] `multiple_statements_with_class` — ✅ `narrowing/narrowing_in_class_method.fixture` — narrowing inside class method
+- [ ] `namespace` — narrowing with namespaced types (low priority, namespace resolution already tested elsewhere)
+- [ ] `no_vars` — if without variables (no completion impact)
+- [ ] `non-terminating-branch` — branch that doesn't terminate (uses `is_int`, depends on todo.md §3)
+- [x] `nullable` — ✅ `narrowing/nullable_guard.fixture` — null check narrowing via negated instanceof + throw
+- [x] `property` — ❌ `narrowing/property_narrowing.fixture` (ignored: narrowing on `$this->prop` not supported)
+- [x] `property_negated` — ❌ `narrowing/property_narrowing_negated.fixture` (ignored: negated property narrowing not supported)
+- [x] `remove_null_type1` — ✅ `narrowing/remove_null_not_null_check.fixture` — `!== null` strips null
+- [x] `remove_null_type2` — ✅ `narrowing/remove_null_equal_return.fixture` — `null ===` with return strips null
+- [ ] `union_and` — `instanceof A && instanceof B` → we show union of members (PHPantom design choice)
+- [ ] `union_and_else` — intersection with else branch → same design choice
+- [x] `union_or` — ✅ `narrowing/or_instanceof.fixture` — `instanceof A || instanceof B` → union
+- [x] `union_or_else` — ✅ `narrowing/or_instanceof_else_narrows.fixture` — else after `||` strips both types
 - [ ] `variable_introduced_in_branch` — **gap:** var declared inside if
 
 #### function/ (20 files)
 
-> **Note:** These test `is_*()` function narrowing and built-in function return types. The `is_*()` narrowing depends on todo.md §3 (conditional return type parsing from stubs). Array function return types depend on todo.md §19 (array functions needing new code paths). Mark as `#[ignore]` with cross-references until those features land.
+> **Note:** These test `is_*()` function narrowing and built-in function return types. The `is_*()` narrowing depends on todo.md §3 (conditional return type parsing from stubs). Array function return types depend on todo.md §19 (array functions needing new code paths). Not yet converted; mark as `#[ignore]` with cross-references when converted.
 
 - [ ] `array_map` — `array_map` return type
 - [ ] `array_merge` — `array_merge` return type (relevant to todo.md §19)
@@ -332,36 +332,45 @@ For each `.test` file in `phpactor/lib/WorseReflection/Tests/Inference/<category
 - [ ] `callable` — callable type resolution
 - [ ] `class-string` / `class-string-new` / `class-string-new-no-type` / `class-string-static-call` — `class-string<T>` usage
 - [ ] `closure` — Closure type resolution
-- [ ] `conditional-type` / `conditional-type2` / `conditional-type3` — basic conditional returns (likely already covered)
+- [x] `conditional-type` — ✅ `type/conditional_return_type.fixture` — conditional return type with class-string resolves
+- [x] `conditional-type2` — ❌ `type/conditional_return_type_string.fixture` (ignored: literal string conditional not supported)
+- [ ] `conditional-type3` — literal string conditional (non-matching branch)
 - [ ] `conditional-type-container` — conditional on container class
 - [ ] `conditional-type-nested` — nested conditional
-- [ ] `conditional-type-nullable` — conditional with nullable
+- [x] `conditional-type-nullable` — ✅ `type/conditional_return_null.fixture` — conditional with null parameter resolves
 - [ ] `conditional-type-on-function` — conditional return on standalone function (relevant to todo.md §3)
 - [ ] `false` — `false` pseudo-type
 - [ ] `int-range` — `int<0, max>` range type (low priority — no completion impact)
 - [ ] `list` — `list<T>` type
 - [ ] `never` — `never` type
 - [ ] `parenthesized` / `parenthesized_closure` — `(A|B)` grouping
-- [ ] `self_context_trait` — `self` inside trait
-- [ ] `static` / `static_context` — `static` return type
+- [x] `self_context_trait` — ✅ `type/self_in_trait.fixture` — `self` in trait resolves to using class
+- [x] `static` — ✅ `type/static_return_type.fixture` — `static` return type resolves to declaring class
+- [x] `static_context` — ✅ `type/static_return_child.fixture` — `static` on parent resolves to child class
 - [ ] `string-literal` — string literal type (low priority — no completion impact)
 - [ ] `union_from_relative_docblock` — union from relative docblock reference
 - [ ] `variadic` — variadic parameter type
 
 #### foreach/ (13 files)
 
-- [ ] `assigns_type_to_item` / `assigns_type_to_key` — basic foreach typing (likely already covered)
+- [x] `assigns_type_to_item` — ✅ `foreach/item_type_from_docblock.fixture` — basic foreach item typing from `@var Type[] $arr`
+- [ ] `assigns_type_to_key` — basic foreach key typing (hover-only, no completion fixture)
 - [ ] `generic_iterator_aggregate` / `generic_iterator_aggregate_then_foreach` — IteratorAggregate in foreach (relevant to todo.md §16)
-- [ ] `list_deconstruct` / `list_deconstruct_1` — `foreach ($arr as [$a, $b])`
+- [ ] `list_deconstruct` / `list_deconstruct_1` — `foreach ($arr as [$a, $b])` (literal types, low priority)
 - [ ] `literal_keys` / `literal_values` / `literal_values_removes_dupes` — literal type preservation (low priority)
-- [ ] `namespaced` — foreach with namespaced types
+- [x] `namespaced` — ✅ `foreach/namespaced.fixture` — foreach with namespaced types resolves
 - [ ] `preserve_types_after_break` — type after `break` in foreach
-- [ ] `with_docblock` — `@var` override in foreach
+- [x] `with_docblock` — ❌ `foreach/docblock_override.fixture` (ignored: @var on foreach loop variable with untyped collection not resolved)
 - [ ] `gh-1708` — regression test
 
 #### reflection/ (12 files)
 
-- [ ] `mixin_class` / `mixin_generic` / `mixin_properties` / `mixin_recursive` / `mixin_static` / `multiple_mixins` — all mixin patterns (likely partially covered via `completion_mixins.rs`)
+- [x] `mixin_class` — ✅ `reflection/mixin_class.fixture` — @mixin provides members from another class
+- [x] `mixin_generic` — ✅ `reflection/mixin_generic.fixture` — @mixin with generic parameter resolves template
+- [x] `mixin_properties` — ✅ `reflection/mixin_properties.fixture` — @mixin provides access to mixed-in class properties
+- [ ] `mixin_recursive` — recursive mixin resolution
+- [x] `mixin_static` — ✅ `reflection/mixin_static.fixture` — @mixin with static return type resolves to consuming class
+- [x] `multiple_mixins` — ✅ `reflection/multiple_mixins.fixture` — multiple @mixin tags contribute members from all mixed classes
 - [ ] `promoted_property_with_params` — constructor promotion
 - [ ] `self-referencing-constant` — constant referencing self
 - [ ] `virtial_static_method` — `@method static` virtual
@@ -370,21 +379,22 @@ For each `.test` file in `phpactor/lib/WorseReflection/Tests/Inference/<category
 
 #### virtual_member/ (7 files)
 
-- [ ] `method` / `method2` — `@method` virtual methods (likely already covered)
-- [ ] `property` — `@property` virtual properties (likely already covered)
-- [ ] `method_and_property_with_same_name` — name collision
-- [ ] `trait_method1` — `@method` on trait
-- [ ] `virtual-method-returns-static` — `@method` returning `static`
-- [ ] `virtual-method-returns-this` — `@method` returning `$this`
+- [x] `method` — ✅ `virtual_member/method_tag.fixture` — `@method` virtual methods appear in completion
+- [ ] `method2` — complex `@method` with overridden parent (multi-assertion, would need splitting)
+- [x] `property` — ✅ `virtual_member/property_tag.fixture` — `@property` virtual properties appear in completion
+- [x] `method_and_property_with_same_name` — ✅ `virtual_member/method_and_property_same_name.fixture` — both appear in completion
+- [x] `trait_method1` — ❌ `virtual_member/trait_method.fixture` (ignored: @method on trait does not propagate to class using it)
+- [x] `virtual-method-returns-static` — ❌ `virtual_member/method_returns_static.fixture` (ignored: @method static return chaining not resolved to child class)
+- [x] `virtual-method-returns-this` — ❌ `virtual_member/method_returns_this.fixture` (ignored: @method $this return chaining not resolved)
 
 #### Remaining categories
 
 - [ ] `assignment/` (10) — array mutation, list, ternary, nested destructuring
 - [ ] `binary-expression/` (7) — arithmetic, concat, bitwise, comparison (low priority — no completion impact)
 - [ ] `call-expression/` (5) — first-class callable, `__invoke`
-- [ ] `combination/` (8) — multi-type params, union narrowing, inline assertion → **adjust assertions for union-completion semantics**
-- [ ] `narrowing/` (4) — `@phpstan-assert`, negation, generic narrowing (likely already covered via our `narrowing.rs`)
-- [ ] `enum/` (6) — backed/unit cases, traits, custom members (relevant to todo.md §10: BackedEnum::from/tryFrom refinement)
+- [x] `combination/` (8) — 3 converted: `combination/narrow_abstract_assert.fixture` ✅, `combination/param_with_multiple_types.fixture` ✅, `combination/union_narrow_with_ancestors.fixture` ✅. Remaining 5 need adjustments for union-completion semantics or use `is_string`.
+- [x] `narrowing/` (4) — 3 converted: `narrowing/phpstan_assert_function.fixture` ✅, `narrowing/phpstan_assert_static.fixture` ❌ (ignored: static method @phpstan-assert), `narrowing/phpstan_assert_negated.fixture` ❌ (ignored: negated assert). 1 remaining: `narrow-generic` (generic narrowing).
+- [x] `enum/` (5) — 3 converted: `enum/custom_member.fixture` ✅, `enum/enum_trait.fixture` ✅, `enum/enum_implements_interface.fixture` ✅. Remaining: `backed_enum_case` (literal type assertions), `enum_case` (literal type assertions).
 - [ ] `catch-clause/` (2) — exception types, union catch (likely already covered via `completion_catch.rs`)
 - [ ] `cast/` (1) — cast expression types (low priority)
 - [ ] `anonymous_function/` (2) — closure as Closure type
@@ -566,15 +576,38 @@ When working on these todo.md items, check the corresponding Phpactor fixtures f
 
 ## Summary of Deliverables
 
-| Phase | Deliverable | Effort |
+| Phase | Deliverable | Status |
 |---|---|---|
-| 1 | Fixture runner infrastructure (`tests/fixture_runner.rs`, format spec, 5 proof-of-concept fixtures) | Medium |
-| 2 | Audit spreadsheet: 261 Phpactor fixtures mapped to our existing coverage (use the checklists above) | Small (reading + marking) |
-| 3 Tier 1 | ~40-50 `.fixture` files converted as regression tests for existing features (after deduplication against our 2,111 tests) | Medium |
-| 3 Tier 2 | ~25 `.fixture` files converted as `#[ignore]` tests for planned features, with todo.md cross-references | Small |
-| 4 | ~20-30 `.fixture` files from completion tests (after deduplication) | Medium |
-| 5 | Smoke test suite + benchmark suite | Medium |
+| 1 | Fixture runner infrastructure (`tests/fixture_runner.rs`, format spec, 5 proof-of-concept fixtures) | ✅ Done |
+| 2 | Audit: 261 Phpactor fixtures mapped to our existing coverage (use the checklists above) | 🔶 Partial (generics, if-statement, type, foreach, reflection, virtual_member, narrowing, combination, enum audited; function, remaining categories pending) |
+| 3 Tier 1 | Regression tests for existing features | 🔶 49 passing fixtures converted across 8 categories |
+| 3 Tier 2 | Ignored tests for planned features, with cross-references | 🔶 19 ignored fixtures converted |
+| 4 | Completion test mining from Phpactor | Not started |
+| 5 | Smoke test suite + benchmark suite | Not started |
 
-**Recommended order: Phase 1 → Phase 2 → Phase 3 (Tier 1) → Phase 5 → Phase 3 (Tier 2) → Phase 4**
+**Current fixture counts (68 total):**
 
-Build the runner first so every subsequent conversion is fast. Do the audit before converting anything so we don't duplicate our existing tests. Ship smoke tests and benchmarks early because they protect against regressions while we add features. Convert the `#[ignore]` Tier 2 fixtures before Phase 4 so the todo.md items have waiting acceptance tests.
+| Category | Passing | Ignored | Total |
+|---|---|---|---|
+| narrowing (if-statement + narrowing/) | 20 | 4 | 24 |
+| generics | 8 | 10 | 18 |
+| virtual_member | 3 | 3 | 6 |
+| type | 5 | 1 | 6 |
+| reflection | 5 | 0 | 5 |
+| enum | 3 | 0 | 3 |
+| foreach | 2 | 1 | 3 |
+| combination | 3 | 0 | 3 |
+
+**Gaps discovered during conversion (not previously tracked):**
+- `@implements` generic resolution (class_implements_single, class_implements_multiple)
+- `@template-extends` syntax (only `@extends` is recognized)
+- `class-string<T>` on interface method not inherited by implementing class
+- `@method` on trait does not propagate to class using it
+- `@method` with `static` or `$this` return type does not chain through to child class
+- `@phpstan-assert` on static method calls (only standalone function calls work)
+- Negated `@phpstan-assert !Type` does not remove the asserted type from unions
+- `@var` on foreach loop variable with untyped collection not resolved
+- Literal string conditional return type resolution (`$param is "foo"`)
+- Property-level narrowing (`$this->prop instanceof Foo`)
+
+**Recommended next steps: Phase 4 (completion test mining) → Phase 3 remaining categories → Phase 5 (smoke tests)**

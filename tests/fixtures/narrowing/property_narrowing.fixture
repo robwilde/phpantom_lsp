@@ -1,0 +1,23 @@
+// test: instanceof narrowing on property access $this->prop
+// feature: completion
+// ignore: needs property-level narrowing support (not yet tracked in todo.md)
+// Adapted from phpactor if-statement/property.test
+// expect: barMethod(
+---
+<?php
+
+class Bar {
+    public function barMethod(): void {}
+}
+
+class Foo
+{
+    private $bar;
+
+    public function test(): void
+    {
+        if ($this->bar instanceof Bar) {
+            $this->bar-><>
+        }
+    }
+}

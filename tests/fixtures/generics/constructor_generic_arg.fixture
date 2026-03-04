@@ -1,0 +1,37 @@
+// test: constructor with generic argument infers template type
+// feature: completion
+// ignore: needs todo.md §2 (function-level @template constructor inference)
+// Adapted from phpactor generics/constructor-generic-arg.test
+// expect: a(
+---
+<?php
+
+/**
+ * @template T
+ */
+class Foobar {
+    /**
+     * @param T $fo
+     */
+    public function __construct($fo) {}
+}
+
+/**
+ * @template T
+ */
+class Foo {
+    /** @param Foobar<T> $a */
+    public function __construct(Foobar $a) {}
+
+    /**
+     * @return T
+     */
+    public function a() {}
+}
+
+class StringResult {
+    public function strMethod(): void {}
+}
+
+$f = new Foo(new Foobar(new StringResult()));
+$f->a()-><>
