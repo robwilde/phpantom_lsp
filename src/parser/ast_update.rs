@@ -54,6 +54,7 @@ impl Backend {
             trivias: program.trivia.as_slice(),
             content,
             php_version: None,
+            use_map: HashMap::new(),
         };
 
         // Extract all three in a single parse pass.

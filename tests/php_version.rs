@@ -645,6 +645,118 @@ array_map(null, []);
     }
 }
 
+// ─── Aliased Attribute Names ────────────────────────────────────────────────
+
+#[test]
+fn element_available_alias_filters_parameters() {
+    // intl/intl.php aliases PhpStormStubsElementAvailable as ElementAvailable.
+    let backend = create_test_backend();
+
+    let stub_content = r#"<?php
+use JetBrains\PhpStorm\Internal\PhpStormStubsElementAvailable as ElementAvailable;
+
+function normalizer_normalize(
+    string $string,
+    #[ElementAvailable(from: '5.3', to: '5.6')] $form,
+    #[ElementAvailable(from: '7.0')] int $form = 16,
+    #[ElementAvailable(from: '5.3', to: '5.6')] $arg3
+): string|false {}
+"#;
+
+    let functions = backend.parse_functions_versioned(stub_content, Some(PhpVersion::new(8, 4)));
+    assert_eq!(functions.len(), 1);
+    // On PHP 8.4, only the 7.0+ parameter variant should survive (plus $string).
+    let params: Vec<&str> = functions[0]
+        .parameters
+        .iter()
+        .map(|p| p.name.as_str())
+        .collect();
+    assert_eq!(
+        params,
+        vec!["$string", "$form"],
+        "old params should be filtered out"
+    );
+}
+
+#[test]
+fn element_available_alias_filters_parameters_legacy() {
+    let backend = create_test_backend();
+
+    let stub_content = r#"<?php
+use JetBrains\PhpStorm\Internal\PhpStormStubsElementAvailable as ElementAvailable;
+
+function normalizer_normalize(
+    string $string,
+    #[ElementAvailable(from: '5.3', to: '5.6')] $form,
+    #[ElementAvailable(from: '7.0')] int $form = 16,
+    #[ElementAvailable(from: '5.3', to: '5.6')] $arg3
+): string|false {}
+"#;
+
+    let functions = backend.parse_functions_versioned(stub_content, Some(PhpVersion::new(5, 4)));
+    assert_eq!(functions.len(), 1);
+    let params: Vec<&str> = functions[0]
+        .parameters
+        .iter()
+        .map(|p| p.name.as_str())
+        .collect();
+    assert_eq!(
+        params,
+        vec!["$string", "$form", "$arg3"],
+        "new param should be filtered out"
+    );
+}
+
+#[test]
+fn available_alias_filters_functions() {
+    // ldap/ldap.php aliases PhpStormStubsElementAvailable as Available.
+    let backend = create_test_backend();
+
+    let stub_content = r#"<?php
+use JetBrains\PhpStorm\Internal\PhpStormStubsElementAvailable as Available;
+
+#[Available(from: '8.0')]
+function ldap_exop_refresh($ldap, string $dn, int $ttl): int|false {}
+
+#[Available(from: '5.3', to: '7.4')]
+function ldap_old_function(): bool {}
+"#;
+
+    let functions = backend.parse_functions_versioned(stub_content, Some(PhpVersion::new(8, 4)));
+    assert_eq!(functions.len(), 1);
+    assert_eq!(functions[0].name, "ldap_exop_refresh");
+}
+
+#[test]
+fn available_alias_filters_parameters() {
+    let backend = create_test_backend();
+
+    let stub_content = r#"<?php
+use JetBrains\PhpStorm\Internal\PhpStormStubsElementAvailable as Available;
+
+function ldap_exop_passwd(
+    $ldap,
+    #[Available(from: '7.1', to: '7.1')] string $user = "",
+    #[Available(from: '7.2', to: '7.2')] string $user,
+    #[Available(from: '7.3')] string $user = "",
+    #[Available(from: '7.3')] &$controls = null
+): string|bool {}
+"#;
+
+    let functions = backend.parse_functions_versioned(stub_content, Some(PhpVersion::new(8, 0)));
+    assert_eq!(functions.len(), 1);
+    let params: Vec<&str> = functions[0]
+        .parameters
+        .iter()
+        .map(|p| p.name.as_str())
+        .collect();
+    assert_eq!(
+        params,
+        vec!["$ldap", "$user", "$controls"],
+        "only 7.3+ params should survive"
+    );
+}
+
 // ─── Display ────────────────────────────────────────────────────────────────
 
 #[test]

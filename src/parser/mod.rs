@@ -38,6 +38,43 @@ pub(crate) struct DocblockCtx<'a> {
     /// parsing phpstorm-stubs; left as `None` for user code (where the
     /// attribute is never used).
     pub php_version: Option<PhpVersion>,
+    /// Use-statement map for the file being parsed.
+    ///
+    /// Maps short (imported or aliased) names to their fully-qualified
+    /// equivalents, e.g. `"Available"` → `"JetBrains\PhpStorm\Internal\PhpStormStubsElementAvailable"`.
+    /// Used to resolve attribute names that appear under an alias.
+    pub use_map: HashMap<String, String>,
+}
+
+/// FQN constants for the JetBrains stub attributes we recognise.
+/// Matching is done on the last segment of the resolved FQN so that
+/// `#[PhpStormStubsElementAvailable]`, `#[\JetBrains\PhpStorm\Internal\PhpStormStubsElementAvailable]`,
+/// and any `use ... as Alias` form all work.
+const ATTR_ELEMENT_AVAILABLE: &str = "PhpStormStubsElementAvailable";
+
+impl DocblockCtx<'_> {
+    /// Resolve an attribute's short name through the file's use-map and
+    /// return the last segment of the resolved FQN.
+    ///
+    /// For example, if the file has
+    /// `use JetBrains\PhpStorm\Internal\PhpStormStubsElementAvailable as Available;`
+    /// then `resolve_attr_last_segment("Available")` returns
+    /// `"PhpStormStubsElementAvailable"`.
+    ///
+    /// When the name is not in the use-map, returns `None` (the caller
+    /// should fall back to the original name).
+    fn resolve_attr_last_segment(&self, short_name: &str) -> Option<&str> {
+        let fqn = self.use_map.get(short_name)?;
+        Some(fqn.rsplit('\\').next().unwrap_or(fqn))
+    }
+
+    /// Check whether `attr_short_name` resolves to `PhpStormStubsElementAvailable`.
+    pub(crate) fn is_element_available_attr(&self, attr_short_name: &str) -> bool {
+        let canonical = self
+            .resolve_attr_last_segment(attr_short_name)
+            .unwrap_or(attr_short_name);
+        canonical == ATTR_ELEMENT_AVAILABLE
+    }
 }
 
 // ─── PhpStormStubsElementAvailable Attribute Parsing ────────────────────────
@@ -63,10 +100,10 @@ pub(crate) struct VersionAvailability {
 /// Returns `false` when the attribute is present and the version is outside the range.
 pub(crate) fn is_available_for_version(
     attribute_lists: &Sequence<'_, attribute::AttributeList<'_>>,
-    content: &str,
+    ctx: &DocblockCtx<'_>,
     php_version: PhpVersion,
 ) -> bool {
-    if let Some(avail) = extract_version_availability(attribute_lists, content) {
+    if let Some(avail) = extract_version_availability(attribute_lists, ctx) {
         php_version.matches_range(avail.from, avail.to)
     } else {
         // No version attribute → always available.
@@ -81,10 +118,10 @@ pub(crate) fn is_available_for_version(
 /// parameter's attribute lists.
 pub(crate) fn is_param_available_for_version(
     param: &function_like::parameter::FunctionLikeParameter<'_>,
-    content: &str,
+    ctx: &DocblockCtx<'_>,
     php_version: PhpVersion,
 ) -> bool {
-    if let Some(avail) = extract_version_availability(&param.attribute_lists, content) {
+    if let Some(avail) = extract_version_availability(&param.attribute_lists, ctx) {
         php_version.matches_range(avail.from, avail.to)
     } else {
         true
@@ -100,14 +137,18 @@ pub(crate) fn is_param_available_for_version(
 ///   - `#[PhpStormStubsElementAvailable(to: '7.4')]`
 ///   - `#[PhpStormStubsElementAvailable('8.1')]` (positional → treated as `from`)
 ///
+/// Attribute names are resolved through the [`DocblockCtx`] use-map so
+/// that aliases like `ElementAvailable` or `Available` (used in some
+/// stub files) are recognised.
+///
 /// Returns `None` when the attribute is not present.
 fn extract_version_availability(
     attribute_lists: &Sequence<'_, attribute::AttributeList<'_>>,
-    content: &str,
+    ctx: &DocblockCtx<'_>,
 ) -> Option<VersionAvailability> {
     for attr_list in attribute_lists.iter() {
         for attr in attr_list.attributes.iter() {
-            if attr.name.last_segment() != "PhpStormStubsElementAvailable" {
+            if !ctx.is_element_available_attr(attr.name.last_segment()) {
                 continue;
             }
 
@@ -119,7 +160,7 @@ fn extract_version_availability(
                 match arg {
                     argument::Argument::Named(named) => {
                         let name = named.name.value.to_string();
-                        let value = extract_string_literal_value(named.value, content);
+                        let value = extract_string_literal_value(named.value, ctx.content);
                         if let Some(ver_str) = value {
                             let ver = PhpVersion::from_composer_constraint(&ver_str);
                             match name.as_str() {
@@ -131,7 +172,7 @@ fn extract_version_availability(
                     }
                     argument::Argument::Positional(positional) => {
                         // Positional argument is treated as `from`.
-                        let value = extract_string_literal_value(positional.value, content);
+                        let value = extract_string_literal_value(positional.value, ctx.content);
                         if let Some(ver_str) = value {
                             from = PhpVersion::from_composer_constraint(&ver_str);
                         }
@@ -253,6 +294,7 @@ pub(crate) fn extract_parameters(
     parameter_list: &FunctionLikeParameterList,
     content: Option<&str>,
     php_version: Option<PhpVersion>,
+    doc_ctx: Option<&DocblockCtx<'_>>,
 ) -> Vec<ParameterInfo> {
     parameter_list
         .parameters
@@ -261,9 +303,9 @@ pub(crate) fn extract_parameters(
             // When a PHP version is configured, skip parameters that are
             // not available for that version.
             if let Some(ver) = php_version
-                && let Some(src) = content
+                && let Some(ctx) = doc_ctx
             {
-                is_param_available_for_version(param, src, ver)
+                is_param_available_for_version(param, ctx, ver)
             } else {
                 true
             }
@@ -368,10 +410,14 @@ impl Backend {
     /// the target version are filtered out during extraction.
     pub fn parse_php_versioned(content: &str, php_version: Option<PhpVersion>) -> Vec<ClassInfo> {
         with_parsed_program(content, "parse_php", |program, content| {
+            let mut use_map = HashMap::new();
+            Self::extract_use_statements_from_statements(program.statements.iter(), &mut use_map);
+
             let doc_ctx = DocblockCtx {
                 trivias: program.trivia.as_slice(),
                 content,
                 php_version,
+                use_map,
             };
 
             let mut classes = Vec::new();
@@ -403,10 +449,14 @@ impl Backend {
         php_version: Option<PhpVersion>,
     ) -> Vec<FunctionInfo> {
         with_parsed_program(content, "parse_functions", |program, content| {
+            let mut use_map = HashMap::new();
+            Self::extract_use_statements_from_statements(program.statements.iter(), &mut use_map);
+
             let doc_ctx = DocblockCtx {
                 trivias: program.trivia.as_slice(),
                 content,
                 php_version,
+                use_map,
             };
 
             let mut functions = Vec::new();

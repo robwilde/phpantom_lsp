@@ -352,6 +352,28 @@ Deduplication uses the map key (FQN), so two functions with the same short name 
 
 The `stub_constant_index` (`HashMap<&'static str, &'static str>`) is built at construction time from `STUB_CONSTANT_MAP`, mapping constant names like `PHP_EOL`, `PHP_INT_MAX`, `SORT_ASC` to their stub file source. This infrastructure is in place for future use (e.g. constant value/type resolution, completion of standalone constants) but is not yet consulted by any resolution path.
 
+### Version-Aware Filtering
+
+phpstorm-stubs annotate functions, methods, and parameters with `#[PhpStormStubsElementAvailable]` attributes to indicate which PHP versions they apply to. For example, `array_map` has two variants of its second parameter: `array $array` (from PHP 8.0) and an untyped `$arrays` (PHP 5.3 to 7.4). Without filtering, both appear in signatures.
+
+PHPantom detects the target PHP version during `initialized`:
+
+1. Read `config.platform.php` from `composer.json` (explicit platform override).
+2. Fall back to `require.php` from `composer.json` (e.g. `"^8.4"` → 8.4).
+3. Default to PHP 8.5 when neither is available.
+
+The detected version is stored on the `Backend` as a `PhpVersion(major, minor)`.
+
+When parsing stubs (both class stubs via `find_or_load_class` and function stubs via `find_or_load_function`), the PHP version is passed through `DocblockCtx.php_version` to the extraction functions. Three filtering points apply:
+
+- **Function-level:** `extract_functions_from_statements` checks the function's `#[PhpStormStubsElementAvailable]` attribute. If the version range excludes the target, the entire function is skipped. This handles duplicate function definitions (e.g. `array_combine` has separate signatures for PHP ≤7.4 and ≥8.0).
+- **Method-level:** `extract_class_like_members` applies the same check to methods. For example, `SplFixedArray::__serialize` (from PHP 8.2) is excluded when targeting PHP 8.1.
+- **Parameter-level:** `extract_parameters` filters individual parameters. For example, `array_map`'s untyped `$arrays` parameter (PHP 5.3–7.4) is excluded when targeting PHP 8.0+, leaving only the typed `array $array`.
+
+The attribute supports named arguments (`from: '8.0'`, `to: '7.4'`) and a positional argument (`'8.1'` treated as `from`). Both bounds are inclusive. A missing bound means unbounded in that direction.
+
+User code is never filtered. The `php_version` field in `DocblockCtx` is `None` for files parsed via `update_ast`, so the filtering logic is a no-op for non-stub code.
+
 ### Graceful Degradation
 
 If the stubs aren't installed (e.g. `composer install` hasn't been run), `build.rs` generates empty arrays and the build succeeds. The LSP just won't know about built-in PHP symbols.

@@ -1453,7 +1453,7 @@ impl Backend {
                     // range excludes the target PHP version.
                     if let Some(ctx) = doc_ctx
                         && let Some(ver) = ctx.php_version
-                        && !is_available_for_version(&method.attribute_lists, ctx.content, ver)
+                        && !is_available_for_version(&method.attribute_lists, ctx, ver)
                     {
                         continue;
                     }
@@ -1465,6 +1465,7 @@ impl Backend {
                         &method.parameter_list,
                         doc_ctx.map(|ctx| ctx.content),
                         php_version,
+                        doc_ctx,
                     );
                     let native_return_type = method
                         .return_type_hint
