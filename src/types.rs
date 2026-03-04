@@ -304,8 +304,11 @@ pub struct MethodInfo {
     /// @return ($abstract is class-string<TClass> ? TClass : mixed)
     /// ```
     pub conditional_return: Option<ConditionalReturnType>,
-    /// Whether this method is marked `@deprecated` in its PHPDoc.
-    pub is_deprecated: bool,
+    /// Deprecation message from the `@deprecated` PHPDoc tag.
+    ///
+    /// `None` means not deprecated. `Some("")` means deprecated without a
+    /// message. `Some("Use foo() instead")` includes the explanation.
+    pub deprecation_message: Option<String>,
     /// Template parameter names declared via `@template` tags in the
     /// method-level docblock.
     ///
@@ -363,7 +366,7 @@ impl MethodInfo {
             is_static: false,
             visibility: Visibility::Public,
             conditional_return: None,
-            is_deprecated: false,
+            deprecation_message: None,
             template_params: Vec::new(),
             template_bindings: Vec::new(),
             has_scope_attribute: false,
@@ -404,21 +407,24 @@ pub struct PropertyInfo {
     pub is_static: bool,
     /// Visibility of the property (public, protected, or private).
     pub visibility: Visibility,
-    /// Whether this property is marked `@deprecated` in its PHPDoc.
-    pub is_deprecated: bool,
+    /// Deprecation message from the `@deprecated` PHPDoc tag.
+    ///
+    /// `None` means not deprecated. `Some("")` means deprecated without a
+    /// message. `Some("Use foo() instead")` includes the explanation.
+    pub deprecation_message: Option<String>,
 }
 
 impl PropertyInfo {
     /// Create a virtual `PropertyInfo` with sensible defaults.
     ///
-    /// The property is public, non-static, non-deprecated, with
+    /// The property is public, non-static, with no deprecation message and
     /// `name_offset: 0`.
     ///
     /// Use struct update syntax to override individual fields:
     ///
     /// ```ignore
     /// PropertyInfo {
-    ///     is_deprecated: true,
+    ///     deprecation_message: Some("Use newProp instead".into()),
     ///     ..PropertyInfo::virtual_property("foo", Some("string"))
     /// }
     /// ```
@@ -431,7 +437,7 @@ impl PropertyInfo {
             description: None,
             is_static: false,
             visibility: Visibility::Public,
-            is_deprecated: false,
+            deprecation_message: None,
         }
     }
 }
@@ -451,8 +457,11 @@ pub struct ConstantInfo {
     pub type_hint: Option<String>,
     /// Visibility of the constant (public, protected, or private).
     pub visibility: Visibility,
-    /// Whether this constant is marked `@deprecated` in its PHPDoc.
-    pub is_deprecated: bool,
+    /// Deprecation message from the `@deprecated` PHPDoc tag.
+    ///
+    /// `None` means not deprecated. `Some("")` means deprecated without a
+    /// message. `Some("Use OK instead")` includes the explanation.
+    pub deprecation_message: Option<String>,
     /// Human-readable description extracted from the constant's docblock.
     ///
     /// This is the free-text portion of the docblock (before any `@tag` lines).
@@ -464,6 +473,11 @@ pub struct ConstantInfo {
     /// `case Pending = 'pending';`).  `None` for unit enum cases and
     /// regular class constants.
     pub enum_value: Option<String>,
+    /// The initializer expression source text for a regular class constant
+    /// (e.g. `"'active'"` for `const STATUS = 'active';`, `"100"` for
+    /// `const LIMIT = 100;`).  `None` when the constant has no initializer
+    /// or the source text could not be extracted.
+    pub value: Option<String>,
 }
 
 /// Describes the access operator that triggered completion.
@@ -588,8 +602,11 @@ pub struct FunctionInfo {
     /// @phpstan-assert-if-false User $value  — assertion when return is false
     /// ```
     pub type_assertions: Vec<TypeAssertion>,
-    /// Whether this function is marked `@deprecated` in its PHPDoc.
-    pub is_deprecated: bool,
+    /// Deprecation message from the `@deprecated` PHPDoc tag.
+    ///
+    /// `None` means not deprecated. `Some("")` means deprecated without a
+    /// message. `Some("Use newHelper() instead")` includes the explanation.
+    pub deprecation_message: Option<String>,
 }
 
 // ─── PHPStan Type Assertions ────────────────────────────────────────────────
@@ -851,8 +868,11 @@ pub struct ClassInfo {
     /// be excluded from contexts like `throw new` or `new` completion
     /// where only concrete classes are valid.
     pub is_abstract: bool,
-    /// Whether this class is marked `@deprecated` in its PHPDoc.
-    pub is_deprecated: bool,
+    /// Deprecation message from the `@deprecated` PHPDoc tag.
+    ///
+    /// `None` means not deprecated. `Some("")` means deprecated without a
+    /// message. `Some("Use NewApi instead")` includes the explanation.
+    pub deprecation_message: Option<String>,
     /// URL from the `@link` tag in the class-level docblock.
     ///
     /// For `@link https://php.net/manual/en/reserved.classes.php`,

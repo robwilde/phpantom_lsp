@@ -36,15 +36,13 @@ expect. This sprint finishes both features so they feel complete.
 
 | # | Item | Effort | Domain | Doc Link |
 |---|---|---|---|---|
-| 1 | Deprecation message text in hover | Low | Hover | [todo-hover.md §1](todo-hover.md#1-deprecation-message-text) |
-| 2 | Constant value display in hover | Low | Hover | [todo-hover.md §2](todo-hover.md#2-constant-value-display) |
-| 3 | Member origin indicators in hover | Low-Medium | Hover | [todo-hover.md §3](todo-hover.md#3-member-origin-indicators) |
-| 4 | Enum case listing in enum hover | Low | Hover | [todo-hover.md §4](todo-hover.md#4-enum-case-listing-in-enum-hover) |
-| 5 | Trait hover shows public method signatures | Low | Hover | [todo-hover.md §5](todo-hover.md#5-trait-hover-shows-public-method-signatures) |
-| 6 | Per-parameter `@param` descriptions in signature help | Trivial | Signature Help | [todo-signatureHelp.md §1](todo-signatureHelp.md#1-per-parameter-param-descriptions) |
-| 7 | Signature-level documentation | Small | Signature Help | [todo-signatureHelp.md §2](todo-signatureHelp.md#2-signature-level-documentation-methodfunction-docblock) |
-| 8 | Default values in signature help parameter labels | Trivial | Signature Help | [todo-signatureHelp.md §3](todo-signatureHelp.md#3-default-values-in-parameter-labels) |
-| 9 | Retrigger on `)` to dismiss signature help | Trivial | Signature Help | [todo-signatureHelp.md §6](todo-signatureHelp.md#6-retrigger-on--to-dismiss) |
+| 1 | Member origin indicators in hover | Low-Medium | Hover | [todo-hover.md §3](todo-hover.md#3-member-origin-indicators) |
+| 2 | Enum case listing in enum hover | Low | Hover | [todo-hover.md §4](todo-hover.md#4-enum-case-listing-in-enum-hover) |
+| 3 | Trait hover shows public method signatures | Low | Hover | [todo-hover.md §5](todo-hover.md#5-trait-hover-shows-public-method-signatures) |
+| 4 | Per-parameter `@param` descriptions in signature help | Trivial | Signature Help | [todo-signatureHelp.md §1](todo-signatureHelp.md#1-per-parameter-param-descriptions) |
+| 5 | Signature-level documentation | Small | Signature Help | [todo-signatureHelp.md §2](todo-signatureHelp.md#2-signature-level-documentation-methodfunction-docblock) |
+| 6 | Default values in signature help parameter labels | Trivial | Signature Help | [todo-signatureHelp.md §3](todo-signatureHelp.md#3-default-values-in-parameter-labels) |
+| 7 | Retrigger on `)` to dismiss signature help | Trivial | Signature Help | [todo-signatureHelp.md §6](todo-signatureHelp.md#6-retrigger-on--to-dismiss) |
 
 **Why this order:** Hover items 1-5 are all low effort and surface data
 we already have or can cheaply derive. Signature help items 6-9 are pure

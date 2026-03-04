@@ -62,8 +62,8 @@ use super::{
 /// the same extraction calls for classes, interfaces, traits, and enums.
 #[derive(Default)]
 struct ClassDocblockInfo {
-    /// Whether the class-level docblock contains `@deprecated`.
-    is_deprecated: bool,
+    /// Deprecation message from `@deprecated`, or `None` if not deprecated.
+    deprecation_message: Option<String>,
     /// `@template` parameters declared on the class-like.
     template_params: Vec<String>,
     /// Upper bounds for template parameters (`@template T of Bound`).
@@ -109,7 +109,7 @@ fn extract_class_docblock<'a>(
         .collect();
 
     ClassDocblockInfo {
-        is_deprecated: docblock::has_deprecated_tag(doc_text),
+        deprecation_message: docblock::extract_deprecation_message(doc_text),
         template_params,
         template_param_bounds,
         extends_generics: docblock::extract_generics_tag(doc_text, "@extends"),
@@ -707,7 +707,7 @@ impl Backend {
                         mixins: doc_info.mixins,
                         is_final: class.modifiers.contains_final(),
                         is_abstract: class.modifiers.contains_abstract(),
-                        is_deprecated: doc_info.is_deprecated,
+                        deprecation_message: doc_info.deprecation_message.clone(),
                         link: doc_info.link,
                         template_params: doc_info.template_params,
                         template_param_bounds: doc_info.template_param_bounds,
@@ -783,7 +783,7 @@ impl Backend {
                         mixins: doc_info.mixins,
                         is_final: false,
                         is_abstract: false,
-                        is_deprecated: doc_info.is_deprecated,
+                        deprecation_message: doc_info.deprecation_message.clone(),
                         link: doc_info.link,
                         template_params: doc_info.template_params,
                         template_param_bounds: doc_info.template_param_bounds,
@@ -840,7 +840,7 @@ impl Backend {
                         mixins: doc_info.mixins,
                         is_final: false,
                         is_abstract: false,
-                        is_deprecated: doc_info.is_deprecated,
+                        deprecation_message: doc_info.deprecation_message.clone(),
                         link: doc_info.link,
                         template_params: doc_info.template_params,
                         template_param_bounds: doc_info.template_param_bounds,
@@ -919,7 +919,7 @@ impl Backend {
                         mixins: doc_info.mixins,
                         is_final: true,
                         is_abstract: false,
-                        is_deprecated: doc_info.is_deprecated,
+                        deprecation_message: doc_info.deprecation_message,
                         link: doc_info.link,
                         template_params: vec![],
                         template_param_bounds: HashMap::new(),
@@ -1011,7 +1011,7 @@ impl Backend {
             mixins: vec![],
             is_final: false,
             is_abstract: false,
-            is_deprecated: false,
+            deprecation_message: None,
             template_params: vec![],
             template_param_bounds: HashMap::new(),
             extends_generics: vec![],
@@ -1483,7 +1483,7 @@ impl Backend {
                     let (
                         return_type,
                         conditional_return,
-                        is_deprecated,
+                        deprecation_message,
                         method_template_params,
                         method_template_bindings,
                     ) = if let Some(ctx) = doc_ctx {
@@ -1534,14 +1534,21 @@ impl Backend {
                             )
                         });
 
-                        let deprecated = docblock_text.is_some_and(docblock::has_deprecated_tag);
+                        let deprecation_message =
+                            docblock_text.and_then(docblock::extract_deprecation_message);
 
-                        (effective, conditional, deprecated, tpl_params, tpl_bindings)
+                        (
+                            effective,
+                            conditional,
+                            deprecation_message,
+                            tpl_params,
+                            tpl_bindings,
+                        )
                     } else {
                         (
                             native_return_type.clone(),
                             None,
-                            false,
+                            None,
                             Vec::new(),
                             Vec::new(),
                         )
@@ -1593,7 +1600,7 @@ impl Backend {
                                     description: None,
                                     is_static: false,
                                     visibility: prop_visibility,
-                                    is_deprecated: false,
+                                    deprecation_message: None,
                                 });
                             }
                         }
@@ -1670,7 +1677,7 @@ impl Backend {
                         is_static,
                         visibility,
                         conditional_return,
-                        is_deprecated,
+                        deprecation_message,
                         template_params: method_template_params,
                         template_bindings: method_template_bindings,
                         has_scope_attribute: has_scope_attr,
@@ -1685,7 +1692,7 @@ impl Backend {
                         && let Some(doc_text) =
                             docblock::get_docblock_text_for_node(ctx.trivias, ctx.content, member)
                     {
-                        let deprecated = docblock::has_deprecated_tag(doc_text);
+                        let deprecation_msg = docblock::extract_deprecation_message(doc_text);
                         if let Some(doc_type) = docblock::extract_var_type(doc_text) {
                             for prop in &mut prop_infos {
                                 prop.type_hint = docblock::resolve_effective_type(
@@ -1694,9 +1701,9 @@ impl Backend {
                                 );
                             }
                         }
-                        if deprecated {
+                        if let Some(ref msg) = deprecation_msg {
                             for prop in &mut prop_infos {
-                                prop.is_deprecated = true;
+                                prop.deprecation_message = Some(msg.clone());
                             }
                         }
                         let description =
@@ -1714,11 +1721,11 @@ impl Backend {
                 ClassLikeMember::Constant(constant) => {
                     let type_hint = constant.hint.as_ref().map(|h| extract_hint_string(h));
                     let visibility = extract_visibility(constant.modifiers.iter());
-                    let is_deprecated = if let Some(ctx) = doc_ctx {
+                    let deprecation_message = if let Some(ctx) = doc_ctx {
                         docblock::get_docblock_text_for_node(ctx.trivias, ctx.content, member)
-                            .is_some_and(docblock::has_deprecated_tag)
+                            .and_then(docblock::extract_deprecation_message)
                     } else {
-                        false
+                        None
                     };
                     let const_description = doc_ctx
                         .and_then(|ctx| {
@@ -1726,15 +1733,21 @@ impl Backend {
                         })
                         .and_then(|doc| crate::hover::extract_docblock_description(Some(doc)));
                     for item in constant.items.iter() {
+                        let value = doc_ctx.and_then(|ctx| {
+                            let start = item.value.span().start.offset as usize;
+                            let end = item.value.span().end.offset as usize;
+                            ctx.content.get(start..end).map(|s| s.to_string())
+                        });
                         constants.push(ConstantInfo {
                             name: item.name.value.to_string(),
                             name_offset: item.name.span.start.offset,
                             type_hint: type_hint.clone(),
                             visibility,
-                            is_deprecated,
+                            deprecation_message: deprecation_message.clone(),
                             description: const_description.clone(),
                             is_enum_case: false,
                             enum_value: None,
+                            value,
                         });
                     }
                 }
@@ -1755,10 +1768,11 @@ impl Backend {
                         name_offset: case_name_offset,
                         type_hint: None,
                         visibility: Visibility::Public,
-                        is_deprecated: false,
+                        deprecation_message: None,
                         description: None,
                         is_enum_case: true,
                         enum_value,
+                        value: None,
                     });
                 }
                 ClassLikeMember::TraitUse(trait_use) => {

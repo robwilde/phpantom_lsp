@@ -352,7 +352,7 @@ fn builder_forwarding_preserves_method_metadata() {
             make_param("$value", Some("mixed"), false),
         ],
     )]);
-    builder.methods[0].is_deprecated = true;
+    builder.methods[0].deprecation_message = Some("Use whereNew() instead".into());
 
     let user = make_class("App\\Models\\User");
 
@@ -367,7 +367,7 @@ fn builder_forwarding_preserves_method_metadata() {
     let result = build_builder_forwarded_methods(&user, &loader);
     assert_eq!(result.len(), 1);
     assert!(
-        result[0].is_deprecated,
+        result[0].deprecation_message.is_some(),
         "Deprecated flag should be preserved"
     );
     assert_eq!(result[0].parameters.len(), 2);

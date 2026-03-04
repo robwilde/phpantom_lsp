@@ -218,11 +218,11 @@ fn build_scope_methods_with_no_params() {
 #[test]
 fn build_scope_methods_preserves_deprecated() {
     let mut method = make_method("scopeOld", Some("void"));
-    method.is_deprecated = true;
+    method.deprecation_message = Some("Use scopeNew() instead".into());
 
     let [instance, static_m] = build_scope_methods(&method);
-    assert!(instance.is_deprecated);
-    assert!(static_m.is_deprecated);
+    assert!(instance.deprecation_message.is_some());
+    assert!(static_m.deprecation_message.is_some());
 }
 
 // ── is_attribute_scope ──────────────────────────────────────────────
@@ -377,11 +377,11 @@ fn build_scope_methods_attribute_creates_instance_and_static() {
 #[test]
 fn build_scope_methods_attribute_preserves_deprecated() {
     let mut method = make_scope_attr_method("old", Some("void"));
-    method.is_deprecated = true;
+    method.deprecation_message = Some("Use new() instead".into());
 
     let [instance, static_m] = build_scope_methods(&method);
-    assert!(instance.is_deprecated);
-    assert!(static_m.is_deprecated);
+    assert!(instance.deprecation_message.is_some());
+    assert!(static_m.deprecation_message.is_some());
 }
 
 // ── build_scope_methods_for_builder ─────────────────────────────────
@@ -530,7 +530,7 @@ fn builder_scope_preserves_deprecated() {
             m.file_namespace = Some("App\\Models".to_string());
             m.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
             let mut scope = make_method("scopeOld", Some("void"));
-            scope.is_deprecated = true;
+            scope.deprecation_message = Some("Use scopeNew() instead".into());
             m.methods.push(scope);
             Some(m)
         } else if name == ELOQUENT_MODEL_FQN {
@@ -542,7 +542,7 @@ fn builder_scope_preserves_deprecated() {
 
     let methods = build_scope_methods_for_builder(model_name, &loader);
     assert_eq!(methods.len(), 1);
-    assert!(methods[0].is_deprecated);
+    assert!(methods[0].deprecation_message.is_some());
 }
 
 // ── #[Scope] attribute: build_scope_methods_for_builder ─────────────

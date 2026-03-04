@@ -34,7 +34,7 @@ pub fn make_class(name: &str) -> ClassInfo {
         mixins: Vec::new(),
         is_final: false,
         is_abstract: false,
-        is_deprecated: false,
+        deprecation_message: None,
         link: None,
         template_params: Vec::new(),
         template_param_bounds: HashMap::new(),
@@ -89,10 +89,11 @@ pub fn make_constant(name: &str) -> ConstantInfo {
         name_offset: 0,
         type_hint: None,
         visibility: Visibility::Public,
-        is_deprecated: false,
+        deprecation_message: None,
         description: None,
         is_enum_case: false,
         enum_value: None,
+        value: None,
     }
 }
 

@@ -10,58 +10,6 @@ Items are ordered by impact (descending), then effort (ascending).
 
 ---
 
-## 1. Deprecation message text
-**Impact: High · Effort: Low**
-
-Today `is_deprecated` is a bare `bool` on `MethodInfo`, `PropertyInfo`,
-`ConstantInfo`, `FunctionInfo`, and `ClassInfo`. Hover renders a generic
-`**@deprecated**` with no explanation. When a library writes
-`@deprecated Use collect() instead`, the user can't see what to use.
-
-**Change:**
-
-- Replace `is_deprecated: bool` with `deprecation_message: Option<String>`
-  on all five structs. `None` = not deprecated; `Some("")` = deprecated
-  without message; `Some("Use collect() instead")` = deprecated with
-  message.
-- In `has_deprecated_tag` (docblock/tags.rs), extract the text after
-  `@deprecated` and return it.
-- Update `virtual_method` / `virtual_property` constructors to use
-  `deprecation_message: None`.
-- In hover rendering, display:
-  - `**@deprecated** Use collect() instead` when a message is present.
-  - `**@deprecated**` when the message is empty.
-- Update all `is_deprecated` checks across the codebase (completion
-  strikethrough, diagnostics future use, etc.) to check
-  `deprecation_message.is_some()`.
-
-**Structs affected:** `MethodInfo`, `PropertyInfo`, `ConstantInfo`,
-`FunctionInfo`, `ClassInfo`.
-
----
-
-## 2. Constant value display
-**Impact: High · Effort: Low**
-
-Class constants don't show their value in hover. `const STATUS_ACTIVE;`
-is far less useful than `const STATUS_ACTIVE = 'active';`. Enum cases
-already show their backed value — regular constants should too.
-
-**Change:**
-
-- Add `value: Option<String>` to `ConstantInfo` (the `enum_value` field
-  already exists for enum cases — generalise it or add a parallel field
-  for regular constants).
-- During parsing (`extract_class_like_members`, the
-  `ClassLikeMember::ClassConstant` arm), extract the initialiser
-  expression source text the same way `enum_value` is extracted for
-  backed enum cases.
-- In `hover_for_constant`, render the value:
-  `const STATUS_ACTIVE = 'active';` for regular constants,
-  `case Pending = 'pending';` for backed enum cases (already works).
-
----
-
 ## 3. Member origin indicators
 **Impact: Medium · Effort: Low-Medium**
 

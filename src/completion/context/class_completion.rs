@@ -1015,7 +1015,11 @@ impl Backend {
                                 insert_text_format,
                                 filter_text: Some(filter),
                                 sort_text: Some(format!("1_{}", cls.name.to_lowercase())),
-                                deprecated: if cls.is_deprecated { Some(true) } else { None },
+                                deprecated: if cls.deprecation_message.is_some() {
+                                    Some(true)
+                                } else {
+                                    None
+                                },
                                 text_edit: fqn_replace_range.map(|range| {
                                     CompletionTextEdit::Edit(TextEdit {
                                         range,

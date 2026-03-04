@@ -57,7 +57,7 @@ impl Backend {
                         return_type,
                         conditional_return,
                         type_assertions,
-                        is_deprecated,
+                        deprecation_message,
                         description,
                         return_description,
                         link,
@@ -98,7 +98,8 @@ impl Backend {
                             .map(docblock::extract_type_assertions)
                             .unwrap_or_default();
 
-                        let deprecated = docblock_text.is_some_and(docblock::has_deprecated_tag);
+                        let deprecation_message =
+                            docblock_text.and_then(docblock::extract_deprecation_message);
 
                         let desc = docblock_text
                             .and_then(|doc| crate::hover::extract_docblock_description(Some(doc)));
@@ -111,7 +112,7 @@ impl Backend {
                             effective,
                             conditional,
                             assertions,
-                            deprecated,
+                            deprecation_message,
                             desc,
                             ret_desc,
                             link_url,
@@ -121,7 +122,7 @@ impl Backend {
                             native_return_type.clone(),
                             None,
                             Vec::new(),
-                            false,
+                            None,
                             None,
                             None,
                             None,
@@ -163,7 +164,7 @@ impl Backend {
                         namespace: current_namespace.clone(),
                         conditional_return,
                         type_assertions,
-                        is_deprecated,
+                        deprecation_message,
                     });
                 }
                 Statement::Namespace(namespace) => {

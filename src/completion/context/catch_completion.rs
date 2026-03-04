@@ -565,9 +565,9 @@ impl Backend {
                 .collect();
             drop(nmap);
 
-            // Phase 1: collect candidate (name, fqn, is_deprecated)
+            // Phase 1: collect candidate (name, fqn, deprecation_message)
             // tuples under the ast_map lock — only concrete classes.
-            let mut candidates: Vec<(String, String, bool)> = Vec::new();
+            let mut candidates: Vec<(String, String, Option<String>)> = Vec::new();
             if let Ok(amap) = self.ast_map.lock() {
                 for uri in &same_ns_uris {
                     if let Some(classes) = amap.get(uri) {
@@ -591,13 +591,17 @@ impl Backend {
                             if !seen_fqns.insert(fqn.clone()) {
                                 continue;
                             }
-                            candidates.push((cls.name.clone(), fqn, cls.is_deprecated));
+                            candidates.push((
+                                cls.name.clone(),
+                                fqn,
+                                cls.deprecation_message.clone(),
+                            ));
                         }
                     }
                 }
             }
             // Phase 2: filter by Throwable ancestry without holding locks.
-            for (name, fqn, is_deprecated) in candidates {
+            for (name, fqn, deprecation_message) in candidates {
                 if !self.is_throwable_descendant(&fqn, 0) {
                     continue;
                 }
@@ -624,7 +628,11 @@ impl Backend {
                     insert_text_format,
                     filter_text: Some(filter),
                     sort_text: Some(format!("1_{}", name.to_lowercase())),
-                    deprecated: if is_deprecated { Some(true) } else { None },
+                    deprecated: if deprecation_message.is_some() {
+                        Some(true)
+                    } else {
+                        None
+                    },
                     text_edit: fqn_replace_range.map(|range| {
                         CompletionTextEdit::Edit(TextEdit {
                             range,

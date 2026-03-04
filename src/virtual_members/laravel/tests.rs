@@ -998,7 +998,7 @@ fn legacy_accessor_preserves_deprecated() {
     user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
 
     let mut accessor = make_method("getOldNameAttribute", Some("string"));
-    accessor.is_deprecated = true;
+    accessor.deprecation_message = Some("Use newName instead".into());
     user.methods.push(accessor);
 
     let model = make_class("Illuminate\\Database\\Eloquent\\Model");
@@ -1014,7 +1014,7 @@ fn legacy_accessor_preserves_deprecated() {
     let prop = result.properties.iter().find(|p| p.name == "old_name");
     assert!(prop.is_some());
     assert!(
-        prop.unwrap().is_deprecated,
+        prop.unwrap().deprecation_message.is_some(),
         "Deprecated flag should be preserved"
     );
 }
@@ -1127,7 +1127,7 @@ fn cast_properties_are_public_and_not_static() {
         .unwrap();
     assert_eq!(prop.visibility, Visibility::Public);
     assert!(!prop.is_static);
-    assert!(!prop.is_deprecated);
+    assert!(prop.deprecation_message.is_none());
 }
 
 #[test]
@@ -1260,7 +1260,7 @@ fn attribute_defaults_are_public_and_not_static() {
     let prop = result.properties.iter().find(|p| p.name == "role").unwrap();
     assert_eq!(prop.visibility, Visibility::Public);
     assert!(!prop.is_static);
-    assert!(!prop.is_deprecated);
+    assert!(prop.deprecation_message.is_none());
 }
 
 #[test]
@@ -1448,7 +1448,7 @@ fn column_name_properties_are_public_and_not_static() {
     let prop = result.properties.iter().find(|p| p.name == "name").unwrap();
     assert_eq!(prop.visibility, Visibility::Public);
     assert!(!prop.is_static);
-    assert!(!prop.is_deprecated);
+    assert!(prop.deprecation_message.is_none());
 }
 
 #[test]
@@ -1754,7 +1754,7 @@ fn builder_scope_preserves_deprecated() {
     let mut model = make_class("App\\Models\\Item");
     model.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
     let mut scope = make_method("scopeOld", Some("void"));
-    scope.is_deprecated = true;
+    scope.deprecation_message = Some("Use scopeNew() instead".into());
     model.methods.push(scope);
 
     let loader = |name: &str| -> Option<ClassInfo> {
@@ -1769,5 +1769,5 @@ fn builder_scope_preserves_deprecated() {
 
     let methods = build_scope_methods_for_builder("App\\Models\\Item", &loader);
     assert_eq!(methods.len(), 1);
-    assert!(methods[0].is_deprecated);
+    assert!(methods[0].deprecation_message.is_some());
 }

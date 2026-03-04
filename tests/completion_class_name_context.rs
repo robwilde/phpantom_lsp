@@ -2400,7 +2400,7 @@ async fn test_use_import_excludes_constants_and_functions() {
                     namespace: None,
                     conditional_return: None,
                     type_assertions: vec![],
-                    is_deprecated: false,
+                    deprecation_message: None,
                 },
             ),
         );
@@ -2525,7 +2525,7 @@ async fn test_use_function_shows_only_functions() {
                     namespace: None,
                     conditional_return: None,
                     type_assertions: vec![],
-                    is_deprecated: false,
+                    deprecation_message: None,
                 },
             ),
         );

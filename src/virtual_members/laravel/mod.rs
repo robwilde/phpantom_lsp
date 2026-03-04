@@ -316,7 +316,7 @@ impl VirtualMemberProvider for LaravelModelProvider {
             if is_legacy_accessor(method) {
                 let prop_name = legacy_accessor_property_name(&method.name);
                 properties.push(PropertyInfo {
-                    is_deprecated: method.is_deprecated,
+                    deprecation_message: method.deprecation_message.clone(),
                     ..PropertyInfo::virtual_property(&prop_name, method.return_type.as_deref())
                 });
                 continue;
@@ -327,7 +327,7 @@ impl VirtualMemberProvider for LaravelModelProvider {
                 let prop_name = camel_to_snake(&method.name);
                 let accessor_type = extract_modern_accessor_type(method);
                 properties.push(PropertyInfo {
-                    is_deprecated: method.is_deprecated,
+                    deprecation_message: method.deprecation_message.clone(),
                     ..PropertyInfo::virtual_property(&prop_name, Some(&accessor_type))
                 });
                 continue;

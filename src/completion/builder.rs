@@ -227,7 +227,7 @@ pub(crate) fn build_completion_items(
             insert_text: Some(build_callable_snippet(&method.name, &method.parameters)),
             insert_text_format: Some(InsertTextFormat::SNIPPET),
             filter_text: Some(method.name.clone()),
-            deprecated: if method.is_deprecated {
+            deprecated: if method.deprecation_message.is_some() {
                 Some(true)
             } else {
                 None
@@ -278,7 +278,7 @@ pub(crate) fn build_completion_items(
             detail: Some(detail),
             insert_text: Some(display_name.clone()),
             filter_text: Some(display_name),
-            deprecated: if property.is_deprecated {
+            deprecated: if property.deprecation_message.is_some() {
                 Some(true)
             } else {
                 None
@@ -313,7 +313,7 @@ pub(crate) fn build_completion_items(
                 detail: Some(detail),
                 insert_text: Some(constant.name.clone()),
                 filter_text: Some(constant.name.clone()),
-                deprecated: if constant.is_deprecated {
+                deprecated: if constant.deprecation_message.is_some() {
                     Some(true)
                 } else {
                     None

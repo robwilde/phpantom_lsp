@@ -99,14 +99,14 @@ pub(super) fn build_scope_methods(method: &MethodInfo) -> [MethodInfo; 2] {
 
     let instance_method = MethodInfo {
         parameters: parameters.clone(),
-        is_deprecated: method.is_deprecated,
+        deprecation_message: method.deprecation_message.clone(),
         ..MethodInfo::virtual_method(&name, return_type.as_deref())
     };
 
     let static_method = MethodInfo {
         parameters,
         is_static: true,
-        is_deprecated: method.is_deprecated,
+        deprecation_message: method.deprecation_message.clone(),
         ..MethodInfo::virtual_method(&name, return_type.as_deref())
     };
 

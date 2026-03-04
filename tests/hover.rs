@@ -618,8 +618,39 @@ class Legacy {
         text
     );
     assert!(
-        text.contains("@deprecated"),
-        "should show deprecated: {}",
+        text.contains("🪦 **deprecated** Use newMethod() instead."),
+        "should show deprecated with message: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_deprecated_method_without_message() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class Legacy {
+    /**
+     * @deprecated
+     */
+    public function oldMethod(): void {}
+    public function run(): void {
+        $this->oldMethod();
+    }
+}
+"#;
+
+    let hover = hover_at(&backend, uri, content, 7, 16).expect("expected hover");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("🪦 **deprecated**"),
+        "should show bare deprecated: {}",
+        text
+    );
+    // Should NOT contain any message text after the label
+    assert!(
+        !text.contains("🪦 **deprecated** "),
+        "should not have trailing text after deprecated: {}",
         text
     );
 }
@@ -643,8 +674,81 @@ function test(OldApi $api): void {}
     let text = hover_text(&hover);
     assert!(text.contains("OldApi"), "should show class name: {}", text);
     assert!(
-        text.contains("@deprecated"),
-        "should show deprecated: {}",
+        text.contains("🪦 **deprecated** Use NewApi instead."),
+        "should show deprecated with message: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_deprecated_property_shows_message() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class Config {
+    /**
+     * @deprecated Use getDebugMode() instead.
+     */
+    public bool $debug = false;
+
+    public function test(): void {
+        $this->debug;
+    }
+}
+"#;
+
+    let hover = hover_at(&backend, uri, content, 8, 16).expect("expected hover");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("🪦 **deprecated** Use getDebugMode() instead."),
+        "should show deprecated with message: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_deprecated_constant_shows_message() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class HttpStatus {
+    /**
+     * @deprecated Use OK instead.
+     */
+    const SUCCESS = 200;
+
+    const OK = 200;
+}
+$x = HttpStatus::SUCCESS;
+"#;
+
+    let hover = hover_at(&backend, uri, content, 9, 20).expect("expected hover");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("🪦 **deprecated** Use OK instead."),
+        "should show deprecated with message: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_deprecated_function_shows_message() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+/**
+ * @deprecated Use newHelper() instead.
+ */
+function oldHelper(): void {}
+
+oldHelper();
+"#;
+
+    let hover = hover_at(&backend, uri, content, 6, 4).expect("expected hover");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("🪦 **deprecated** Use newHelper() instead."),
+        "should show deprecated with message: {}",
         text
     );
 }
@@ -1669,8 +1773,8 @@ class OldWidget {
     let hover = hover_at(&backend, uri, content, 6, 20).expect("expected hover on self");
     let text = hover_text(&hover);
     assert!(
-        text.contains("@deprecated"),
-        "should show deprecated marker: {}",
+        text.contains("🪦 **deprecated** Use NewWidget instead."),
+        "should show deprecated with message: {}",
         text
     );
 }
@@ -1700,14 +1804,116 @@ class Usage {
         text
     );
     assert!(
-        text.contains("const APP_VERSION;"),
-        "should show const declaration: {}",
+        text.contains("const APP_VERSION = '1.0.0';"),
+        "should show const declaration with value: {}",
         text
     );
     // Constant should be wrapped in its owning class
     assert!(
         text.contains("class Config {"),
         "should show owning class wrapper: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_class_constant_shows_integer_value() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class Limits {
+    const MAX_RETRIES = 3;
+}
+$x = Limits::MAX_RETRIES;
+"#;
+
+    let hover = hover_at(&backend, uri, content, 4, 16).expect("expected hover");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("const MAX_RETRIES = 3;"),
+        "should show integer value: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_class_constant_shows_array_value() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class Config {
+    const ALLOWED = ['a', 'b', 'c'];
+}
+$x = Config::ALLOWED;
+"#;
+
+    let hover = hover_at(&backend, uri, content, 4, 16).expect("expected hover");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("const ALLOWED = ['a', 'b', 'c'];"),
+        "should show array value: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_typed_constant_shows_type_and_value() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class Config {
+    const string APP_NAME = 'PHPantom';
+}
+$x = Config::APP_NAME;
+"#;
+
+    let hover = hover_at(&backend, uri, content, 4, 16).expect("expected hover");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("const APP_NAME: string = 'PHPantom';"),
+        "should show type hint and value: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_constant_via_self_shows_value() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class Config {
+    const TIMEOUT = 30;
+    public function get(): int {
+        return self::TIMEOUT;
+    }
+}
+"#;
+
+    let hover = hover_at(&backend, uri, content, 4, 22).expect("expected hover");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("const TIMEOUT = 30;"),
+        "should show value via self::: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_constant_expression_value() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class Math {
+    const TWO_PI = 2 * 3.14159;
+}
+$x = Math::TWO_PI;
+"#;
+
+    let hover = hover_at(&backend, uri, content, 4, 14).expect("expected hover");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("const TWO_PI = 2 * 3.14159;"),
+        "should show expression value: {}",
         text
     );
 }

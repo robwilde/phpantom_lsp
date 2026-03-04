@@ -176,7 +176,7 @@ fn type_hint_to_classes_depth(
                 description: None,
                 is_static: false,
                 visibility: Visibility::Public,
-                is_deprecated: false,
+                deprecation_message: None,
             })
             .collect();
 

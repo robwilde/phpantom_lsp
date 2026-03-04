@@ -1679,6 +1679,34 @@ class ClosureMembersDemo
 }
 
 
+// ── Deprecation Messages ────────────────────────────────────────────────────
+// Hover over deprecated members to see the message text from @deprecated.
+// Completion shows deprecated items with strikethrough styling.
+
+class DeprecationDemo
+{
+    public function demo(): void
+    {
+        $src = new ScaffoldingDeprecation();
+
+        // Hover: shows "🪦 **deprecated** Use sendAsync() instead."
+        $src->sendLegacy();
+
+        // Hover: shows bare "🪦 **deprecated**" (no message)
+        $src->oldProcess();
+
+        // Hover on the property: shows deprecation message
+        $src->debugMode;
+
+        // Hover on the constant: shows value and deprecation message
+        ScaffoldingDeprecation::OLD_LIMIT;
+
+        // Hover on any constant: shows its value inline (e.g. const MAX_LIMIT = 500;)
+        ScaffoldingDeprecation::MAX_LIMIT;
+    }
+}
+
+
 // ═══════════════════════════════════════════════════════════════════════════
 // ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 // ┃  SCAFFOLDING — Supporting definitions below this line.              ┃
@@ -1696,6 +1724,33 @@ class ClosureMembersDemo
 
 
 // ── Demo-Specific Scaffolding ───────────────────────────────────────────────
+
+class ScaffoldingDeprecation
+{
+    /**
+     * @deprecated Use sendAsync() instead.
+     */
+    public function sendLegacy(): void {}
+
+    /**
+     * @deprecated
+     */
+    public function oldProcess(): void {}
+
+    public function sendAsync(): void {}
+
+    /**
+     * @deprecated Use isDebug() instead.
+     */
+    public bool $debugMode = false;
+
+    /**
+     * @deprecated Use MAX_LIMIT instead.
+     */
+    const OLD_LIMIT = 100;
+
+    const MAX_LIMIT = 500;
+}
 
 /**
  * @property string $gorilla

@@ -134,7 +134,11 @@ impl Backend {
                         insert_text: Some(fqn.clone()),
                         filter_text: Some(fqn.clone()),
                         sort_text: Some(format!("4_{}", fqn.to_lowercase())),
-                        deprecated: if info.is_deprecated { Some(true) } else { None },
+                        deprecated: if info.deprecation_message.is_some() {
+                            Some(true)
+                        } else {
+                            None
+                        },
                         ..CompletionItem::default()
                     });
                 } else {
@@ -167,7 +171,11 @@ impl Backend {
                         insert_text_format: Some(InsertTextFormat::SNIPPET),
                         filter_text: Some(info.name.clone()),
                         sort_text: Some(format!("4_{}", info.name.to_lowercase())),
-                        deprecated: if info.is_deprecated { Some(true) } else { None },
+                        deprecated: if info.deprecation_message.is_some() {
+                            Some(true)
+                        } else {
+                            None
+                        },
                         additional_text_edits,
                         ..CompletionItem::default()
                     });

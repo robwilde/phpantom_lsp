@@ -43,15 +43,17 @@ pub fn extract_return_type(docblock: &str) -> Option<String> {
     extract_tag_type(docblock, "@return")
 }
 
-/// Check whether a PHPDoc block contains an `@deprecated` tag.
+/// Extract the deprecation message from a `@deprecated` PHPDoc tag.
 ///
 /// Handles common formats:
-///   - `@deprecated`
-///   - `@deprecated Some explanation text`
-///   - `@deprecated since 2.0`
+///   - `@deprecated` → `Some("")`
+///   - `@deprecated Some explanation text` → `Some("Some explanation text")`
+///   - `@deprecated since 2.0` → `Some("since 2.0")`
 ///
-/// Returns `true` if the tag is present, `false` otherwise.
-pub fn has_deprecated_tag(docblock: &str) -> bool {
+/// Returns `None` when no `@deprecated` tag is present.
+/// Returns `Some("")` when the tag is present but has no message.
+/// Returns `Some("message")` when the tag includes explanatory text.
+pub fn extract_deprecation_message(docblock: &str) -> Option<String> {
     let inner = docblock
         .trim()
         .strip_prefix("/**")
@@ -61,15 +63,26 @@ pub fn has_deprecated_tag(docblock: &str) -> bool {
 
     for line in inner.lines() {
         let trimmed = line.trim().trim_start_matches('*').trim();
-        if trimmed == "@deprecated"
-            || trimmed.starts_with("@deprecated ")
-            || trimmed.starts_with("@deprecated\t")
-        {
-            return true;
+        if trimmed == "@deprecated" {
+            return Some(String::new());
+        }
+        if let Some(rest) = trimmed.strip_prefix("@deprecated ") {
+            return Some(rest.trim().to_string());
+        }
+        if let Some(rest) = trimmed.strip_prefix("@deprecated\t") {
+            return Some(rest.trim().to_string());
         }
     }
 
-    false
+    None
+}
+
+/// Check whether a PHPDoc block contains an `@deprecated` tag.
+///
+/// Convenience wrapper around [`extract_deprecation_message`] for call
+/// sites that only need a boolean check.
+pub fn has_deprecated_tag(docblock: &str) -> bool {
+    extract_deprecation_message(docblock).is_some()
 }
 
 /// Extract all `@mixin` tags from a class-level docblock.
@@ -1283,5 +1296,80 @@ fn recover_base_type(s: &str) -> &str {
             if base.is_empty() { "" } else { base }
         }
         None => s,
+    }
+}
+
+// ─── Tests ──────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── extract_deprecation_message ─────────────────────────────────
+
+    #[test]
+    fn bare_deprecated_tag() {
+        let doc = "/** @deprecated */";
+        assert_eq!(extract_deprecation_message(doc), Some(String::new()));
+    }
+
+    #[test]
+    fn deprecated_tag_with_message() {
+        let doc = "/** @deprecated Use collect() instead. */";
+        assert_eq!(
+            extract_deprecation_message(doc),
+            Some("Use collect() instead.".to_string())
+        );
+    }
+
+    #[test]
+    fn deprecated_tag_with_version() {
+        let doc = "/**\n * @deprecated since 2.0\n */";
+        assert_eq!(
+            extract_deprecation_message(doc),
+            Some("since 2.0".to_string())
+        );
+    }
+
+    #[test]
+    fn deprecated_tag_with_tab_separator() {
+        let doc = "/** @deprecated\tUse foo() */";
+        assert_eq!(
+            extract_deprecation_message(doc),
+            Some("Use foo()".to_string())
+        );
+    }
+
+    #[test]
+    fn no_deprecated_tag() {
+        let doc = "/** @return string */";
+        assert_eq!(extract_deprecation_message(doc), None);
+    }
+
+    #[test]
+    fn deprecated_bare_on_own_line() {
+        let doc = "/**\n * @deprecated\n */";
+        assert_eq!(extract_deprecation_message(doc), Some(String::new()));
+    }
+
+    #[test]
+    fn deprecated_with_message_multiline_docblock() {
+        let doc = "/**\n * Some description.\n * @deprecated Use newMethod() instead.\n * @return void\n */";
+        assert_eq!(
+            extract_deprecation_message(doc),
+            Some("Use newMethod() instead.".to_string())
+        );
+    }
+
+    #[test]
+    fn has_deprecated_tag_returns_true() {
+        let doc = "/** @deprecated Use foo() */";
+        assert!(has_deprecated_tag(doc));
+    }
+
+    #[test]
+    fn has_deprecated_tag_returns_false() {
+        let doc = "/** @return string */";
+        assert!(!has_deprecated_tag(doc));
     }
 }

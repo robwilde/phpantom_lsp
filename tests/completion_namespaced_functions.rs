@@ -81,7 +81,7 @@ fn register_namespaced_function(
                     namespace: Some(namespace.to_string()),
                     conditional_return: None,
                     type_assertions: vec![],
-                    is_deprecated: false,
+                    deprecation_message: None,
                 },
             ),
         );
@@ -107,7 +107,7 @@ fn register_global_function(backend: &phpantom_lsp::Backend, name: &str, uri: &s
                     namespace: None,
                     conditional_return: None,
                     type_assertions: vec![],
-                    is_deprecated: false,
+                    deprecation_message: None,
                 },
             ),
         );
@@ -857,7 +857,7 @@ async fn test_use_function_namespaced_detail_shows_signature() {
                     namespace: Some("Illuminate\\Support".to_string()),
                     conditional_return: None,
                     type_assertions: vec![],
-                    is_deprecated: false,
+                    deprecation_message: None,
                 },
             ),
         );
@@ -945,7 +945,7 @@ async fn test_deprecated_namespaced_function() {
                     namespace: Some("Legacy".to_string()),
                     conditional_return: None,
                     type_assertions: vec![],
-                    is_deprecated: true,
+                    deprecation_message: Some("Use newFunc() instead".into()),
                 },
             ),
         );
