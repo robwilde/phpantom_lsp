@@ -44,6 +44,13 @@ pub(crate) struct DocblockCtx<'a> {
     /// equivalents, e.g. `"Available"` → `"JetBrains\PhpStorm\Internal\PhpStormStubsElementAvailable"`.
     /// Used to resolve attribute names that appear under an alias.
     pub use_map: HashMap<String, String>,
+    /// The file-level namespace, if any.
+    ///
+    /// Used by [`is_known_deprecated_attr`] to distinguish unqualified
+    /// `#[Deprecated]` in the global namespace (which is the native PHP
+    /// 8.4 attribute) from `#[Deprecated]` inside a user namespace (which
+    /// would resolve to `App\Deprecated`, not the built-in).
+    pub namespace: Option<String>,
 }
 
 /// FQN constants for the JetBrains stub attributes we recognise.
@@ -51,6 +58,11 @@ pub(crate) struct DocblockCtx<'a> {
 /// `#[PhpStormStubsElementAvailable]`, `#[\JetBrains\PhpStorm\Internal\PhpStormStubsElementAvailable]`,
 /// and any `use ... as Alias` form all work.
 const ATTR_ELEMENT_AVAILABLE: &str = "PhpStormStubsElementAvailable";
+
+/// Fully-qualified names (without leading `\`) that we recognise as
+/// deprecation attributes.  Only the native PHP 8.4 `\Deprecated` and
+/// the JetBrains stubs `\JetBrains\PhpStorm\Deprecated` should match.
+const DEPRECATED_FQNS: &[&str] = &["Deprecated", "JetBrains\\PhpStorm\\Deprecated"];
 
 impl DocblockCtx<'_> {
     /// Resolve an attribute's short name through the file's use-map and
@@ -185,6 +197,170 @@ fn extract_version_availability(
     }
 
     None
+}
+
+/// Deprecation metadata extracted from a `#[Deprecated]` attribute.
+///
+/// phpstorm-stubs annotate ~362 elements with this attribute.  The three
+/// fields mirror the attribute's named arguments:
+///
+/// - `reason` — human-readable explanation (may also appear as a positional arg).
+/// - `since` — PHP version when the element was deprecated.
+/// - `replacement` — code template for auto-replacement (wired up to code
+///   actions in a future sprint).
+///
+/// When only a bare `#[Deprecated]` is present, all three fields are `None`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct DeprecatedAttribute {
+    pub reason: Option<String>,
+    pub since: Option<String>,
+    /// Code template for auto-replacement, e.g.
+    /// `"exif_read_data(%parametersList%)"`.
+    ///
+    /// TODO: wire this up to a "replace deprecated call" code action once
+    /// the general code-action infrastructure lands.
+    #[allow(dead_code)]
+    pub replacement: Option<String>,
+}
+
+impl DeprecatedAttribute {
+    /// Build a deprecation message string suitable for storing in
+    /// `deprecation_message` on `ClassInfo`, `MethodInfo`, etc.
+    ///
+    /// Combines `reason` and `since` into a single human-readable line.
+    /// Returns an empty string when neither field is set (bare
+    /// `#[Deprecated]`).
+    pub fn to_message(&self) -> String {
+        match (&self.reason, &self.since) {
+            (Some(reason), Some(since)) => format!("{} (since PHP {})", reason, since),
+            (Some(reason), None) => reason.clone(),
+            (None, Some(since)) => format!("since PHP {}", since),
+            (None, None) => String::new(),
+        }
+    }
+}
+
+/// Extract `#[Deprecated]` metadata from an element's attribute lists.
+///
+/// Supports the syntactic forms found in phpstorm-stubs:
+///
+/// - `#[Deprecated]` — bare, no arguments.
+/// - `#[Deprecated("reason text")]` — positional reason.
+/// - `#[Deprecated(reason: "...", since: "7.2")]` — named arguments.
+/// - `#[Deprecated("reason", replacement: "...", since: "7.2")]` — mixed.
+///
+/// Attribute names are resolved through the [`DocblockCtx`] use-map so
+/// that aliases (unlikely for `Deprecated` but technically possible) are
+/// handled correctly.
+///
+/// Returns `None` when no `#[Deprecated]` attribute is present.
+pub(crate) fn extract_deprecated_attribute(
+    attribute_lists: &Sequence<'_, attribute::AttributeList<'_>>,
+    ctx: &DocblockCtx<'_>,
+) -> Option<DeprecatedAttribute> {
+    for attr_list in attribute_lists.iter() {
+        for attr in attr_list.attributes.iter() {
+            if !is_known_deprecated_attr(&attr.name, ctx) {
+                continue;
+            }
+
+            // Bare #[Deprecated] — no argument list at all.
+            let Some(arg_list) = attr.argument_list.as_ref() else {
+                return Some(DeprecatedAttribute::default());
+            };
+
+            let mut reason: Option<String> = None;
+            let mut since: Option<String> = None;
+            let mut replacement: Option<String> = None;
+
+            for arg in arg_list.arguments.iter() {
+                match arg {
+                    argument::Argument::Named(named) => {
+                        let name = named.name.value.to_string();
+                        let value = extract_string_literal_value(named.value, ctx.content);
+                        match name.as_str() {
+                            // JetBrains stubs use `reason:`, native PHP 8.4
+                            // `\Deprecated` uses `message:`.  Both mean the
+                            // same thing — accept either.
+                            "reason" | "message" => reason = value,
+                            "since" => since = value,
+                            "replacement" => replacement = value,
+                            _ => {}
+                        }
+                    }
+                    argument::Argument::Positional(positional) => {
+                        // First positional argument is the reason/message.
+                        if reason.is_none() {
+                            reason = extract_string_literal_value(positional.value, ctx.content);
+                        }
+                    }
+                }
+            }
+
+            return Some(DeprecatedAttribute {
+                reason,
+                since,
+                replacement,
+            });
+        }
+    }
+
+    None
+}
+
+/// Check whether an attribute identifier refers to one of the known
+/// deprecation attributes (`\Deprecated` or `\JetBrains\PhpStorm\Deprecated`).
+///
+/// The matching rules mirror PHP's attribute name resolution:
+///
+/// - **Fully-qualified** (`\Deprecated`, `\JetBrains\PhpStorm\Deprecated`):
+///   strip the leading `\` and compare against [`DEPRECATED_FQNS`].
+/// - **Qualified** (`JetBrains\PhpStorm\Deprecated`): resolve the first
+///   segment through the use-map, then compare the resolved FQN.  If the
+///   first segment is not in the use-map, prepend the file namespace.
+/// - **Local/unqualified** (`Deprecated`): look up the short name in the
+///   use-map.  If found, compare the resolved FQN.  If not found, the
+///   name is in the current namespace. Only matches if the file is in the
+///   global namespace (i.e. the bare name equals a known FQN).
+fn is_known_deprecated_attr(name: &Identifier<'_>, ctx: &DocblockCtx<'_>) -> bool {
+    match name {
+        Identifier::FullyQualified(fq) => {
+            let stripped = fq.value.strip_prefix('\\').unwrap_or(fq.value);
+            DEPRECATED_FQNS.contains(&stripped)
+        }
+        Identifier::Qualified(q) => {
+            // Resolve the first segment via the use-map, then rebuild.
+            let first_seg = q.value.split('\\').next().unwrap_or(q.value);
+            if let Some(resolved_prefix) = ctx.use_map.get(first_seg) {
+                let rest = &q.value[first_seg.len()..]; // includes leading '\'
+                let fqn = format!("{}{}", resolved_prefix, rest);
+                DEPRECATED_FQNS.contains(&fqn.as_str())
+            } else {
+                // No use-map entry — prepend file namespace if present.
+                let fqn = if let Some(ns) = &ctx.namespace {
+                    format!("{}\\{}", ns, q.value)
+                } else {
+                    q.value.to_string()
+                };
+                DEPRECATED_FQNS.contains(&fqn.as_str())
+            }
+        }
+        Identifier::Local(local) => {
+            // Check use-map first (e.g. `use JetBrains\PhpStorm\Deprecated;`)
+            if let Some(fqn) = ctx.use_map.get(local.value) {
+                DEPRECATED_FQNS.contains(&fqn.as_str())
+            } else {
+                // No import — the name lives in the current namespace.
+                // Only matches if the file is in the global namespace.
+                let fqn = if let Some(ns) = &ctx.namespace {
+                    format!("{}\\{}", ns, local.value)
+                } else {
+                    local.value.to_string()
+                };
+                DEPRECATED_FQNS.contains(&fqn.as_str())
+            }
+        }
+    }
 }
 
 /// Extract the string value from a literal string expression by reading
@@ -413,12 +589,14 @@ impl Backend {
         with_parsed_program(content, "parse_php", |program, content| {
             let mut use_map = HashMap::new();
             Self::extract_use_statements_from_statements(program.statements.iter(), &mut use_map);
+            let namespace = Self::extract_namespace_from_statements(program.statements.iter());
 
             let doc_ctx = DocblockCtx {
                 trivias: program.trivia.as_slice(),
                 content,
                 php_version,
                 use_map,
+                namespace,
             };
 
             let mut classes = Vec::new();
@@ -452,12 +630,14 @@ impl Backend {
         with_parsed_program(content, "parse_functions", |program, content| {
             let mut use_map = HashMap::new();
             Self::extract_use_statements_from_statements(program.statements.iter(), &mut use_map);
+            let namespace = Self::extract_namespace_from_statements(program.statements.iter());
 
             let doc_ctx = DocblockCtx {
                 trivias: program.trivia.as_slice(),
                 content,
                 php_version,
                 use_map,
+                namespace,
             };
 
             let mut functions = Vec::new();

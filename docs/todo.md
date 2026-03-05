@@ -136,7 +136,6 @@ projects that care about types.
 | 45 | SPL iterator generic stubs | Medium | Type Inference | [type-inference.md §8](todo/type-inference.md#8-spl-iterator-generic-stubs) |
 | 46 | `LanguageLevelTypeAware` version-aware type hints | Medium | Completion | [completion.md §3](todo/completion.md#3-languageleveltypeaware-version-aware-type-hints) |
 | 47 | `#[ArrayShape]` return shapes on stub functions | Medium | Completion | [completion.md §4](todo/completion.md#4-arrayshape-return-shapes-on-stub-functions) |
-| 48 | `#[Deprecated]` structured deprecation metadata | Low | Completion | [completion.md §5](todo/completion.md#5-deprecated-structured-deprecation-metadata) |
 | 49 | Asymmetric visibility (PHP 8.4) | Low | Type Inference | [type-inference.md §9](todo/type-inference.md#9-asymmetric-visibility-php-84) |
 | 50 | Type Hierarchy (`textDocument/prepareTypeHierarchy`) | Medium | LSP Features | [lsp-features.md §16](todo/lsp-features.md#16-type-hierarchy-textdocumentpreparetypehierarchy) |
 | 51 | `class_alias()` support | Medium | Completion | [completion.md §10](todo/completion.md#10-class_alias-support) |

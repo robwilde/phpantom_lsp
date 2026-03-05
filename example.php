@@ -1712,6 +1712,32 @@ class DeprecationDemo
 
         // Hover on any constant: shows its value inline (e.g. const MAX_LIMIT = 500;)
         ScaffoldingDeprecation::MAX_LIMIT;
+
+        // ── #[Deprecated] attribute ─────────────────────────────────
+        // PHPantom reads #[Deprecated] from both phpstorm-stubs
+        // (\JetBrains\PhpStorm\Deprecated with reason:/since:) and
+        // native PHP 8.4 (\Deprecated with message:/since:).
+
+        // JetBrains stubs style: reason: + since:
+        $src->attrDeprecatedMethod();
+
+        // Native PHP 8.4 style: message: + since:
+        $src->nativeDeprecatedMethod();
+
+        // Bare #[Deprecated] (no arguments)
+        $src->attrBareMethod();
+
+        // Positional reason: #[Deprecated("...")]
+        $src->attrPositionalMethod();
+
+        // Attribute on property
+        $src->attrProp;
+
+        // Attribute on constant
+        ScaffoldingDeprecation::ATTR_OLD;
+
+        // Docblock @deprecated wins when both are present
+        $src->bothDocAndAttr();
     }
 }
 
@@ -1814,6 +1840,32 @@ class ScaffoldingDeprecation
     const OLD_LIMIT = 100;
 
     const MAX_LIMIT = 500;
+
+    // JetBrains stubs style
+    #[\JetBrains\PhpStorm\Deprecated(reason: "Use modernMethod() instead", since: "8.1")]
+    public function attrDeprecatedMethod(): void {}
+
+    // Native PHP 8.4 style (\Deprecated)
+    #[\Deprecated(message: "Use nativeModern() instead", since: "8.4")]
+    public function nativeDeprecatedMethod(): void {}
+
+    #[\Deprecated]
+    public function attrBareMethod(): void {}
+
+    #[\Deprecated("Use positionalModern() instead")]
+    public function attrPositionalMethod(): void {}
+
+    #[\JetBrains\PhpStorm\Deprecated(reason: "The property is deprecated", since: "8.4")]
+    public string $attrProp = '';
+
+    #[\Deprecated(reason: "Use NEW_SETTING instead")]
+    const ATTR_OLD = 0;
+
+    /**
+     * @deprecated Docblock message wins.
+     */
+    #[\Deprecated(reason: "Attribute message loses")]
+    public function bothDocAndAttr(): void {}
 }
 
 /**

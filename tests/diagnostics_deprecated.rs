@@ -1,6 +1,7 @@
 mod common;
 
 use common::create_test_backend;
+use tower_lsp::LanguageServer;
 use tower_lsp::lsp_types::*;
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -161,31 +162,14 @@ class App {
 }
 "#;
 
-    // We need the subject variable to be resolvable.  Since diagnostics
-    // currently only resolve static accesses and self/this/$this,
-    // let's test with self::.
-    let _text = text;
-    let text_static = r#"<?php
-class Mailer {
-    /** @deprecated Use sendAsync() instead. */
-    public static function sendLegacy(): void {}
-
-    public static function sendAsync(): void {}
-
-    public function run(): void {
-        self::sendLegacy();
-    }
-}
-"#;
-
-    let diags = deprecated_diagnostics(&backend, uri, text_static);
+    let diags = deprecated_diagnostics(&backend, uri, text);
     let deprecated: Vec<_> = diags.iter().filter(|d| has_deprecated_tag(d)).collect();
 
     assert!(
         deprecated
             .iter()
             .any(|d| d.message.contains("sendLegacy") && d.message.contains("deprecated")),
-        "Expected deprecated diagnostic for sendLegacy(), got: {:?}",
+        "Expected deprecated diagnostic for $m->sendLegacy(), got: {:?}",
         deprecated
     );
 }
@@ -1165,5 +1149,752 @@ class Consumer {
             .any(|d| d.message.contains("Foo\\UserProfile")),
         "Unused aliased import should be flagged, got: {:?}",
         unnecessary
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// #[Deprecated] attribute diagnostics
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ─── Deprecated function via attribute ──────────────────────────────────────
+
+#[test]
+fn deprecated_function_via_attribute_bare() {
+    let backend = create_test_backend();
+    let uri = "file:///test_deprecated_attr_fn_bare.php";
+    let text = r#"<?php
+#[Deprecated]
+function old_helper(): void {}
+
+old_helper();
+"#;
+
+    let diags = deprecated_diagnostics(&backend, uri, text);
+    let deprecated: Vec<_> = diags.iter().filter(|d| has_deprecated_tag(d)).collect();
+
+    assert!(
+        deprecated
+            .iter()
+            .any(|d| d.message.contains("old_helper") && d.message.contains("deprecated")),
+        "Expected a deprecated diagnostic for old_helper(), got: {:?}",
+        deprecated
+    );
+}
+
+#[test]
+fn deprecated_function_via_attribute_with_reason() {
+    let backend = create_test_backend();
+    let uri = "file:///test_deprecated_attr_fn_reason.php";
+    let text = r#"<?php
+#[Deprecated(reason: "Use new_helper() instead", since: "8.0")]
+function old_helper(): void {}
+
+old_helper();
+"#;
+
+    let diags = deprecated_diagnostics(&backend, uri, text);
+    let deprecated: Vec<_> = diags.iter().filter(|d| has_deprecated_tag(d)).collect();
+
+    assert!(
+        deprecated
+            .iter()
+            .any(|d| d.message.contains("old_helper")
+                && d.message.contains("Use new_helper() instead")),
+        "Expected a deprecated diagnostic with reason for old_helper(), got: {:?}",
+        deprecated
+    );
+}
+
+#[test]
+fn deprecated_function_via_attribute_positional_reason() {
+    let backend = create_test_backend();
+    let uri = "file:///test_deprecated_attr_fn_positional.php";
+    let text = r#"<?php
+#[Deprecated("Use anonymous functions instead")]
+function old_helper(): void {}
+
+old_helper();
+"#;
+
+    let diags = deprecated_diagnostics(&backend, uri, text);
+    let deprecated: Vec<_> = diags.iter().filter(|d| has_deprecated_tag(d)).collect();
+
+    assert!(
+        deprecated.iter().any(|d| d.message.contains("old_helper")
+            && d.message.contains("Use anonymous functions instead")),
+        "Expected a deprecated diagnostic with positional reason, got: {:?}",
+        deprecated
+    );
+}
+
+// ─── Deprecated method via attribute ────────────────────────────────────────
+
+#[test]
+fn deprecated_method_via_attribute() {
+    let backend = create_test_backend();
+    let uri = "file:///test_deprecated_attr_method.php";
+    let text = r#"<?php
+class Mailer {
+    #[Deprecated(reason: "Use sendAsync() instead", since: "8.1")]
+    public function sendLegacy(): void {}
+
+    public function run(): void {
+        $this->sendLegacy();
+    }
+}
+"#;
+
+    let diags = deprecated_diagnostics(&backend, uri, text);
+    let deprecated: Vec<_> = diags.iter().filter(|d| has_deprecated_tag(d)).collect();
+
+    assert!(
+        deprecated
+            .iter()
+            .any(|d| d.message.contains("sendLegacy")
+                && d.message.contains("Use sendAsync() instead")),
+        "Expected a deprecated diagnostic for sendLegacy(), got: {:?}",
+        deprecated
+    );
+}
+
+#[test]
+fn deprecated_method_via_attribute_bare() {
+    let backend = create_test_backend();
+    let uri = "file:///test_deprecated_attr_method_bare.php";
+    let text = r#"<?php
+class Mailer {
+    #[Deprecated]
+    public function sendLegacy(): void {}
+
+    public function run(): void {
+        $this->sendLegacy();
+    }
+}
+"#;
+
+    let diags = deprecated_diagnostics(&backend, uri, text);
+    let deprecated: Vec<_> = diags.iter().filter(|d| has_deprecated_tag(d)).collect();
+
+    assert!(
+        deprecated
+            .iter()
+            .any(|d| d.message.contains("sendLegacy") && d.message.contains("deprecated")),
+        "Expected a deprecated diagnostic for sendLegacy(), got: {:?}",
+        deprecated
+    );
+}
+
+// ─── Deprecated class via attribute ─────────────────────────────────────────
+
+#[test]
+fn deprecated_class_via_attribute() {
+    let backend = create_test_backend();
+    let uri = "file:///test_deprecated_attr_class.php";
+    let text = r#"<?php
+#[Deprecated(reason: "Use NewApi instead", since: "8.2")]
+class OldApi {}
+
+class Consumer {
+    public function run(): void {
+        $x = new OldApi();
+    }
+}
+"#;
+
+    let diags = deprecated_diagnostics(&backend, uri, text);
+    let deprecated: Vec<_> = diags.iter().filter(|d| has_deprecated_tag(d)).collect();
+
+    assert!(
+        deprecated
+            .iter()
+            .any(|d| d.message.contains("OldApi") && d.message.contains("Use NewApi instead")),
+        "Expected a deprecated diagnostic for OldApi, got: {:?}",
+        deprecated
+    );
+}
+
+// ─── Deprecated property via attribute ──────────────────────────────────────
+
+#[test]
+fn deprecated_property_via_attribute() {
+    let backend = create_test_backend();
+    let uri = "file:///test_deprecated_attr_prop.php";
+    let text = r#"<?php
+class Document {
+    #[Deprecated("The property is deprecated", since: "8.4")]
+    public string $encoding = 'UTF-8';
+
+    public function run(): void {
+        $this->encoding;
+    }
+}
+"#;
+
+    let diags = deprecated_diagnostics(&backend, uri, text);
+    let deprecated: Vec<_> = diags.iter().filter(|d| has_deprecated_tag(d)).collect();
+
+    assert!(
+        deprecated
+            .iter()
+            .any(|d| d.message.contains("encoding")
+                && d.message.contains("The property is deprecated")),
+        "Expected a deprecated diagnostic for encoding property, got: {:?}",
+        deprecated
+    );
+}
+
+#[test]
+fn deprecated_property_via_attribute_no_docblock() {
+    let backend = create_test_backend();
+    let uri = "file:///test_deprecated_attr_prop_no_doc.php";
+    let text = r#"<?php
+class Document {
+    #[Deprecated]
+    public string $config = '';
+
+    public function run(): void {
+        $this->config;
+    }
+}
+"#;
+
+    let diags = deprecated_diagnostics(&backend, uri, text);
+    let deprecated: Vec<_> = diags.iter().filter(|d| has_deprecated_tag(d)).collect();
+
+    assert!(
+        deprecated
+            .iter()
+            .any(|d| d.message.contains("config") && d.message.contains("deprecated")),
+        "Expected a deprecated diagnostic for config property, got: {:?}",
+        deprecated
+    );
+}
+
+// ─── Deprecated constant via attribute ──────────────────────────────────────
+
+#[test]
+fn deprecated_constant_via_attribute() {
+    let backend = create_test_backend();
+    let uri = "file:///test_deprecated_attr_const.php";
+    let text = r#"<?php
+class Config {
+    #[Deprecated(reason: "Use ATTR_EMULATE_PREPARES instead")]
+    const ATTR_OLD = 1;
+
+    public function run(): void {
+        self::ATTR_OLD;
+    }
+}
+"#;
+
+    let diags = deprecated_diagnostics(&backend, uri, text);
+    let deprecated: Vec<_> = diags.iter().filter(|d| has_deprecated_tag(d)).collect();
+
+    assert!(
+        deprecated.iter().any(|d| d.message.contains("ATTR_OLD")
+            && d.message.contains("Use ATTR_EMULATE_PREPARES instead")),
+        "Expected a deprecated diagnostic for ATTR_OLD constant, got: {:?}",
+        deprecated
+    );
+}
+
+// ─── Docblock @deprecated takes priority over attribute ─────────────────────
+
+#[test]
+fn docblock_deprecated_takes_priority_over_attribute() {
+    let backend = create_test_backend();
+    let uri = "file:///test_deprecated_priority.php";
+    let text = r#"<?php
+class Mailer {
+    /**
+     * @deprecated Use sendModern() instead.
+     */
+    #[Deprecated(reason: "Attribute message")]
+    public function sendLegacy(): void {}
+
+    public function run(): void {
+        $this->sendLegacy();
+    }
+}
+"#;
+
+    let diags = deprecated_diagnostics(&backend, uri, text);
+    let deprecated: Vec<_> = diags.iter().filter(|d| has_deprecated_tag(d)).collect();
+
+    // The docblock message should win over the attribute message.
+    assert!(
+        deprecated
+            .iter()
+            .any(|d| d.message.contains("Use sendModern() instead")),
+        "Expected docblock @deprecated message to take priority, got: {:?}",
+        deprecated
+    );
+    assert!(
+        !deprecated
+            .iter()
+            .any(|d| d.message.contains("Attribute message")),
+        "Attribute message should NOT appear when docblock has @deprecated, got: {:?}",
+        deprecated
+    );
+}
+
+// ─── Since field appears in message ─────────────────────────────────────────
+
+#[test]
+fn deprecated_attribute_since_appears_in_message() {
+    let backend = create_test_backend();
+    let uri = "file:///test_deprecated_attr_since.php";
+    let text = r#"<?php
+class Config {
+    #[Deprecated(since: "7.4")]
+    const OLD_MODE = 0;
+
+    public function run(): void {
+        self::OLD_MODE;
+    }
+}
+"#;
+
+    let diags = deprecated_diagnostics(&backend, uri, text);
+    let deprecated: Vec<_> = diags.iter().filter(|d| has_deprecated_tag(d)).collect();
+
+    assert!(
+        deprecated
+            .iter()
+            .any(|d| d.message.contains("OLD_MODE") && d.message.contains("since PHP 7.4")),
+        "Expected 'since PHP 7.4' in deprecated message, got: {:?}",
+        deprecated
+    );
+}
+
+// ─── Completion marks #[Deprecated] items ───────────────────────────────────
+
+#[tokio::test]
+async fn completion_marks_attribute_deprecated_method() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test_completion_attr_deprecated.php").unwrap();
+    let text = r#"<?php
+class Mailer {
+    #[Deprecated(reason: "Use sendAsync() instead")]
+    public function sendLegacy(): void {}
+
+    public function sendAsync(): void {}
+
+    public function run(): void {
+        $this->
+    }
+}
+"#;
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            position: Position {
+                line: 8,
+                character: 15,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let items = match backend.completion(completion_params).await.unwrap() {
+        Some(CompletionResponse::Array(items)) => items,
+        Some(CompletionResponse::List(list)) => list.items,
+        _ => vec![],
+    };
+
+    let legacy = items.iter().find(|i| i.label.contains("sendLegacy"));
+    assert!(legacy.is_some(), "sendLegacy should appear in completions");
+    assert_eq!(
+        legacy.unwrap().deprecated,
+        Some(true),
+        "sendLegacy should be marked deprecated in completion"
+    );
+
+    let async_item = items.iter().find(|i| i.label.contains("sendAsync"));
+    assert!(
+        async_item.is_some(),
+        "sendAsync should appear in completions"
+    );
+    assert_ne!(
+        async_item.unwrap().deprecated,
+        Some(true),
+        "sendAsync should NOT be marked deprecated"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Native PHP 8.4 \Deprecated attribute diagnostics
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn deprecated_function_via_native_php84_attribute() {
+    let backend = create_test_backend();
+    let uri = "file:///test_native_deprecated_fn.php";
+    let text = r#"<?php
+#[\Deprecated(message: "Use safe_replacement() instead", since: "1.5")]
+function unsafe_function(): void {}
+
+unsafe_function();
+"#;
+
+    let diags = deprecated_diagnostics(&backend, uri, text);
+    let deprecated: Vec<_> = diags.iter().filter(|d| has_deprecated_tag(d)).collect();
+
+    assert!(
+        deprecated
+            .iter()
+            .any(|d| d.message.contains("unsafe_function")
+                && d.message.contains("Use safe_replacement() instead")),
+        "Expected a deprecated diagnostic with native message for unsafe_function(), got: {:?}",
+        deprecated
+    );
+}
+
+#[test]
+fn deprecated_method_via_native_php84_attribute() {
+    let backend = create_test_backend();
+    let uri = "file:///test_native_deprecated_method.php";
+    let text = r#"<?php
+class Service {
+    #[\Deprecated(message: "Use processV2() instead", since: "8.4")]
+    public function process(): void {}
+
+    public function run(): void {
+        $this->process();
+    }
+}
+"#;
+
+    let diags = deprecated_diagnostics(&backend, uri, text);
+    let deprecated: Vec<_> = diags.iter().filter(|d| has_deprecated_tag(d)).collect();
+
+    assert!(
+        deprecated
+            .iter()
+            .any(|d| d.message.contains("process")
+                && d.message.contains("Use processV2() instead")),
+        "Expected a deprecated diagnostic with native message: for process(), got: {:?}",
+        deprecated
+    );
+}
+
+#[test]
+fn deprecated_constant_via_native_php84_attribute() {
+    let backend = create_test_backend();
+    let uri = "file:///test_native_deprecated_const.php";
+    let text = r#"<?php
+class Config {
+    #[\Deprecated(message: "Use NEW_LIMIT instead")]
+    const OLD_LIMIT = 100;
+
+    public function run(): void {
+        self::OLD_LIMIT;
+    }
+}
+"#;
+
+    let diags = deprecated_diagnostics(&backend, uri, text);
+    let deprecated: Vec<_> = diags.iter().filter(|d| has_deprecated_tag(d)).collect();
+
+    assert!(
+        deprecated
+            .iter()
+            .any(|d| d.message.contains("OLD_LIMIT")
+                && d.message.contains("Use NEW_LIMIT instead")),
+        "Expected a deprecated diagnostic for OLD_LIMIT constant, got: {:?}",
+        deprecated
+    );
+}
+
+#[test]
+fn both_jetbrains_and_native_styles_produce_diagnostics() {
+    let backend = create_test_backend();
+    let uri = "file:///test_both_styles.php";
+    let text = r#"<?php
+class Demo {
+    #[Deprecated(reason: "JetBrains style")]
+    public function jbMethod(): void {}
+
+    #[\Deprecated(message: "Native PHP style")]
+    public function nativeMethod(): void {}
+
+    public function run(): void {
+        $this->jbMethod();
+        $this->nativeMethod();
+    }
+}
+"#;
+
+    let diags = deprecated_diagnostics(&backend, uri, text);
+    let deprecated: Vec<_> = diags.iter().filter(|d| has_deprecated_tag(d)).collect();
+
+    assert!(
+        deprecated
+            .iter()
+            .any(|d| d.message.contains("jbMethod") && d.message.contains("JetBrains style")),
+        "JetBrains-style #[Deprecated(reason:)] should produce a diagnostic, got: {:?}",
+        deprecated
+    );
+    assert!(
+        deprecated
+            .iter()
+            .any(|d| d.message.contains("nativeMethod") && d.message.contains("Native PHP style")),
+        "Native-style #[\\Deprecated(message:)] should produce a diagnostic, got: {:?}",
+        deprecated
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Variable-based deprecated member access diagnostics
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn deprecated_method_via_variable_instance() {
+    let backend = create_test_backend();
+    let uri = "file:///test_var_deprecated_method.php";
+    let text = r#"<?php
+class Service {
+    /** @deprecated Use processV2() instead. */
+    public function process(): void {}
+
+    public function processV2(): void {}
+}
+
+class Consumer {
+    public function run(): void {
+        $svc = new Service();
+        $svc->process();
+        $svc->processV2();
+    }
+}
+"#;
+
+    let diags = deprecated_diagnostics(&backend, uri, text);
+    let deprecated: Vec<_> = diags.iter().filter(|d| has_deprecated_tag(d)).collect();
+
+    assert!(
+        deprecated
+            .iter()
+            .any(|d| d.message.contains("process") && d.message.contains("deprecated")),
+        "Expected deprecated diagnostic for $svc->process(), got: {:?}",
+        deprecated
+    );
+
+    // processV2 is NOT deprecated — no diagnostic should *target* it.
+    // (The deprecation message for `process` may mention "processV2" as
+    // the replacement, so we check the diagnostic target, not the full text.)
+    assert!(
+        !deprecated
+            .iter()
+            .any(|d| d.message.starts_with("'Service::processV2'")),
+        "processV2 should NOT be marked deprecated, got: {:?}",
+        deprecated
+    );
+}
+
+#[test]
+fn deprecated_property_via_variable_instance() {
+    let backend = create_test_backend();
+    let uri = "file:///test_var_deprecated_prop.php";
+    let text = r#"<?php
+class Config {
+    /** @deprecated Use $newSetting instead. */
+    public string $oldSetting = '';
+
+    public string $newSetting = '';
+}
+
+class Reader {
+    public function read(): void {
+        $cfg = new Config();
+        $cfg->oldSetting;
+        $cfg->newSetting;
+    }
+}
+"#;
+
+    let diags = deprecated_diagnostics(&backend, uri, text);
+    let deprecated: Vec<_> = diags.iter().filter(|d| has_deprecated_tag(d)).collect();
+
+    assert!(
+        deprecated
+            .iter()
+            .any(|d| d.message.contains("oldSetting") && d.message.contains("deprecated")),
+        "Expected deprecated diagnostic for $cfg->oldSetting, got: {:?}",
+        deprecated
+    );
+
+    // The deprecation message for `oldSetting` mentions "$newSetting" as
+    // the replacement, so check the diagnostic target, not the full text.
+    assert!(
+        !deprecated
+            .iter()
+            .any(|d| d.message.starts_with("'Config::newSetting'")),
+        "newSetting should NOT be marked deprecated, got: {:?}",
+        deprecated
+    );
+}
+
+#[test]
+fn deprecated_method_via_variable_with_attribute() {
+    let backend = create_test_backend();
+    let uri = "file:///test_var_attr_deprecated.php";
+    let text = r#"<?php
+class Logger {
+    #[\Deprecated(message: "Use logStructured() instead", since: "2.0")]
+    public function log(): void {}
+
+    public function logStructured(): void {}
+}
+
+class App {
+    public function run(): void {
+        $logger = new Logger();
+        $logger->log();
+    }
+}
+"#;
+
+    let diags = deprecated_diagnostics(&backend, uri, text);
+    let deprecated: Vec<_> = diags.iter().filter(|d| has_deprecated_tag(d)).collect();
+
+    assert!(
+        deprecated
+            .iter()
+            .any(|d| d.message.contains("log")
+                && d.message.contains("Use logStructured() instead")),
+        "Expected deprecated diagnostic with attribute message for $logger->log(), got: {:?}",
+        deprecated
+    );
+}
+
+#[test]
+fn deprecated_method_via_parameter_type_hint() {
+    let backend = create_test_backend();
+    let uri = "file:///test_param_deprecated.php";
+    let text = r#"<?php
+class Mailer {
+    /** @deprecated Use sendAsync() instead. */
+    public function sendLegacy(): void {}
+}
+
+class Handler {
+    public function handle(Mailer $mailer): void {
+        $mailer->sendLegacy();
+    }
+}
+"#;
+
+    let diags = deprecated_diagnostics(&backend, uri, text);
+    let deprecated: Vec<_> = diags.iter().filter(|d| has_deprecated_tag(d)).collect();
+
+    assert!(
+        deprecated
+            .iter()
+            .any(|d| d.message.contains("sendLegacy") && d.message.contains("deprecated")),
+        "Expected deprecated diagnostic for $mailer->sendLegacy() (param type hint), got: {:?}",
+        deprecated
+    );
+}
+
+#[test]
+fn non_deprecated_method_via_variable_no_diagnostic() {
+    let backend = create_test_backend();
+    let uri = "file:///test_var_no_deprecated.php";
+    let text = r#"<?php
+class Service {
+    public function doWork(): void {}
+}
+
+class Consumer {
+    public function run(): void {
+        $svc = new Service();
+        $svc->doWork();
+    }
+}
+"#;
+
+    let diags = deprecated_diagnostics(&backend, uri, text);
+    let deprecated: Vec<_> = diags.iter().filter(|d| has_deprecated_tag(d)).collect();
+
+    assert!(
+        deprecated.is_empty(),
+        "No deprecated diagnostics expected for non-deprecated members, got: {:?}",
+        deprecated
+    );
+}
+
+#[test]
+fn custom_namespaced_deprecated_attribute_no_false_diagnostic() {
+    let backend = create_test_backend();
+    let uri = "file:///test_custom_ns_deprecated.php";
+    let text = r#"<?php
+class Widget {
+    #[\Test\Deprecated(reason: "This is a custom attribute, not a real deprecation")]
+    public function render(): void {}
+
+    #[\App\Attributes\Deprecated]
+    public function process(): void {}
+}
+
+class Consumer {
+    public function run(): void {
+        $w = new Widget();
+        $w->render();
+        $w->process();
+    }
+}
+"#;
+
+    let diags = deprecated_diagnostics(&backend, uri, text);
+    let deprecated: Vec<_> = diags.iter().filter(|d| has_deprecated_tag(d)).collect();
+
+    assert!(
+        deprecated.is_empty(),
+        "Custom-namespaced #[\\Test\\Deprecated] and #[\\App\\Attributes\\Deprecated] should NOT produce deprecation diagnostics, got: {:?}",
+        deprecated
+    );
+}
+
+#[test]
+fn real_deprecated_attribute_still_produces_diagnostic() {
+    let backend = create_test_backend();
+    let uri = "file:///test_real_deprecated_attr.php";
+    let text = r#"<?php
+class Service {
+    #[\Deprecated(message: "Use modernMethod() instead")]
+    public function oldMethod(): void {}
+}
+
+class Consumer {
+    public function run(): void {
+        $svc = new Service();
+        $svc->oldMethod();
+    }
+}
+"#;
+
+    let diags = deprecated_diagnostics(&backend, uri, text);
+    let deprecated: Vec<_> = diags.iter().filter(|d| has_deprecated_tag(d)).collect();
+
+    assert!(
+        deprecated
+            .iter()
+            .any(|d| d.message.contains("oldMethod") && d.message.contains("Use modernMethod()")),
+        "Real #[\\Deprecated] should still produce a diagnostic, got: {:?}",
+        deprecated
     );
 }

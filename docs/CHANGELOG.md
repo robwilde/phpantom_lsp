@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Find References.** "Find All References" locates every usage of a symbol across the project. Supports classes, interfaces, traits, enums, methods, properties, constants, functions, and variables. Variable references are scoped to the enclosing function or closure. Cross-file scanning lazily indexes user files on demand (vendor and stub files are excluded, matching PhpStorm's behaviour). The workspace walk respects `.gitignore` rules, so generated/cached directories (blade cache, Symfony `var/cache/`, `node_modules/`, etc.) are automatically skipped.
+- **`#[Deprecated]` attribute support.** PHPantom now reads the `#[Deprecated]` attribute used by phpstorm-stubs (~362 elements) in addition to docblock `@deprecated` tags. The `reason` and `since` fields appear in hover, completion strikethrough, and deprecation diagnostics. When both a docblock tag and an attribute are present, the docblock message takes priority. Works on classes, interfaces, traits, enums, methods, properties, constants, and standalone functions.
+- **Deprecation diagnostics for variable member access.** Calling a deprecated method or accessing a deprecated property through a variable (e.g. `$svc->oldMethod()`) now produces a strikethrough diagnostic. Previously only `self::`, `static::`, `$this->`, and explicit class name accesses were checked.
 
 ### Changed
 

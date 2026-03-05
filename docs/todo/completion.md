@@ -103,9 +103,13 @@ target version. If found, use that type string as the native type hint;
 otherwise use the `default` value. This should integrate into the same
 extraction points that already handle `PhpStormStubsElementAvailable`.
 
-**Note:** Two stub files alias the attribute name: `intl/intl.php` uses
-`LanguageAware` (~249 usages) and `ldap/ldap.php` uses `PhpVersionAware`
-(~101 usages). The attribute matcher must recognise all three names.
+**Attribute FQN:** `JetBrains\PhpStorm\Internal\LanguageLevelTypeAware`.
+Stub files import it via `use` statements, sometimes with aliases:
+`LanguageAware` (~249 usages in `intl/intl.php`) and `PhpVersionAware`
+(~101 usages in `ldap/ldap.php`). The attribute matcher must resolve
+through the `DocblockCtx` use-map (like `PhpStormStubsElementAvailable`
+and `Deprecated` already do) and compare the last segment of the resolved
+FQN, so all three names work automatically.
 
 ---
 
@@ -130,6 +134,12 @@ function session_get_cookie_params(): array {}
 function gc_status(): array {}
 ```
 
+**Attribute FQN:** `JetBrains\PhpStorm\ArrayShape`. Stub files import
+it via `use JetBrains\PhpStorm\ArrayShape;`. No aliases are used.
+Match by resolving through the `DocblockCtx` use-map and comparing the
+last segment of the resolved FQN (same pattern as `Deprecated` and
+`PhpStormStubsElementAvailable`).
+
 **Implementation:** During function/method extraction, scan for the
 `ArrayShape` attribute. Parse the associative array literal in its
 argument to build an `array{key: type, ...}` string, and use it as
@@ -141,37 +151,24 @@ parsing and should feed into the same `return_type` field on
 ---
 
 ## 5. `#[Deprecated]` structured deprecation metadata
-**Impact: Low-Medium · Effort: Low**
+**Status: ✅ Implemented**
 
-phpstorm-stubs annotate ~362 functions, methods, classes, constants,
-properties, and parameters with `#[Deprecated(reason: "...",
-replacement: "...", since: "X.Y")]`. PHPantom already reads
-`@deprecated` from docblocks, but many stub entries use the attribute
-instead of (or in addition to) a docblock tag. The attribute carries
-richer data than the free-text `@deprecated` tag:
+PHPantom reads the `#[Deprecated]` attribute (FQN:
+`JetBrains\PhpStorm\Deprecated`) on classes, interfaces, traits, enums,
+methods, properties, constants, and standalone functions. The `reason`
+and `since` fields appear in hover, completion strikethrough, and
+deprecation diagnostics. When both a docblock `@deprecated` tag and the
+attribute are present, the docblock message takes priority.
 
-- `since` — the PHP version when the element was deprecated. Combined
-  with PHP version detection, this could suppress deprecation warnings
-  when targeting an older version where the element was not yet
-  deprecated, or show "deprecated since PHP 8.0" in hover.
-- `reason` — a human-readable explanation.
-- `replacement` — a code template for auto-replacement (e.g.
-  `"exif_read_data(%parametersList%)"` for `read_exif_data`). Could
-  power a future "replace deprecated call" code action.
+The `replacement` field is parsed and stored but not yet wired to a
+code action. Once the general code-action infrastructure lands, a
+"replace deprecated call" quick-fix can use the template (e.g.
+`"exif_read_data(%parametersList%)"`) to offer automatic replacement.
 
-```php
-#[Deprecated(reason: "Use anonymous functions instead", since: "7.2")]
-function create_function(string $args, string $code): false|string {}
-
-#[Deprecated(replacement: "exif_read_data(%parametersList%)", since: "7.2")]
-function read_exif_data($filename, $sections = null, $arrays = false, $thumbnail = false) {}
-```
-
-**Implementation:** During extraction, scan for the `Deprecated`
-attribute. Store the `since`, `reason`, and `replacement` fields on
-`FunctionInfo` / `MethodInfo` / `ClassInfo`. In hover, prefer the
-structured message over the raw `@deprecated` text. Optionally, use
-the `since` version to make deprecation warnings version-aware.
+**Remaining work:**
+- Wire `replacement` to a code action (blocked on code-action infra).
+- Use `since` to make deprecation warnings version-aware (suppress when
+  targeting a PHP version older than the `since` value).
 
 ---
 
@@ -228,11 +225,16 @@ return types (less impactful for class-based completion).
 ## 8. `#[ReturnTypeContract]` parameter-dependent return types
 **Impact: Low · Effort: Low**
 
-phpstorm-stubs use `#[ReturnTypeContract]` (aliased as `TypeContract`)
-on 4 functions to express return type narrowing based on a parameter's
-value or presence. These functions have no `@phpstan-return` conditional
-type in their docblocks, so the narrowing information is only available
-through the attribute.
+phpstorm-stubs use `#[ReturnTypeContract]` on 4 functions to express
+return type narrowing based on a parameter's value or presence. These
+functions have no `@phpstan-return` conditional type in their docblocks,
+so the narrowing information is only available through the attribute.
+
+**Attribute FQN:** `JetBrains\PhpStorm\Internal\ReturnTypeContract`.
+Stub files import it as `TypeContract` via
+`use JetBrains\PhpStorm\Internal\ReturnTypeContract as TypeContract;`.
+Match by resolving through the `DocblockCtx` use-map and comparing the
+last segment of the resolved FQN (`ReturnTypeContract`).
 
 The attribute has four named arguments:
 - `true` / `false` — narrows the return type when the annotated boolean
@@ -266,11 +268,16 @@ type. This integrates into the call return type resolution path.
 ## 9. `#[ExpectedValues]` parameter value suggestions
 **Impact: Low · Effort: Medium**
 
-phpstorm-stubs annotate ~62 parameters and return values (including
-usages via the `EV` alias in `intl` and `ftp`) with
+phpstorm-stubs annotate ~62 parameters and return values with
 `#[ExpectedValues]` to declare the set of valid constant values or
 flags. This could power smarter completions inside function call
 arguments by suggesting the valid constants.
+
+**Attribute FQN:** `JetBrains\PhpStorm\ExpectedValues`. Stub files
+import it via `use JetBrains\PhpStorm\ExpectedValues;`. Two files alias
+it as `EV` (`intl/intl.php` and `ftp/ftp.php`). Match by resolving
+through the `DocblockCtx` use-map and comparing the last segment of the
+resolved FQN (`ExpectedValues`).
 
 The attribute supports several forms:
 - `values: [CONST_A, CONST_B]` — one of the listed values is expected.

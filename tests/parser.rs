@@ -1748,3 +1748,563 @@ async fn test_parse_defines_ignores_method_calls_named_define() {
     let names: Vec<&str> = defines.iter().map(|(n, _)| n.as_str()).collect();
     assert_eq!(names, vec!["REAL_CONST"]);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// #[Deprecated] attribute extraction
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn test_deprecated_attribute_on_class_bare() {
+    let backend = create_test_backend();
+    let php = concat!("<?php\n", "#[Deprecated]\n", "class OldHelper {}\n",);
+    let classes = backend.parse_php(php);
+    assert_eq!(classes.len(), 1);
+    assert!(
+        classes[0].deprecation_message.is_some(),
+        "Bare #[Deprecated] should set deprecation_message"
+    );
+}
+
+#[tokio::test]
+async fn test_deprecated_attribute_on_class_with_reason_and_since() {
+    let backend = create_test_backend();
+    let php = concat!(
+        "<?php\n",
+        "#[Deprecated(reason: 'Use NewApi instead', since: '8.2')]\n",
+        "class OldApi {}\n",
+    );
+    let classes = backend.parse_php(php);
+    assert_eq!(classes.len(), 1);
+    let msg = classes[0].deprecation_message.as_deref().unwrap();
+    assert!(
+        msg.contains("Use NewApi instead"),
+        "Expected reason in message, got: {msg}"
+    );
+    assert!(
+        msg.contains("since PHP 8.2"),
+        "Expected since in message, got: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn test_deprecated_attribute_on_class_positional_reason() {
+    let backend = create_test_backend();
+    let php = concat!(
+        "<?php\n",
+        "#[Deprecated('Use NewHelper instead')]\n",
+        "class OldHelper {}\n",
+    );
+    let classes = backend.parse_php(php);
+    assert_eq!(classes.len(), 1);
+    let msg = classes[0].deprecation_message.as_deref().unwrap();
+    assert!(
+        msg.contains("Use NewHelper instead"),
+        "Expected positional reason in message, got: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn test_deprecated_attribute_on_method_with_reason() {
+    let backend = create_test_backend();
+    let php = concat!(
+        "<?php\n",
+        "class Mailer {\n",
+        "    #[Deprecated(reason: 'Use sendAsync() instead', since: '8.1')]\n",
+        "    public function sendLegacy(): void {}\n",
+        "}\n",
+    );
+    let classes = backend.parse_php(php);
+    assert_eq!(classes.len(), 1);
+    let method = classes[0]
+        .methods
+        .iter()
+        .find(|m| m.name == "sendLegacy")
+        .unwrap();
+    let msg = method.deprecation_message.as_deref().unwrap();
+    assert!(
+        msg.contains("Use sendAsync() instead"),
+        "Expected reason in method deprecation, got: {msg}"
+    );
+    assert!(
+        msg.contains("since PHP 8.1"),
+        "Expected since in method deprecation, got: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn test_deprecated_attribute_on_method_bare() {
+    let backend = create_test_backend();
+    let php = concat!(
+        "<?php\n",
+        "class Mailer {\n",
+        "    #[Deprecated]\n",
+        "    public function sendLegacy(): void {}\n",
+        "}\n",
+    );
+    let classes = backend.parse_php(php);
+    let method = classes[0]
+        .methods
+        .iter()
+        .find(|m| m.name == "sendLegacy")
+        .unwrap();
+    assert!(
+        method.deprecation_message.is_some(),
+        "Bare #[Deprecated] on method should set deprecation_message"
+    );
+}
+
+#[tokio::test]
+async fn test_deprecated_attribute_on_property_with_reason() {
+    let backend = create_test_backend();
+    let php = concat!(
+        "<?php\n",
+        "class Doc {\n",
+        "    #[Deprecated('The property is deprecated', since: '8.4')]\n",
+        "    public string $encoding = 'UTF-8';\n",
+        "}\n",
+    );
+    let classes = backend.parse_php(php);
+    let prop = classes[0]
+        .properties
+        .iter()
+        .find(|p| p.name == "encoding")
+        .unwrap();
+    let msg = prop.deprecation_message.as_deref().unwrap();
+    assert!(
+        msg.contains("The property is deprecated"),
+        "Expected reason in property deprecation, got: {msg}"
+    );
+    assert!(
+        msg.contains("since PHP 8.4"),
+        "Expected since in property deprecation, got: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn test_deprecated_attribute_on_property_bare() {
+    let backend = create_test_backend();
+    let php = concat!(
+        "<?php\n",
+        "class Doc {\n",
+        "    #[Deprecated]\n",
+        "    public string $config = '';\n",
+        "}\n",
+    );
+    let classes = backend.parse_php(php);
+    let prop = classes[0]
+        .properties
+        .iter()
+        .find(|p| p.name == "config")
+        .unwrap();
+    assert!(
+        prop.deprecation_message.is_some(),
+        "Bare #[Deprecated] on property should set deprecation_message"
+    );
+}
+
+#[tokio::test]
+async fn test_deprecated_attribute_on_constant() {
+    let backend = create_test_backend();
+    let php = concat!(
+        "<?php\n",
+        "class PDO {\n",
+        "    #[Deprecated(reason: 'Use ATTR_EMULATE_PREPARES instead')]\n",
+        "    const ATTR_OLD = 1;\n",
+        "}\n",
+    );
+    let classes = backend.parse_php(php);
+    let constant = classes[0]
+        .constants
+        .iter()
+        .find(|c| c.name == "ATTR_OLD")
+        .unwrap();
+    let msg = constant.deprecation_message.as_deref().unwrap();
+    assert!(
+        msg.contains("Use ATTR_EMULATE_PREPARES instead"),
+        "Expected reason in constant deprecation, got: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn test_deprecated_attribute_on_constant_bare() {
+    let backend = create_test_backend();
+    let php = concat!(
+        "<?php\n",
+        "class Config {\n",
+        "    #[Deprecated]\n",
+        "    const OLD_MODE = 0;\n",
+        "}\n",
+    );
+    let classes = backend.parse_php(php);
+    let constant = classes[0]
+        .constants
+        .iter()
+        .find(|c| c.name == "OLD_MODE")
+        .unwrap();
+    assert!(
+        constant.deprecation_message.is_some(),
+        "Bare #[Deprecated] on constant should set deprecation_message"
+    );
+}
+
+#[tokio::test]
+async fn test_deprecated_attribute_on_function() {
+    let backend = create_test_backend();
+    let php = concat!(
+        "<?php\n",
+        "#[Deprecated(reason: 'Use new_helper() instead', since: '7.4')]\n",
+        "function old_helper(): void {}\n",
+    );
+    let functions = backend.parse_functions(php);
+    let func = functions.iter().find(|f| f.name == "old_helper").unwrap();
+    let msg = func.deprecation_message.as_deref().unwrap();
+    assert!(
+        msg.contains("Use new_helper() instead"),
+        "Expected reason in function deprecation, got: {msg}"
+    );
+    assert!(
+        msg.contains("since PHP 7.4"),
+        "Expected since in function deprecation, got: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn test_deprecated_attribute_on_function_bare() {
+    let backend = create_test_backend();
+    let php = concat!("<?php\n", "#[Deprecated]\n", "function old_fn(): void {}\n",);
+    let functions = backend.parse_functions(php);
+    let func = functions.iter().find(|f| f.name == "old_fn").unwrap();
+    assert!(
+        func.deprecation_message.is_some(),
+        "Bare #[Deprecated] on function should set deprecation_message"
+    );
+}
+
+#[tokio::test]
+async fn test_docblock_deprecated_takes_priority_over_attribute() {
+    let backend = create_test_backend();
+    let php = concat!(
+        "<?php\n",
+        "class Mailer {\n",
+        "    /**\n",
+        "     * @deprecated Use sendModern() instead.\n",
+        "     */\n",
+        "    #[Deprecated(reason: 'Attribute message')]\n",
+        "    public function sendLegacy(): void {}\n",
+        "}\n",
+    );
+    let classes = backend.parse_php(php);
+    let method = classes[0]
+        .methods
+        .iter()
+        .find(|m| m.name == "sendLegacy")
+        .unwrap();
+    let msg = method.deprecation_message.as_deref().unwrap();
+    assert!(
+        msg.contains("Use sendModern() instead"),
+        "Docblock @deprecated should take priority, got: {msg}"
+    );
+    assert!(
+        !msg.contains("Attribute message"),
+        "Attribute message should not appear when docblock has @deprecated, got: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn test_deprecated_attribute_since_only() {
+    let backend = create_test_backend();
+    let php = concat!(
+        "<?php\n",
+        "class Config {\n",
+        "    #[Deprecated(since: '7.4')]\n",
+        "    const OLD_MODE = 0;\n",
+        "}\n",
+    );
+    let classes = backend.parse_php(php);
+    let constant = classes[0]
+        .constants
+        .iter()
+        .find(|c| c.name == "OLD_MODE")
+        .unwrap();
+    let msg = constant.deprecation_message.as_deref().unwrap();
+    assert_eq!(msg, "since PHP 7.4");
+}
+
+#[tokio::test]
+async fn test_deprecated_attribute_on_interface() {
+    let backend = create_test_backend();
+    let php = concat!(
+        "<?php\n",
+        "#[Deprecated(reason: 'Use NewInterface instead')]\n",
+        "interface OldInterface {\n",
+        "    public function doThing(): void;\n",
+        "}\n",
+    );
+    let classes = backend.parse_php(php);
+    let iface = classes.iter().find(|c| c.name == "OldInterface").unwrap();
+    let msg = iface.deprecation_message.as_deref().unwrap();
+    assert!(
+        msg.contains("Use NewInterface instead"),
+        "Expected reason in interface deprecation, got: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn test_deprecated_attribute_on_enum() {
+    let backend = create_test_backend();
+    let php = concat!(
+        "<?php\n",
+        "#[Deprecated(reason: 'Use StatusV2 instead')]\n",
+        "enum Status {\n",
+        "    case Active;\n",
+        "    case Inactive;\n",
+        "}\n",
+    );
+    let classes = backend.parse_php(php);
+    let enm = classes.iter().find(|c| c.name == "Status").unwrap();
+    let msg = enm.deprecation_message.as_deref().unwrap();
+    assert!(
+        msg.contains("Use StatusV2 instead"),
+        "Expected reason in enum deprecation, got: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn test_non_deprecated_elements_unaffected() {
+    let backend = create_test_backend();
+    let php = concat!(
+        "<?php\n",
+        "class Service {\n",
+        "    public function handle(): void {}\n",
+        "    public string $name = '';\n",
+        "    const VERSION = 1;\n",
+        "}\n",
+    );
+    let classes = backend.parse_php(php);
+    let method = classes[0]
+        .methods
+        .iter()
+        .find(|m| m.name == "handle")
+        .unwrap();
+    assert!(method.deprecation_message.is_none());
+    let prop = classes[0]
+        .properties
+        .iter()
+        .find(|p| p.name == "name")
+        .unwrap();
+    assert!(prop.deprecation_message.is_none());
+    let constant = classes[0]
+        .constants
+        .iter()
+        .find(|c| c.name == "VERSION")
+        .unwrap();
+    assert!(constant.deprecation_message.is_none());
+}
+
+#[tokio::test]
+async fn test_deprecated_attribute_native_php84_message_named_arg() {
+    let backend = create_test_backend();
+    let php = concat!(
+        "<?php\n",
+        "#[\\Deprecated(message: 'Use safe_replacement() instead', since: '1.5')]\n",
+        "function unsafe_function(): void {}\n",
+    );
+    let functions = backend.parse_functions(php);
+    let func = functions
+        .iter()
+        .find(|f| f.name == "unsafe_function")
+        .unwrap();
+    let msg = func.deprecation_message.as_deref().unwrap();
+    assert!(
+        msg.contains("Use safe_replacement() instead"),
+        "Expected message in function deprecation, got: {msg}"
+    );
+    assert!(
+        msg.contains("since PHP 1.5"),
+        "Expected since in function deprecation, got: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn test_deprecated_attribute_native_php84_fqn_on_method() {
+    let backend = create_test_backend();
+    let php = concat!(
+        "<?php\n",
+        "class Service {\n",
+        "    #[\\Deprecated(message: 'Use processV2() instead', since: '8.4')]\n",
+        "    public function process(): void {}\n",
+        "}\n",
+    );
+    let classes = backend.parse_php(php);
+    let method = classes[0]
+        .methods
+        .iter()
+        .find(|m| m.name == "process")
+        .unwrap();
+    let msg = method.deprecation_message.as_deref().unwrap();
+    assert!(
+        msg.contains("Use processV2() instead"),
+        "Expected message in method deprecation, got: {msg}"
+    );
+    assert!(
+        msg.contains("since PHP 8.4"),
+        "Expected since in method deprecation, got: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn test_deprecated_attribute_native_php84_message_only() {
+    let backend = create_test_backend();
+    let php = concat!(
+        "<?php\n",
+        "class Config {\n",
+        "    #[\\Deprecated(message: 'Use NEW_LIMIT instead')]\n",
+        "    const OLD_LIMIT = 100;\n",
+        "}\n",
+    );
+    let classes = backend.parse_php(php);
+    let constant = classes[0]
+        .constants
+        .iter()
+        .find(|c| c.name == "OLD_LIMIT")
+        .unwrap();
+    let msg = constant.deprecation_message.as_deref().unwrap();
+    assert_eq!(msg, "Use NEW_LIMIT instead");
+}
+
+#[tokio::test]
+async fn test_deprecated_attribute_fqn_without_backslash_prefix() {
+    // JetBrains stubs use `#[Deprecated]` (short name via use import).
+    // Native PHP 8.4 uses `#[\Deprecated]` (FQN with leading backslash).
+    // Both should work identically.
+    let backend = create_test_backend();
+    let php = concat!(
+        "<?php\n",
+        "class Demo {\n",
+        "    #[Deprecated(reason: 'JetBrains style')]\n",
+        "    public function jetbrainsStyle(): void {}\n",
+        "\n",
+        "    #[\\Deprecated(message: 'Native PHP style')]\n",
+        "    public function nativeStyle(): void {}\n",
+        "}\n",
+    );
+    let classes = backend.parse_php(php);
+    let jb = classes[0]
+        .methods
+        .iter()
+        .find(|m| m.name == "jetbrainsStyle")
+        .unwrap();
+    assert!(
+        jb.deprecation_message
+            .as_deref()
+            .unwrap()
+            .contains("JetBrains style"),
+        "JetBrains-style #[Deprecated(reason:)] should work"
+    );
+    let native = classes[0]
+        .methods
+        .iter()
+        .find(|m| m.name == "nativeStyle")
+        .unwrap();
+    assert!(
+        native
+            .deprecation_message
+            .as_deref()
+            .unwrap()
+            .contains("Native PHP style"),
+        "Native-style #[\\Deprecated(message:)] should work"
+    );
+}
+
+#[tokio::test]
+async fn test_custom_namespaced_deprecated_attribute_does_not_trigger() {
+    let backend = create_test_backend();
+    let php = concat!(
+        "<?php\n",
+        "namespace App;\n",
+        "\n",
+        "#[\\Test\\Deprecated(reason: 'Not a real deprecation')]\n",
+        "function still_fine(): void {}\n",
+    );
+    let functions = backend.parse_functions(php);
+    let func = functions.iter().find(|f| f.name == "still_fine").unwrap();
+    assert!(
+        func.deprecation_message.is_none(),
+        "#[\\Test\\Deprecated] should NOT trigger deprecation, got: {:?}",
+        func.deprecation_message
+    );
+}
+
+#[tokio::test]
+async fn test_custom_namespaced_deprecated_attribute_on_method_does_not_trigger() {
+    let backend = create_test_backend();
+    let php = concat!(
+        "<?php\n",
+        "class Service {\n",
+        "    #[\\App\\Attributes\\Deprecated(reason: 'Custom attribute')]\n",
+        "    public function process(): void {}\n",
+        "}\n",
+    );
+    let classes = backend.parse_php(php);
+    let method = classes[0]
+        .methods
+        .iter()
+        .find(|m| m.name == "process")
+        .unwrap();
+    assert!(
+        method.deprecation_message.is_none(),
+        "#[\\App\\Attributes\\Deprecated] should NOT trigger deprecation, got: {:?}",
+        method.deprecation_message
+    );
+}
+
+#[tokio::test]
+async fn test_custom_namespaced_deprecated_attribute_on_class_does_not_trigger() {
+    let backend = create_test_backend();
+    let php = concat!(
+        "<?php\n",
+        "#[\\Vendor\\Deprecated]\n",
+        "class OldService {}\n",
+    );
+    let classes = backend.parse_php(php);
+    assert!(
+        classes[0].deprecation_message.is_none(),
+        "#[\\Vendor\\Deprecated] should NOT trigger class deprecation, got: {:?}",
+        classes[0].deprecation_message
+    );
+}
+
+#[tokio::test]
+async fn test_legitimate_deprecated_attributes_still_work() {
+    let backend = create_test_backend();
+    // Verify \Deprecated and \JetBrains\PhpStorm\Deprecated still match.
+    let php = concat!(
+        "<?php\n",
+        "class Demo {\n",
+        "    #[\\Deprecated(message: 'native')]\n",
+        "    public function nativeAttr(): void {}\n",
+        "\n",
+        "    #[\\JetBrains\\PhpStorm\\Deprecated(reason: 'jetbrains')]\n",
+        "    public function jbAttr(): void {}\n",
+        "}\n",
+    );
+    let classes = backend.parse_php(php);
+    let native = classes[0]
+        .methods
+        .iter()
+        .find(|m| m.name == "nativeAttr")
+        .unwrap();
+    assert!(
+        native.deprecation_message.is_some(),
+        "#[\\Deprecated] should trigger deprecation"
+    );
+    let jb = classes[0]
+        .methods
+        .iter()
+        .find(|m| m.name == "jbAttr")
+        .unwrap();
+    assert!(
+        jb.deprecation_message.is_some(),
+        "#[\\JetBrains\\PhpStorm\\Deprecated] should trigger deprecation"
+    );
+}

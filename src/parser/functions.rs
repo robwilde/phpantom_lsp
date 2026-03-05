@@ -10,7 +10,10 @@ use crate::Backend;
 use crate::docblock;
 use crate::types::*;
 
-use super::{DocblockCtx, extract_hint_string, extract_parameters, is_available_for_version};
+use super::{
+    DocblockCtx, extract_deprecated_attribute, extract_hint_string, extract_parameters,
+    is_available_for_version,
+};
 
 impl Backend {
     /// Extract standalone function definitions from a sequence of statements.
@@ -98,8 +101,16 @@ impl Backend {
                             .map(docblock::extract_type_assertions)
                             .unwrap_or_default();
 
-                        let deprecation_message =
-                            docblock_text.and_then(docblock::extract_deprecation_message);
+                        let deprecation_message = {
+                            let doc_msg =
+                                docblock_text.and_then(docblock::extract_deprecation_message);
+                            if doc_msg.is_some() {
+                                doc_msg
+                            } else {
+                                extract_deprecated_attribute(&func.attribute_lists, ctx)
+                                    .map(|attr| attr.to_message())
+                            }
+                        };
 
                         let desc = docblock_text
                             .and_then(|doc| crate::hover::extract_docblock_description(Some(doc)));
@@ -118,6 +129,10 @@ impl Backend {
                             link_url,
                         )
                     } else {
+                        // No docblock context available — attribute argument
+                        // strings cannot be read without source text, so we
+                        // skip #[Deprecated] extraction here.  In practice
+                        // `doc_ctx` is always `Some` for real file parsing.
                         (
                             native_return_type.clone(),
                             None,

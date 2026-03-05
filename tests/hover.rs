@@ -4242,7 +4242,7 @@ fn hover_implements_indicator_on_example_php() {
         .lines()
         .enumerate()
         .find_map(|(i, line)| {
-            if line.contains("$this->format()") && i > 1710 && i < 1730 {
+            if line.contains("$this->format()") && i > 1710 && i < 1760 {
                 let col = line.find("format").unwrap();
                 Some((i as u32, col as u32))
             } else {
@@ -4265,7 +4265,7 @@ fn hover_implements_indicator_on_example_php() {
         .lines()
         .enumerate()
         .find_map(|(i, line)| {
-            if line.contains("$this->toArray()") && i > 1710 && i < 1730 {
+            if line.contains("$this->toArray()") && i > 1710 && i < 1760 {
                 let col = line.find("toArray").unwrap();
                 Some((i as u32, col as u32))
             } else {

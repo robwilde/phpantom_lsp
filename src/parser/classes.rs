@@ -51,9 +51,26 @@ use crate::types::*;
 use crate::virtual_members::laravel::infer_relationship_from_body;
 
 use super::{
-    DocblockCtx, extract_hint_string, extract_parameters, extract_property_info,
-    extract_visibility, is_available_for_version,
+    DocblockCtx, extract_deprecated_attribute, extract_hint_string, extract_parameters,
+    extract_property_info, extract_visibility, is_available_for_version,
 };
+
+/// Merge a docblock `@deprecated` message with a `#[Deprecated]` attribute.
+///
+/// The docblock tag takes priority (it is author-written and often more
+/// specific).  When the docblock has no `@deprecated` tag, falls back to
+/// the `#[Deprecated]` attribute if present.
+fn merge_deprecation_message(
+    docblock_msg: Option<String>,
+    attribute_lists: &Sequence<'_, AttributeList<'_>>,
+    doc_ctx: Option<&DocblockCtx<'_>>,
+) -> Option<String> {
+    if docblock_msg.is_some() {
+        return docblock_msg;
+    }
+    let ctx = doc_ctx?;
+    extract_deprecated_attribute(attribute_lists, ctx).map(|attr| attr.to_message())
+}
 
 /// Docblock-derived metadata common to all class-like declarations.
 ///
@@ -707,7 +724,11 @@ impl Backend {
                         mixins: doc_info.mixins,
                         is_final: class.modifiers.contains_final(),
                         is_abstract: class.modifiers.contains_abstract(),
-                        deprecation_message: doc_info.deprecation_message.clone(),
+                        deprecation_message: merge_deprecation_message(
+                            doc_info.deprecation_message.clone(),
+                            &class.attribute_lists,
+                            doc_ctx,
+                        ),
                         link: doc_info.link,
                         template_params: doc_info.template_params,
                         template_param_bounds: doc_info.template_param_bounds,
@@ -783,7 +804,11 @@ impl Backend {
                         mixins: doc_info.mixins,
                         is_final: false,
                         is_abstract: false,
-                        deprecation_message: doc_info.deprecation_message.clone(),
+                        deprecation_message: merge_deprecation_message(
+                            doc_info.deprecation_message.clone(),
+                            &iface.attribute_lists,
+                            doc_ctx,
+                        ),
                         link: doc_info.link,
                         template_params: doc_info.template_params,
                         template_param_bounds: doc_info.template_param_bounds,
@@ -840,7 +865,11 @@ impl Backend {
                         mixins: doc_info.mixins,
                         is_final: false,
                         is_abstract: false,
-                        deprecation_message: doc_info.deprecation_message.clone(),
+                        deprecation_message: merge_deprecation_message(
+                            doc_info.deprecation_message.clone(),
+                            &trait_def.attribute_lists,
+                            doc_ctx,
+                        ),
                         link: doc_info.link,
                         template_params: doc_info.template_params,
                         template_param_bounds: doc_info.template_param_bounds,
@@ -919,7 +948,11 @@ impl Backend {
                         mixins: doc_info.mixins,
                         is_final: true,
                         is_abstract: false,
-                        deprecation_message: doc_info.deprecation_message,
+                        deprecation_message: merge_deprecation_message(
+                            doc_info.deprecation_message,
+                            &enum_def.attribute_lists,
+                            doc_ctx,
+                        ),
                         link: doc_info.link,
                         template_params: vec![],
                         template_param_bounds: HashMap::new(),
@@ -1534,8 +1567,11 @@ impl Backend {
                             )
                         });
 
-                        let deprecation_message =
-                            docblock_text.and_then(docblock::extract_deprecation_message);
+                        let deprecation_message = merge_deprecation_message(
+                            docblock_text.and_then(docblock::extract_deprecation_message),
+                            &method.attribute_lists,
+                            doc_ctx,
+                        );
 
                         (
                             effective,
@@ -1688,6 +1724,13 @@ impl Backend {
                 ClassLikeMember::Property(property) => {
                     let mut prop_infos = extract_property_info(property);
 
+                    // Extract the attribute lists from the property variant
+                    // so we can check for #[Deprecated] below.
+                    let prop_attr_lists: Option<&Sequence<'_, AttributeList<'_>>> = match property {
+                        Property::Plain(p) => Some(&p.attribute_lists),
+                        Property::Hooked(h) => Some(&h.attribute_lists),
+                    };
+
                     // Apply PHPDoc `@var` override, `@deprecated`, and description
                     // for each property.
                     if let Some(ctx) = doc_ctx
@@ -1695,6 +1738,15 @@ impl Backend {
                             docblock::get_docblock_text_for_node(ctx.trivias, ctx.content, member)
                     {
                         let deprecation_msg = docblock::extract_deprecation_message(doc_text);
+                        // Merge docblock @deprecated with #[Deprecated] attribute.
+                        let deprecation_msg = if deprecation_msg.is_some() {
+                            deprecation_msg
+                        } else if let Some(attr_lists) = prop_attr_lists {
+                            extract_deprecated_attribute(attr_lists, ctx)
+                                .map(|attr| attr.to_message())
+                        } else {
+                            None
+                        };
                         if let Some(doc_type) = docblock::extract_var_type(doc_text) {
                             for prop in &mut prop_infos {
                                 prop.type_hint = docblock::resolve_effective_type(
@@ -1718,16 +1770,33 @@ impl Backend {
                         }
                     }
 
+                    // If no deprecation was found from the docblock, check the
+                    // #[Deprecated] attribute.  This covers properties that have
+                    // an attribute but no docblock at all.
+                    if prop_infos.iter().all(|p| p.deprecation_message.is_none())
+                        && let Some(ctx) = doc_ctx
+                        && let Some(attr_lists) = prop_attr_lists
+                        && let Some(attr) = extract_deprecated_attribute(attr_lists, ctx)
+                    {
+                        let msg = attr.to_message();
+                        for prop in &mut prop_infos {
+                            prop.deprecation_message = Some(msg.clone());
+                        }
+                    }
+
                     properties.append(&mut prop_infos);
                 }
                 ClassLikeMember::Constant(constant) => {
                     let type_hint = constant.hint.as_ref().map(|h| extract_hint_string(h));
                     let visibility = extract_visibility(constant.modifiers.iter());
-                    let deprecation_message = if let Some(ctx) = doc_ctx {
-                        docblock::get_docblock_text_for_node(ctx.trivias, ctx.content, member)
-                            .and_then(docblock::extract_deprecation_message)
-                    } else {
-                        None
+                    let deprecation_message = {
+                        let docblock_msg = if let Some(ctx) = doc_ctx {
+                            docblock::get_docblock_text_for_node(ctx.trivias, ctx.content, member)
+                                .and_then(docblock::extract_deprecation_message)
+                        } else {
+                            None
+                        };
+                        merge_deprecation_message(docblock_msg, &constant.attribute_lists, doc_ctx)
                     };
                     let const_description = doc_ctx
                         .and_then(|ctx| {

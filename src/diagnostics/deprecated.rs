@@ -2,7 +2,7 @@
 //!
 //! Walk the precomputed [`SymbolMap`] for a file and flag every reference
 //! to a class, method, property, constant, or function that carries a
-//! `@deprecated` PHPDoc tag.
+//! `@deprecated` PHPDoc tag or a `#[Deprecated]` attribute.
 //!
 //! Diagnostics use `Severity::Hint` with `DiagnosticTag::Deprecated`,
 //! which renders as a subtle strikethrough in most editors — visible but
@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use tower_lsp::lsp_types::*;
 
 use crate::Backend;
+use crate::completion::variable::resolution::resolve_variable_types;
 use crate::symbol_map::SymbolKind;
 use crate::types::ClassInfo;
 use crate::virtual_members::resolve_class_fully_cached;
@@ -65,6 +66,7 @@ impl Backend {
             .unwrap_or_default();
 
         let class_loader = self.class_loader_with(&local_classes, &file_use_map, &file_namespace);
+        let function_loader = self.function_loader_with(&file_use_map, &file_namespace);
         let cache = &self.resolved_class_cache;
 
         // ── Walk every symbol span ──────────────────────────────────────
@@ -99,21 +101,31 @@ impl Backend {
                     is_method_call,
                 } => {
                     // Resolve the subject type to a class.
-                    let class_name = resolve_subject_to_class_name(
+                    let base_class = resolve_subject_to_class_name(
                         subject_text,
                         *is_static,
                         &file_use_map,
                         &file_namespace,
                         &local_classes,
-                    );
+                    )
+                    .and_then(|name| self.find_or_load_class(&name));
 
-                    let class_name = match class_name {
-                        Some(n) => n,
-                        None => continue,
-                    };
-
-                    let base_class = match self.find_or_load_class(&class_name) {
+                    // Fall back to variable type resolution for $var->member() calls.
+                    let base_class = match base_class {
                         Some(c) => c,
+                        None if subject_text.starts_with('$') => {
+                            match resolve_variable_subject(
+                                subject_text,
+                                span.start,
+                                content,
+                                &local_classes,
+                                &class_loader,
+                                &function_loader,
+                            ) {
+                                Some(c) => c,
+                                None => continue,
+                            }
+                        }
                         None => continue,
                     };
 
@@ -281,9 +293,8 @@ fn resolve_to_fqn(
 /// - `self`, `static`, `parent` → resolve from enclosing class
 /// - `ClassName` (static access) → resolve via use map
 /// - `$this` → resolve from enclosing class
-/// - Other `$variable` subjects are not resolved here (would need
-///   variable type resolution which is expensive; deferred to a
-///   future enhancement).
+/// - Other `$variable` subjects return `None` (resolved separately
+///   by [`resolve_variable_subject`]).
 fn resolve_subject_to_class_name(
     subject_text: &str,
     is_static: bool,
@@ -324,9 +335,8 @@ fn resolve_subject_to_class_name(
             Some(resolve_to_fqn(trimmed, file_use_map, file_namespace))
         }
         _ if trimmed.starts_with('$') => {
-            // Variable access — would need full type resolution.
-            // We skip these to avoid false negatives (but never
-            // produce false positives).
+            // Variable access — resolved separately by
+            // resolve_variable_subject().
             None
         }
         _ => {
@@ -334,6 +344,47 @@ fn resolve_subject_to_class_name(
             None
         }
     }
+}
+
+/// Resolve a `$variable` subject to a `ClassInfo` using the full
+/// variable type resolution pipeline.
+///
+/// Finds the enclosing class for the access site, then delegates to
+/// [`resolve_variable_types`] which re-parses the source and walks the
+/// AST to infer the variable's type from assignments, parameter type
+/// hints, foreach bindings, etc.
+fn resolve_variable_subject(
+    subject_text: &str,
+    access_offset: u32,
+    content: &str,
+    local_classes: &[ClassInfo],
+    class_loader: &dyn Fn(&str) -> Option<ClassInfo>,
+    function_loader: &dyn Fn(&str) -> Option<crate::types::FunctionInfo>,
+) -> Option<ClassInfo> {
+    let var_name = subject_text.trim();
+
+    // Find the enclosing class based on offset ranges.
+    let enclosing_class = local_classes
+        .iter()
+        .find(|c| {
+            !c.name.starts_with("__anonymous@")
+                && access_offset >= c.start_offset
+                && access_offset <= c.end_offset
+        })
+        .cloned()
+        .unwrap_or_default();
+
+    let results = resolve_variable_types(
+        var_name,
+        &enclosing_class,
+        local_classes,
+        content,
+        access_offset,
+        class_loader,
+        Some(function_loader),
+    );
+
+    results.into_iter().next()
 }
 
 /// Find the FQN of the first non-anonymous class in the file (heuristic

@@ -55,6 +55,7 @@ impl Backend {
             content,
             php_version: None,
             use_map: HashMap::new(),
+            namespace: None,
         };
 
         // Extract all three in a single parse pass.
