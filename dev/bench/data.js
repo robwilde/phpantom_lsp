@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1772917534232,
+  "lastUpdate": 1772918002998,
   "repoUrl": "https://github.com/AJenbo/phpantom_lsp",
   "entries": {
     "PHPantom Benchmarks": [
@@ -4391,6 +4391,156 @@ window.BENCHMARK_DATA = {
             "name": "diagnostics/fixture/method_chain",
             "value": 517052,
             "range": "± 12790",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "anders@jenbo.dk",
+            "name": "Anders Jenbo",
+            "username": "AJenbo"
+          },
+          "committer": {
+            "email": "anders@jenbo.dk",
+            "name": "Anders Jenbo",
+            "username": "AJenbo"
+          },
+          "distinct": true,
+          "id": "b53ed2bd5fe04099b3e4878096efb91da9c0a65d",
+          "message": "Make Generator Yield Type Inference Inside Bodies more real",
+          "timestamp": "2026-03-07T22:08:10+01:00",
+          "tree_id": "96adfd117c77b363cbc8c02078d9b1951f4f4024",
+          "url": "https://github.com/AJenbo/phpantom_lsp/commit/b53ed2bd5fe04099b3e4878096efb91da9c0a65d"
+        },
+        "date": 1772918002209,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "completion_simple_class",
+            "value": 26429,
+            "range": "± 359",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "completion_inheritance_depth/depth_5",
+            "value": 115926,
+            "range": "± 3787",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "completion_inheritance_depth/depth_10",
+            "value": 220834,
+            "range": "± 924",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "completion_inheritance_depth/depth_20",
+            "value": 442110,
+            "range": "± 4116",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "completion_classmap_size/100_classes",
+            "value": 480230,
+            "range": "± 4025",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "completion_classmap_size/500_classes",
+            "value": 2689749,
+            "range": "± 19749",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "completion_classmap_size/1000_classes",
+            "value": 5719757,
+            "range": "± 63059",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "completion_generics_and_mixins",
+            "value": 122761,
+            "range": "± 1001",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "completion_with_narrowing",
+            "value": 34755,
+            "range": "± 237",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "completion_5_method_chain",
+            "value": 26026,
+            "range": "± 135",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "completion_cross_file_type_hint",
+            "value": 39259,
+            "range": "± 1429",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "update_ast_parse_time/100_lines",
+            "value": 134783,
+            "range": "± 1875",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "update_ast_parse_time/500_lines",
+            "value": 641987,
+            "range": "± 13641",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "update_ast_parse_time/2000_lines",
+            "value": 2622808,
+            "range": "± 54102",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "hover_method_call",
+            "value": 29301,
+            "range": "± 159",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "goto_definition_method",
+            "value": 17470,
+            "range": "± 68",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "reparse_500_line_file",
+            "value": 1458696,
+            "range": "± 7899",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diagnostics/fixture/lots_of_new_generic_objects",
+            "value": 74717,
+            "range": "± 297",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diagnostics/fixture/lots_of_new_objects",
+            "value": 52494,
+            "range": "± 606",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diagnostics/fixture/lots_of_missing_methods",
+            "value": 95313271,
+            "range": "± 789536",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diagnostics/fixture/method_chain",
+            "value": 444576,
+            "range": "± 1563",
             "unit": "ns/iter"
           }
         ]
