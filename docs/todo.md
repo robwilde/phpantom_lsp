@@ -44,51 +44,30 @@ diagnostics, unused-import dimming, and implement missing methods.
 
 ---
 
-## Sprint 2.5 — Performance foundations
+## Sprint 2.5 — Parallel file processing (0.5.0)
 
-These structural fixes reduce latency and contention on the hot paths
-that every LSP request exercises. They are sequenced here, before
-refactoring and feature sprints, because later work amplifies the
-underlying costs:
-
-- **Parallel file processing** (indexing.md Phase 3) adds concurrent
-  readers. Without `RwLock`, parallelism is defeated by lock
-  contention.
-- **Full background indexing** (indexing.md Phase 5) puts thousands of
-  files into `ast_map`. Without the FQN index, every class lookup
-  becomes an O(thousands) scan. Without `Arc<ClassInfo>`, every lookup
-  deep-clones a large struct.
-- **Sprint 6 Laravel generics** (`collect()`, custom builders) increase
-  the depth of generic substitution chains. Without the `HashSet` dedup
-  and substitution early-exit, Eloquent models pay O(N²) per resolution.
-
-Fixing these first means every subsequent sprint benefits automatically.
+This sprint delivers parallel file processing for workspace-wide
+operations (find references, go-to-implementation, self-scan,
+diagnostics). The three prerequisite items replace shared data
+structures with concurrent-read-friendly wrappers so that parallel
+`spawn_blocking` tasks do not serialize on lock contention.
 
 | # | Item | Effort | Domain | Doc Link |
 |---|---|---|---|---|
-| 82 | FQN secondary index for `find_class_in_ast_map` | Low | Performance | [performance.md §1](todo/performance.md#1-fqn-secondary-index-for-find_class_in_ast_map) |
 | 83 | `RwLock` for read-heavy maps | Low | Performance | [performance.md §3](todo/performance.md#3-rwlock-for-read-heavy-maps) |
-| 84 | `HashSet` dedup in inheritance merging | Low | Performance | [performance.md §4](todo/performance.md#4-hashset-dedup-in-inheritance-merging) |
 | 85 | `Arc<String>` for file content in `open_files` | Low | Performance | [performance.md §5](todo/performance.md#5-arcstring-for-file-content-in-open_files) |
 | 86 | `Arc<SymbolMap>` to avoid snapshot cloning | Low | Performance | [performance.md §6](todo/performance.md#6-arcsymbolmap-to-avoid-snapshot-cloning) |
-| 87 | Reference-counted `ClassInfo` (`Arc<ClassInfo>`) | Medium | Performance | [performance.md §2](todo/performance.md#2-reference-counted-classinfo-arcclassinfo) |
-| 88 | Early-exit and `Cow` return in `apply_substitution` | Low | Performance | [performance.md §7](todo/performance.md#7-recursive-string-substitution-in-apply_substitution) |
-| 90 | Lazy autoload file indexing | Medium | Performance | [indexing.md §2.5](todo/indexing.md#phase-25-lazy-autoload-file-indexing) |
+| 95 | Parallel file processing | Medium | Indexing | [indexing.md §3](todo/indexing.md#phase-3-parallel-file-processing) |
+| 14 | Signature help fires on function definition sites | Low | Bug Fix | [bugs.md §14](todo/bugs.md#14-signature-help-fires-on-function-definition-sites) |
 
-Item 89 (incremental text sync) is in the backlog because the parser
-requires a full re-parse regardless, limiting the benefit to IPC
-bandwidth savings on large files.
-
-**After Sprint 2.5:** Every resolution path is O(1) lookup instead of
-O(N) scan. Concurrent reads no longer block each other. Inheritance
-merging is O(N) instead of O(N²). File content and symbol maps are
-shared by reference instead of deep-cloned. The codebase is ready for
-parallel file processing and full background indexing without
-performance regressions.
+**After Sprint 2.5:** Workspace-wide operations run across multiple
+cores with priority-aware scheduling. Interactive requests (completion,
+hover, go-to-definition) preempt batch work. File content and symbol
+maps are shared by reference instead of deep-cloned.
 
 ---
 
-## Sprint 3 — Refactoring
+## Sprint 3 — Refactoring & deferred performance
 
 Extract Function is the remaining refactoring pillar. Inline Variable,
 Extract Variable, and Inline Function/Method round out the core
@@ -96,12 +75,22 @@ refactoring toolkit, sharing scope analysis infrastructure with Extract
 Function. Find References and Rename provide the variable/symbol usage
 tracking infrastructure they depend on, and both are now complete.
 
+The deferred performance items from Sprint 2.5 are included here. They
+improve lookup speed, reduce cloning overhead, and prepare the codebase
+for full background indexing (Phase 5), but are not prerequisites for
+parallel file processing.
+
 | # | Item | Effort | Domain | Doc Link |
 |---|---|---|---|---|
 | 17 | Extract Function refactoring | Very High | Code Actions | [actions.md §3](todo/actions.md#3-extract-function-refactoring) |
 | 76 | Inline Variable | Medium | Code Actions | [actions.md §7](todo/actions.md#7-inline-variable) |
 | 77 | Extract Variable | Medium | Code Actions | [actions.md §8](todo/actions.md#8-extract-variable) |
 | 78 | Inline Function/Method | High | Code Actions | [actions.md §9](todo/actions.md#9-inline-functionmethod) |
+| 82 | FQN secondary index for `find_class_in_ast_map` | Low | Performance | [performance.md §1](todo/performance.md#1-fqn-secondary-index-for-find_class_in_ast_map) |
+| 84 | `HashSet` dedup in inheritance merging | Low | Performance | [performance.md §4](todo/performance.md#4-hashset-dedup-in-inheritance-merging) |
+| 87 | Reference-counted `ClassInfo` (`Arc<ClassInfo>`) | Medium | Performance | [performance.md §2](todo/performance.md#2-reference-counted-classinfo-arcclassinfo) |
+| 88 | Early-exit and `Cow` return in `apply_substitution` | Low | Performance | [performance.md §7](todo/performance.md#7-recursive-string-substitution-in-apply_substitution) |
+| 90 | Lazy autoload file indexing | Medium | Indexing | [indexing.md §2.5](todo/indexing.md#phase-25-lazy-autoload-file-indexing) |
 
 ---
 
