@@ -16,51 +16,20 @@ within the same impact tier.
 ---
 
 ## 1. FQN secondary index for `find_class_in_ast_map`
-**Impact: High · Effort: Low**
+**Impact: High · Effort: Low (fixed)**
 
-`find_class_in_ast_map` is the Phase 1 lookup in `find_or_load_class`.
-It iterates **every file's classes** in the `ast_map` to find a class
-by short name + namespace match. In a project with hundreds of parsed
-files, this O(files × classes_per_file) scan runs for every class
-lookup in every resolution chain. A single completion request that
-resolves `$this->` can invoke this dozens of times as it walks the
-inheritance chain, loads traits, resolves interfaces, and processes
-mixins.
+**Status:** Fixed. `Backend` now carries a `fqn_index`
+(`Arc<RwLock<HashMap<String, ClassInfo>>>`) that maps fully-qualified
+class names directly to their parsed `ClassInfo`.
+`find_class_in_ast_map` performs an O(1) hash lookup against this
+index before falling back to the linear `ast_map` scan (which now
+only serves as a safety net for anonymous classes or race conditions
+during initial indexing).
 
-The `class_index` (`HashMap<String, String>`) already maps FQN → URI
-but stops short: after finding the URI, the code still iterates all
-classes in that file to find the right one.
-
-Under full background indexing (indexing.md Phase 5), "all files"
-means every PHP file in the project. The linear scan becomes the
-dominant bottleneck.
-
-### Fix
-
-Add a secondary index `HashMap<String, ClassInfo>` (or
-`HashMap<String, Arc<ClassInfo>>` if §2 lands first) that maps
-fully-qualified class names directly to their parsed `ClassInfo`.
-This turns every Phase 1 lookup into an O(1) hash lookup.
-
-### Maintenance
-
-The index must be updated in `update_ast_inner` (when files are
-opened/changed) and in `parse_and_cache_content_versioned` (when
-files are loaded on demand via classmap, PSR-4, or stubs). Both
-code paths already maintain `ast_map` and `class_index`, so adding
-a third insertion is straightforward.
-
-When a file is re-parsed, remove all old entries for that file's
-classes (snapshot FQNs before overwriting `ast_map`) and insert
-the new ones. This mirrors the existing `class_index` maintenance
-in `update_ast_inner`.
-
-### Migration path
-
-Once the FQN index is in place, `find_class_in_ast_map` becomes a
-single hash lookup. The linear scan can be kept as a fallback for
-edge cases (e.g. anonymous classes that don't have stable FQNs) but
-should never be the primary path.
+The index is maintained in both `update_ast_inner` (stale entries
+removed via the `old_fqns` snapshot, new entries inserted alongside
+`class_index`) and `parse_and_cache_content_versioned` (entries
+inserted after the `ast_map` write).
 
 ---
 

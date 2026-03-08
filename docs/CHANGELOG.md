@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Attribute constructor signature help.** Signature help and named parameter completion now fire inside PHP 8 attribute parentheses (`#[Route('/path', <>)]`), showing the attribute class's constructor parameters.
 - **Closure variable scope isolation.** Variables declared outside a closure are no longer offered as completions inside the closure body unless captured via `use()`. Previously outer variables leaked into closure scope.
 
+### Changed
+
+- **Faster class lookups.** Class resolution now uses an O(1) hash-map lookup by fully-qualified name instead of scanning every parsed file. Projects with hundreds of open files see reduced latency on completion, hover, and go-to-definition requests.
+
 ### Fixed
 
 - **Signature help on function definitions.** Signature help no longer fires when the cursor is inside a function or method definition's parameter list (e.g. `function foo(int $a, |)`). Previously it could incorrectly show the signature of a same-named global function.

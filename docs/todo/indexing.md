@@ -327,6 +327,102 @@ limitation applies to the classmap scanner today.
 
 ---
 
+## Phase 2.6: Non-Composer function and constant discovery
+
+**Goal:** In projects without Composer, discover standalone functions,
+`define()` constants, and top-level `const` declarations across the
+entire workspace so that function completion, go-to-definition, and
+constant resolution work without a `vendor/composer/autoload_files.php`
+manifest.
+
+### Problem
+
+Composer projects separate class discovery from function/constant
+discovery. Classes live in PSR-4/classmap directories and are found
+by namespace-to-path mapping. Functions and constants live in files
+listed explicitly in `autoload.files` (and transitively via
+`require_once` chains). PHPantom already handles both paths: the
+classmap scanner (Phase 1) covers classes, and the autoload-file
+walker covers functions and constants.
+
+Non-Composer projects have no such separation. A single PHP file may
+define classes, standalone functions, and constants side by side.
+Today PHPantom's self-scan (Phase 1 fallback) only extracts class
+names from these files. Functions and constants are invisible until
+the user happens to open the file that defines them, at which point
+`update_ast` populates `global_functions` and `global_defines`.
+
+This means non-Composer projects get no function name completion, no
+go-to-definition for cross-file functions, and no constant resolution
+for anything outside the currently open files.
+
+### Relationship to Phase 2.5
+
+Phase 2.5 replaces eager `update_ast` calls on Composer autoload files
+with a lightweight byte-level scan that extracts function names, constant
+names, and class names without building a full AST. The scanner design
+in Phase 2.5 (recognising `function`, `define(`, and `const` keywords
+alongside class keywords) is exactly what non-Composer discovery needs.
+
+The difference is scope, not mechanism:
+
+| Scenario | Files to scan for classes | Files to scan for functions/constants |
+|---|---|---|
+| **Composer** | PSR-4 + classmap directories + vendor packages | `autoload_files.php` entries only |
+| **Non-Composer** | All PHP files in workspace | All PHP files in workspace |
+
+In Composer mode, the classmap scan and the autoload-file scan are
+separate passes over disjoint file sets. In non-Composer mode, a single
+pass over all workspace files extracts classes, functions, and constants
+together. The byte-level scanner from Phase 2.5 handles both cases: it
+just runs on a wider set of files and populates additional indices.
+
+### Implementation
+
+Extend the Phase 1 self-scan fallback (the path taken when no
+`composer.json` exists) to also extract function and constant names:
+
+1. **Scanner.** Reuse the extended byte-level scanner from Phase 2.5.
+   When scanning a file, extract class declarations (as today) plus
+   function declarations and `define()`/`const` constants. This is a
+   single pass per file with no additional I/O.
+
+2. **Indices.** Populate three indices from the scan results:
+   - `classmap` — FQN → file path (already done by Phase 1).
+   - `autoload_function_index` — function FQN → file path (new,
+     same structure as Phase 2.5).
+   - `autoload_constant_index` — constant name → file path (new,
+     same structure as Phase 2.5).
+
+3. **Resolution.** No additional resolution changes beyond Phase 2.5.
+   `find_or_load_function` and constant resolution already consult
+   the autoload indices when Phase 2.5 is in place. The only
+   difference is that non-Composer mode populates those indices from
+   a workspace walk instead of from `autoload_files.php`.
+
+4. **Composer mode.** When Composer is present, the workspace-wide
+   function/constant scan is unnecessary because `autoload_files.php`
+   already tells us which files to scan. The broader scan only runs
+   in non-Composer mode (no `composer.json`) or `"self"` strategy
+   mode.
+
+### Effort and dependencies
+
+**Effort:** Low. This is a thin integration layer on top of Phase 2.5's
+scanner. The scanner already exists; the only new work is calling it on
+all workspace files (instead of just autoload files) and populating
+the function/constant indices from the results.
+
+**Dependencies:** Phase 2.5 (the scanner and the autoload indices must
+exist before this phase can populate them from a different file set).
+Phase 1 (the workspace file walk for non-Composer projects must exist).
+
+**Sequencing:** This phase should land immediately after Phase 2.5 or
+as part of the same PR, since the two share the scanner and index
+structures.
+
+---
+
 ## Phase 3: Parallel file processing
 
 **Goal:** Speed up workspace-wide operations (find references,
@@ -440,11 +536,9 @@ scanning, and complete completion item detail.
 
 **Prerequisites (from [performance.md](performance.md)):**
 
-- **§1 FQN secondary index.** The second pass calls `update_ast` on
-  every file, populating `ast_map` with thousands of entries. Without
-  a FQN index, every `find_class_in_ast_map` call (Phase 1 of
-  `find_or_load_class`) becomes an O(thousands) linear scan. With the
-  index, it is O(1).
+- **§1 FQN secondary index.** ✅ Done. `fqn_index` provides O(1)
+  lookups by fully-qualified name, so the second pass populating
+  `ast_map` with thousands of entries no longer causes linear scans.
 - **§2 `Arc<ClassInfo>`.** Full indexing stores a `ClassInfo` for every
   class in the project. Without `Arc`, every resolution clones the
   entire struct out of the map. With `Arc`, retrieval is a

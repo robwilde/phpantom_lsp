@@ -303,13 +303,20 @@ impl Backend {
         // that files with multiple namespace blocks produce correct FQNs.
         {
             let mut idx = self.class_index.write();
+            let mut fqn_idx = self.fqn_index.write();
             // Remove stale entries from previous parses of this file.
             // When a file's namespace changes (e.g. while the user is
             // typing a namespace declaration), old FQNs linger under
             // the previous namespace and pollute completions.
             idx.retain(|_, uri| uri != &uri_string);
 
-            for (class, class_ns) in &classes_with_ns {
+            // Remove stale fqn_index entries for FQNs that belonged to
+            // the previous version of this file.
+            for old_fqn in &old_fqns {
+                fqn_idx.remove(old_fqn);
+            }
+
+            for (i, (class, class_ns)) in classes_with_ns.iter().enumerate() {
                 // Anonymous classes (named `__anonymous@<offset>`) are
                 // internal bookkeeping — they should never appear in
                 // cross-file lookups or completion results.
@@ -321,7 +328,10 @@ impl Backend {
                 } else {
                     class.name.clone()
                 };
-                idx.insert(fqn, uri_string.clone());
+                idx.insert(fqn.clone(), uri_string.clone());
+                // The `classes` vec already has `file_namespace` set,
+                // so use it for the fqn_index entry.
+                fqn_idx.insert(fqn, classes[i].clone());
             }
         }
 

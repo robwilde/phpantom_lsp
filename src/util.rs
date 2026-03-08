@@ -621,6 +621,19 @@ impl Backend {
     /// Returns a cloned `ClassInfo` if found, or `None`.
     pub(crate) fn find_class_in_ast_map(&self, class_name: &str) -> Option<ClassInfo> {
         let normalized = class_name.strip_prefix('\\').unwrap_or(class_name);
+
+        // ── Fast path: O(1) lookup via fqn_index ──
+        // For namespace-qualified names the FQN is the normalized name
+        // itself.  For bare names (no backslash) the FQN equals the
+        // short name, which is also stored in the index.
+        if let Some(cls) = self.fqn_index.read().get(normalized) {
+            return Some(cls.clone());
+        }
+
+        // ── Slow fallback: linear scan of ast_map ──
+        // Covers edge cases where the fqn_index has not been populated
+        // yet (e.g. anonymous classes, or race conditions during initial
+        // indexing).
         let last_segment = short_name(normalized);
         let expected_ns: Option<&str> = if normalized.contains('\\') {
             Some(&normalized[..normalized.len() - last_segment.len() - 1])

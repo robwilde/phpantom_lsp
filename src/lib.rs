@@ -190,6 +190,14 @@ pub struct Backend {
     /// Populated during `update_ast` (using the file's namespace + class
     /// short name) and during server initialization for autoload files.
     pub(crate) class_index: Arc<RwLock<HashMap<String, String>>>,
+    /// Secondary index mapping fully-qualified class names directly to
+    /// their parsed `ClassInfo`.
+    ///
+    /// This turns every Phase 1 lookup in [`find_or_load_class`] into an
+    /// O(1) hash lookup instead of scanning all files in `ast_map`.
+    /// Maintained alongside `class_index` in `update_ast_inner` and
+    /// `parse_and_cache_content_versioned`.
+    pub(crate) fqn_index: Arc<RwLock<HashMap<String, ClassInfo>>>,
     /// Composer classmap: fully-qualified class name → file path on disk.
     ///
     /// Parsed from `<vendor>/composer/autoload_classmap.php` during server
@@ -317,6 +325,7 @@ impl Backend {
             global_functions: Arc::new(RwLock::new(HashMap::new())),
             global_defines: Arc::new(RwLock::new(HashMap::new())),
             class_index: Arc::new(RwLock::new(HashMap::new())),
+            fqn_index: Arc::new(RwLock::new(HashMap::new())),
             classmap: Arc::new(RwLock::new(HashMap::new())),
             stub_index: stubs::build_stub_class_index(),
             stub_function_index: stubs::build_stub_function_index(),
@@ -458,6 +467,7 @@ impl Backend {
             global_functions: Arc::clone(&self.global_functions),
             global_defines: Arc::clone(&self.global_defines),
             class_index: Arc::clone(&self.class_index),
+            fqn_index: Arc::clone(&self.fqn_index),
             classmap: Arc::clone(&self.classmap),
             stub_index: self.stub_index.clone(),
             resolved_class_cache: Arc::clone(&self.resolved_class_cache),

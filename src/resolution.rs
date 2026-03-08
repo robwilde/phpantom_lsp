@@ -201,6 +201,22 @@ impl Backend {
             .write()
             .insert(uri.to_owned(), file_namespace);
 
+        // Populate the fqn_index so that `find_class_in_ast_map` can
+        // resolve these classes via O(1) hash lookup.
+        {
+            let mut fqn_idx = self.fqn_index.write();
+            for cls in &classes {
+                if cls.name.starts_with("__anonymous@") {
+                    continue;
+                }
+                let fqn = match &cls.file_namespace {
+                    Some(ns) if !ns.is_empty() => format!("{}\\{}", ns, cls.name),
+                    _ => cls.name.clone(),
+                };
+                fqn_idx.insert(fqn, cls.clone());
+            }
+        }
+
         // Selectively invalidate the resolved-class cache for the
         // classes defined in this file.  Loading a new file from disk
         // (classmap, PSR-4, stubs) should not nuke cached resolutions

@@ -76,11 +76,11 @@ parallel file processing.
 | 76 | Inline Variable | Medium | Code Actions | [actions.md §7](todo/actions.md#7-inline-variable) |
 | 77 | Extract Variable | Medium | Code Actions | [actions.md §8](todo/actions.md#8-extract-variable) |
 | 78 | Inline Function/Method | High | Code Actions | [actions.md §9](todo/actions.md#9-inline-functionmethod) |
-| 82 | FQN secondary index for `find_class_in_ast_map` | Low | Performance | [performance.md §1](todo/performance.md#1-fqn-secondary-index-for-find_class_in_ast_map) |
 | 84 | `HashSet` dedup in inheritance merging | Low | Performance | [performance.md §4](todo/performance.md#4-hashset-dedup-in-inheritance-merging) |
 | 87 | Reference-counted `ClassInfo` (`Arc<ClassInfo>`) | Medium | Performance | [performance.md §2](todo/performance.md#2-reference-counted-classinfo-arcclassinfo) |
 | 88 | Early-exit and `Cow` return in `apply_substitution` | Low | Performance | [performance.md §7](todo/performance.md#7-recursive-string-substitution-in-apply_substitution) |
 | 90 | Lazy autoload file indexing | Medium | Indexing | [indexing.md §2.5](todo/indexing.md#phase-25-lazy-autoload-file-indexing) |
+| 91 | Non-Composer function/constant discovery | Low | Indexing | [indexing.md §2.6](todo/indexing.md#phase-26-non-composer-function-and-constant-discovery) |
 
 ---
 
