@@ -537,6 +537,44 @@ pub(super) fn emit_type_spans(
         return;
     }
 
+    // ── Skip string literals ────────────────────────────────────────
+    // PHPStan conditional return types allow literal strings as the
+    // condition value, e.g. `($sig is "foo" ? A : B)`.  These are not
+    // class names and must not produce ClassReference spans.
+    if (type_name.starts_with('"') && type_name.ends_with('"'))
+        || (type_name.starts_with('\'') && type_name.ends_with('\''))
+    {
+        return;
+    }
+
+    // ── Skip numeric literals ───────────────────────────────────────
+    // Literal integers/floats (e.g. `123`, `-1`, `3.14`) can appear in
+    // conditional types and const expressions.  They are not class names.
+    if type_name
+        .strip_prefix('-')
+        .unwrap_or(type_name)
+        .starts_with(|c: char| c.is_ascii_digit())
+    {
+        return;
+    }
+
+    // ── Strip PHPStan variance annotations ──────────────────────────
+    // Generic type arguments may carry a variance prefix, e.g.
+    // `Collection<int, covariant array{customer: Customer}>`.
+    // Strip the prefix and adjust the offset so the underlying type is
+    // processed correctly.
+    let (type_name, extra_offset) = if let Some(rest) = type_name.strip_prefix("covariant ") {
+        (rest, extra_offset + "covariant ".len() as u32)
+    } else if let Some(rest) = type_name.strip_prefix("contravariant ") {
+        (rest, extra_offset + "contravariant ".len() as u32)
+    } else {
+        (type_name, extra_offset)
+    };
+
+    if type_name.is_empty() {
+        return;
+    }
+
     // Handle `$this` as a self-reference (equivalent to `static`).
     if type_name == "$this" {
         let start = token_file_offset + extra_offset;

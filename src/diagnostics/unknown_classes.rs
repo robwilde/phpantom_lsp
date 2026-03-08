@@ -855,4 +855,145 @@ mod tests {
             diags.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
     }
+
+    #[test]
+    fn no_diagnostic_for_string_literal_in_conditional_return() {
+        let backend = Backend::new_test();
+        let uri = "file:///test.php";
+        let content = concat!(
+            "<?php\n",
+            "namespace App;\n",
+            "\n",
+            "class Mapper {\n",
+            "    /**\n",
+            "     * @return ($signature is \"foo\" ? Pen : Marker)\n",
+            "     */\n",
+            "    public function map(string $signature): Pen|Marker {\n",
+            "        return new Pen();\n",
+            "    }\n",
+            "}\n",
+            "class Pen {}\n",
+            "class Marker {}\n",
+        );
+
+        let diags = collect(&backend, uri, content);
+        assert!(
+            !diags.iter().any(|d| d.message.contains("\"foo\"")),
+            "should not flag string literal '\"foo\"' as unknown class, got: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn no_diagnostic_for_single_quoted_literal_in_conditional_return() {
+        let backend = Backend::new_test();
+        let uri = "file:///test.php";
+        let content = concat!(
+            "<?php\n",
+            "namespace App;\n",
+            "\n",
+            "class Mapper {\n",
+            "    /**\n",
+            "     * @return ($sig is 'bar' ? Pen : Marker)\n",
+            "     */\n",
+            "    public function map(string $sig): Pen|Marker {\n",
+            "        return new Pen();\n",
+            "    }\n",
+            "}\n",
+            "class Pen {}\n",
+            "class Marker {}\n",
+        );
+
+        let diags = collect(&backend, uri, content);
+        assert!(
+            !diags.iter().any(|d| d.message.contains("'bar'")),
+            "should not flag single-quoted literal as unknown class, got: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn no_diagnostic_for_numeric_literal_in_conditional_return() {
+        let backend = Backend::new_test();
+        let uri = "file:///test.php";
+        let content = concat!(
+            "<?php\n",
+            "namespace App;\n",
+            "\n",
+            "class Mapper {\n",
+            "    /**\n",
+            "     * @return ($count is 0 ? EmptyList : FullList)\n",
+            "     */\n",
+            "    public function get(int $count): EmptyList|FullList {\n",
+            "        return new EmptyList();\n",
+            "    }\n",
+            "}\n",
+            "class EmptyList {}\n",
+            "class FullList {}\n",
+        );
+
+        let diags = collect(&backend, uri, content);
+        assert!(
+            !diags.iter().any(|d| d.message.contains("0")),
+            "should not flag numeric literal as unknown class, got: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn no_diagnostic_for_covariant_variance_annotation() {
+        let backend = Backend::new_test();
+        let uri = "file:///test.php";
+        let content = concat!(
+            "<?php\n",
+            "namespace App;\n",
+            "\n",
+            "class Collection {}\n",
+            "class Customer {}\n",
+            "class Contact {}\n",
+            "\n",
+            "class Repo {\n",
+            "    /**\n",
+            "     * @return Collection<int, covariant array{customer: Customer, contact: Contact|null}>\n",
+            "     */\n",
+            "    public function getAll(): Collection {\n",
+            "        return new Collection();\n",
+            "    }\n",
+            "}\n",
+        );
+
+        let diags = collect(&backend, uri, content);
+        assert!(
+            !diags.iter().any(|d| d.message.contains("covariant")),
+            "should not flag 'covariant array' as unknown class, got: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn no_diagnostic_for_contravariant_variance_annotation() {
+        let backend = Backend::new_test();
+        let uri = "file:///test.php";
+        let content = concat!(
+            "<?php\n",
+            "namespace App;\n",
+            "\n",
+            "class Handler {}\n",
+            "\n",
+            "class Processor {\n",
+            "    /**\n",
+            "     * @param Consumer<contravariant Handler> $consumer\n",
+            "     */\n",
+            "    public function run($consumer): void {}\n",
+            "}\n",
+            "class Consumer {}\n",
+        );
+
+        let diags = collect(&backend, uri, content);
+        assert!(
+            !diags.iter().any(|d| d.message.contains("contravariant")),
+            "should not flag 'contravariant Handler' as unknown class, got: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
 }
