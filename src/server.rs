@@ -18,7 +18,10 @@ use std::sync::Arc;
 
 use tower_lsp::LanguageServer;
 use tower_lsp::jsonrpc::Result;
-use tower_lsp::lsp_types::request::{GotoImplementationParams, GotoImplementationResponse};
+use tower_lsp::lsp_types::request::{
+    GotoImplementationParams, GotoImplementationResponse, GotoTypeDefinitionParams,
+    GotoTypeDefinitionResponse,
+};
 use tower_lsp::lsp_types::*;
 
 use crate::Backend;
@@ -73,6 +76,7 @@ impl LanguageServer for Backend {
                 )),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 definition_provider: Some(OneOf::Left(true)),
+                type_definition_provider: Some(TypeDefinitionProviderCapability::Simple(true)),
                 implementation_provider: Some(ImplementationProviderCapability::Simple(true)),
                 references_provider: Some(OneOf::Left(true)),
                 document_highlight_provider: Some(OneOf::Left(true)),
@@ -314,6 +318,42 @@ impl LanguageServer for Backend {
                 }
                 if !locations.is_empty() {
                     return Ok(Some(GotoImplementationResponse::Array(locations)));
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    async fn goto_type_definition(
+        &self,
+        params: GotoTypeDefinitionParams,
+    ) -> Result<Option<GotoTypeDefinitionResponse>> {
+        let uri = params
+            .text_document_position_params
+            .text_document
+            .uri
+            .to_string();
+        let position = params.text_document_position_params.position;
+
+        let content = self.get_file_content(&uri);
+
+        if let Some(content) = content {
+            let result = crate::util::catch_panic_unwind_safe(
+                "goto_type_definition",
+                &uri,
+                Some(position),
+                || self.resolve_type_definition(&uri, &content, position),
+            );
+
+            if let Some(Some(locations)) = result {
+                if locations.len() == 1 {
+                    return Ok(Some(GotoTypeDefinitionResponse::Scalar(
+                        locations.into_iter().next().unwrap(),
+                    )));
+                }
+                if !locations.is_empty() {
+                    return Ok(Some(GotoTypeDefinitionResponse::Array(locations)));
                 }
             }
         }

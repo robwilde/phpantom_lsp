@@ -260,6 +260,33 @@ impl Backend {
                 continue;
             }
 
+            // ── Quick check on pre-resolved base classes ────────────────
+            // `resolve_target_classes` already returns fully-resolved
+            // classes in many code paths (e.g. `type_hint_to_classes`
+            // calls `resolve_class_fully` and injects model-specific
+            // scope methods onto Eloquent Builders).  Check the member
+            // on these classes FIRST, before re-resolving through the
+            // cache.  The cache is keyed by bare FQN and may hold a
+            // stale entry that lacks context-specific virtual members
+            // (e.g. Builder scope methods that depend on the concrete
+            // model type).  Checking here avoids false positives when
+            // the cache and the resolver disagree.
+            if base_classes
+                .iter()
+                .any(|c| has_magic_method_for_access(c, is_static, is_method_call))
+            {
+                continue;
+            }
+            if base_classes.iter().any(|c| c.name == "stdClass") {
+                continue;
+            }
+            if base_classes
+                .iter()
+                .any(|c| member_exists(c, member_name, is_static, is_method_call))
+            {
+                continue;
+            }
+
             // ── Fully resolve each class (inheritance + virtual members) ─
             // Synthetic classes like `__object_shape` already carry all
             // their members and must NOT go through the cache (every
@@ -2665,6 +2692,154 @@ function helper(mixed $value): void {
         assert!(
             diags.is_empty(),
             "No diagnostics expected for mixed parameter member access, got: {:?}",
+            diags,
+        );
+    }
+
+    // ── Bug #1: type alias array shape object values ────────────────────
+
+    /// When a method returns a `@phpstan-type` alias that expands to an
+    /// array shape containing object values, accessing a method on the
+    /// object value should NOT produce a diagnostic.
+    #[test]
+    fn no_diagnostic_for_type_alias_array_shape_object_value() {
+        let backend = Backend::new_test();
+        let uri = "file:///test.php";
+        let content = r#"<?php
+class Pen {
+    public function write(): void {}
+}
+
+/**
+ * @phpstan-type UserData array{name: string, email: string, pen: Pen}
+ */
+class TypeAliasDemo {
+    /** @return UserData */
+    public function getUserData(): array {
+        return ['name' => 'Alice', 'email' => 'alice@example.com', 'pen' => new Pen()];
+    }
+
+    public function demo(): void {
+        $data = $this->getUserData();
+        $data['pen']->write();
+    }
+}
+"#;
+        let diags = collect(&backend, uri, content);
+        assert!(
+            diags.is_empty(),
+            "No diagnostics expected for type alias array shape object value method, got: {:?}",
+            diags,
+        );
+    }
+
+    /// Same as above but with multiple type aliases and nested object
+    /// values in the shapes.
+    #[test]
+    fn no_diagnostic_for_multiple_type_alias_object_values() {
+        let backend = Backend::new_test();
+        let uri = "file:///test.php";
+        let content = r#"<?php
+class User {
+    public function getEmail(): string { return ''; }
+}
+
+class Pen {
+    public function write(): void {}
+}
+
+/**
+ * @phpstan-type UserData array{name: string, pen: Pen}
+ * @phpstan-type StatusInfo array{code: int, owner: User}
+ */
+class Demo {
+    /** @return UserData */
+    public function getUserData(): array { return []; }
+
+    /** @return StatusInfo */
+    public function getStatus(): array { return []; }
+
+    public function demo(): void {
+        $data = $this->getUserData();
+        $data['pen']->write();
+
+        $status = $this->getStatus();
+        $status['owner']->getEmail();
+    }
+}
+"#;
+        let diags = collect(&backend, uri, content);
+        assert!(
+            diags.is_empty(),
+            "No diagnostics expected for type alias object values, got: {:?}",
+            diags,
+        );
+    }
+
+    // ── Bug #2: inline array-element function calls ─────────────────────
+
+    /// When an array-element function like `end()` is called inline as
+    /// the subject of a member access, the diagnostic should resolve the
+    /// element type from the array argument's generic annotation, not
+    /// fall back to the native `mixed|false` return type.
+    #[test]
+    fn no_diagnostic_for_inline_array_element_function_call() {
+        let backend = Backend::new_test();
+        let uri = "file:///test.php";
+        let content = r#"<?php
+class Pen {
+    public function write(): void {}
+}
+
+class Container {
+    /** @var array<int, Pen> */
+    public array $members = [];
+}
+
+function demo(): void {
+    $src = new Container();
+    end($src->members)->write();
+}
+"#;
+        let diags = collect(&backend, uri, content);
+        assert!(
+            diags.is_empty(),
+            "No diagnostics expected for end() inline call with generic array, got: {:?}",
+            diags,
+        );
+    }
+
+    // ── Bug #3: Builder scope chain (pre-resolved base class check) ─────
+
+    /// When `resolve_target_classes` returns a fully-resolved class that
+    /// already has the member (e.g. Builder with injected scope methods),
+    /// the diagnostic should check the pre-resolved class first before
+    /// re-resolving through the cache.  This tests the quick-check path
+    /// that prevents cache staleness from causing false positives.
+    #[test]
+    fn no_diagnostic_when_member_exists_on_pre_resolved_base_class() {
+        let backend = Backend::new_test();
+        let uri = "file:///test.php";
+        let content = r#"<?php
+class Pen {
+    public function write(): void {}
+    public function erase(): void {}
+}
+
+class Demo {
+    /** @return Pen */
+    public function getPen(): Pen { return new Pen(); }
+
+    public function demo(): void {
+        $this->getPen()->write();
+        $this->getPen()->erase();
+    }
+}
+"#;
+        let diags = collect(&backend, uri, content);
+        assert!(
+            diags.is_empty(),
+            "No diagnostics expected when member exists on resolved class, got: {:?}",
             diags,
         );
     }

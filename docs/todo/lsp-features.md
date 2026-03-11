@@ -412,39 +412,6 @@ then the full `if` block, then the enclosing method).
 
 ---
 
-## 14. Type Definition (`textDocument/typeDefinition`)
-**Impact: Medium · Effort: Low**
-
-"Go to Type Definition" jumps from a variable or expression to the
-class of its resolved type, rather than to the definition site. For
-example, if `$user` is typed as `User`, go-to-definition jumps to the
-`$user = ...` assignment, while go-to-type-definition jumps to the
-`User` class declaration.
-
-The variable type resolution infrastructure already exists. The handler
-resolves the variable's type (or the expression type for property
-accesses and method calls), strips nullability and generic parameters,
-and looks up the class definition location.
-
-**Implementation:**
-
-1. **Register the capability** — set `type_definition_provider:
-   Some(TypeDefinitionProviderCapability::Simple(true))` in
-   `ServerCapabilities`.
-
-2. **Handler:** Given a position:
-   - If the symbol under the cursor is a variable, resolve its type via
-     the existing variable resolution pipeline.
-   - If it's a property access or method call, resolve the subject type.
-   - Strip `?`, `|null`, and generic parameters from the resolved type
-     string to get the base class name.
-   - Look up the class via `find_or_load_class` and return its
-     definition location.
-   - For union types, return multiple locations (one per class in the
-     union).
-
----
-
 ## 15. Document Links (`textDocument/documentLink`)
 **Impact: Low-Medium · Effort: Low**
 

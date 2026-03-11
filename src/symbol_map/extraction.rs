@@ -2207,7 +2207,16 @@ fn format_first_class_arg(args: &TokenSeparatedSequence<'_, Argument<'_>>) -> St
                     return format!("new {}()", class_text);
                 }
             }
-            _ => {}
+            // Any other expression (property access, method calls,
+            // static access, array access, etc.) — delegate to the
+            // general subject text formatter so that callers like
+            // `ARRAY_ELEMENT_FUNCS` resolution see the full argument.
+            _ => {
+                let text = expr_to_subject_text(arg_expr);
+                if !text.is_empty() {
+                    return text;
+                }
+            }
         }
     }
     String::new()

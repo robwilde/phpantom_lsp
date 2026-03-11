@@ -193,6 +193,31 @@ Variable go-to-definition (`$var` → jump to definition) uses two layers:
 1. **Symbol map** (`var_defs`): the primary path. Finds the most recent `VarDefSite` before the cursor within the enclosing scope. When the cursor is physically on a definition token (parameter, foreach binding, catch variable), it returns `None` so the caller can fall through to type-hint resolution.
 2. **AST-based search** (`resolve_variable_definition_ast`): parses the file and walks the enclosing scope to find the definition site. Handles destructuring (`[$a, $b] = ...`, `list($a, $b) = ...`) and nested scopes correctly. Used as a fallback when the symbol map doesn't have a match. Returns `None` when the AST parse fails.
 
+## Go-to-Type-Definition Architecture
+
+"Go to Type Definition" (`textDocument/typeDefinition`) jumps from a symbol to the class declaration of its **resolved type**, rather than to the definition site. For example, if `$user` is typed as `User`, go-to-definition jumps to the `$user = ...` assignment, while go-to-type-definition jumps to `class User { … }`.
+
+The handler (`definition/type_definition.rs`) reuses the same symbol-map lookup as go-to-definition and the same type-resolution pipelines as hover and completion:
+
+1. **Symbol map lookup.** Convert the cursor position to a byte offset and binary-search the symbol map (same as go-to-definition, including the offset-1 retry for end-of-token cursors).
+
+2. **Type resolution by symbol kind:**
+
+   | `SymbolKind` | Resolution path |
+   |---|---|
+   | `Variable` | `resolve_variable_type_string` (type-string path) with fallback to `resolve_variable_types` (ClassInfo path). `$this` resolves to the enclosing class. |
+   | `MemberAccess` | `resolve_target_classes` finds the subject's class, then the method's `return_type` or the property's `type_hint` is extracted. `self`/`static`/`$this` in return types are replaced with the owning class name. |
+   | `SelfStaticParent` | `self`/`static` resolve to the enclosing class; `parent` resolves to the parent class. |
+   | `ClassReference` | The type is the class itself. |
+   | `FunctionCall` | The function's `return_type` is extracted. |
+   | `ClassDeclaration`, `MemberDeclaration`, `ConstantReference` | No type definition target; returns `None`. |
+
+3. **Type string to class names.** `extract_class_names_from_type_string` splits union types at depth-0 `|` separators, strips `?` (nullable), generic parameters (`<…>`), array shapes (`{…}`), and trailing `[]`. Scalar types (`int`, `string`, `array`, `void`, `mixed`, `bool`, `float`, `null`, `false`, `true`, `never`, `callable`, `iterable`, `resource`, `object`) are excluded since they have no user-navigable declaration.
+
+4. **Class name to location.** Each surviving class name is resolved via `resolve_class_reference` (the same function go-to-definition uses for class references), which tries same-file AST lookup, cross-file `class_index` + `ast_map`, Composer classmap, PSR-4, and template parameter fallback. Duplicate locations are deduplicated.
+
+For union types, the handler returns multiple locations (one per non-scalar class in the union), which editors display as a peek list.
+
 ## Signature Help Architecture
 
 Signature help shows parameter hints when the cursor is inside the parentheses

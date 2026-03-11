@@ -285,7 +285,7 @@ impl Backend {
     /// When `is_fqn` is `true`, the name is already fully-qualified
     /// (the original PHP source used a leading `\`) and should be used
     /// as-is without namespace resolution.
-    fn resolve_class_reference(
+    pub(super) fn resolve_class_reference(
         &self,
         uri: &str,
         content: &str,

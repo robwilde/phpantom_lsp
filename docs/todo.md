@@ -62,7 +62,6 @@ feature surface grows.
 | 20 | Workspace Symbols (`workspace/symbol`) | Low-Medium | LSP Features | [lsp-features.md §5](todo/lsp-features.md#5-workspace-symbols-workspacesymbol) |
 | 21 | Folding Ranges (`textDocument/foldingRange`) | Low | LSP Features | [lsp-features.md §12](todo/lsp-features.md#12-folding-ranges-textdocumentfoldingrange) |
 | 22 | Selection Ranges (`textDocument/selectionRange`) | Low | LSP Features | [lsp-features.md §13](todo/lsp-features.md#13-selection-ranges-textdocumentselectionrange) |
-| 23 | Type Definition (`textDocument/typeDefinition`) | Low | LSP Features | [lsp-features.md §14](todo/lsp-features.md#14-type-definition-textdocumenttypedefinition) |
 | 81 | Work-done progress for GTI and Find References | Low | LSP Features | [lsp-features.md §18](todo/lsp-features.md#18-work-done-progress-for-gti-and-find-references) |
 | 101 | Argument count diagnostic | Low | Diagnostics | [diagnostics.md §7](todo/diagnostics.md#7-argument-count-diagnostic) |
 | 105 | Merged classmap + self-scan | Low | Indexing | [indexing.md §1.5](todo/indexing.md#phase-15-merged-classmap--self-scan) |

@@ -348,6 +348,19 @@ fn walk_array_segments_and_resolve(
 ) -> Option<Vec<ClassInfo>> {
     let mut current_type = raw_type.to_string();
 
+    // Expand type aliases before walking segments.  The raw type may
+    // be an alias name like `UserData` that resolves to
+    // `array{name: string, pen: Pen}`.  Without expansion the
+    // segment walk would fail to extract shape values.
+    if let Some(expanded) = crate::completion::type_resolution::resolve_type_alias(
+        &current_type,
+        current_class_name,
+        all_classes,
+        class_loader,
+    ) {
+        current_type = expanded;
+    }
+
     for seg in segments {
         match seg {
             BracketSegment::StringKey(key) => {
@@ -356,6 +369,19 @@ fn walk_array_segments_and_resolve(
             BracketSegment::ElementAccess => {
                 current_type = docblock::types::extract_generic_value_type(&current_type)?;
             }
+        }
+
+        // After each segment, the resulting type might itself be an
+        // alias (e.g. a shape value defined as another alias).
+        // Expand again so the next segment (or the final resolution)
+        // sees the concrete type.
+        if let Some(expanded) = crate::completion::type_resolution::resolve_type_alias(
+            &current_type,
+            current_class_name,
+            all_classes,
+            class_loader,
+        ) {
+            current_type = expanded;
         }
     }
 

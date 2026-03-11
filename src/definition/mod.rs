@@ -1,8 +1,9 @@
-/// Goto definition and go-to-implementation support.
+/// Goto definition, go-to-implementation, and go-to-type-definition support.
 ///
-/// This module contains the logic for resolving "go to definition" and
-/// "go to implementation" requests, allowing users to jump from a symbol
-/// reference to its definition or concrete implementations.
+/// This module contains the logic for resolving "go to definition",
+/// "go to implementation", and "go to type definition" requests, allowing
+/// users to jump from a symbol reference to its definition, concrete
+/// implementations, or the declaration of its resolved type.
 ///
 /// The [`point_location`] helper constructs a zero-width `Location`
 /// (start == end), which is the standard shape for "go to definition"
@@ -23,6 +24,14 @@
 ///   - **Method calls on interfaces/abstract classes**: jumps to the concrete
 ///     method implementations in all implementing/extending classes
 ///
+/// Supported symbols (type definition):
+///   - **Variables**: `$var` jumps to the class declaration of the resolved type
+///   - **Member access**: `$var->method()` jumps to the return type's class
+///   - **Properties**: `$var->prop` jumps to the property type's class
+///   - **`self`/`static`/`parent`/`$this`**: jumps to the enclosing or parent class
+///   - **Function calls**: `foo()` jumps to the return type's class
+///   - For union types, multiple locations are returned (one per class)
+///
 /// - [`resolve`]: Core entry points — word extraction, name resolution,
 ///   same-file / PSR-4 definition lookup, `self`/`static`/`parent` handling,
 ///   and standalone function definition resolution.
@@ -35,11 +44,15 @@
 /// - [`implementation`]: Go-to-implementation — finding concrete classes that
 ///   implement an interface or extend an abstract class, and locating the
 ///   concrete method definitions within those classes.
+/// - [`type_definition`]: Go-to-type-definition — resolving the type of a
+///   variable, expression, or member access, then jumping to the class
+///   declaration of that type.
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
 mod implementation;
 pub(crate) mod member;
 mod resolve;
+mod type_definition;
 mod variable;
 
 /// Build an LSP `Location` with a zero-width range (start == end).

@@ -3,8 +3,10 @@
 /**
  * PHP Showcase
  *
- * A single-file playground for every completion and go-to-definition feature.
- * Trigger completion after -> / :: / $, or Ctrl+Click for go-to-definition.
+ * A single-file playground for every completion, go-to-definition, and
+ * go-to-type-definition feature. Trigger completion after -> / :: / $,
+ * Ctrl+Click for go-to-definition, or use "Go to Type Definition" to
+ * jump to the class declaration of a variable's resolved type.
  *
  * Layout:
  *   1. DEMOS       — open any demo() method and try completion inside it
@@ -1683,6 +1685,39 @@ interface GtdColor { public function format(): string; }
 class GtdResult { public function label(): string { return 'ok'; } }
 class GtdNotFoundException extends \RuntimeException {}
 class GtdAccessException extends \RuntimeException {}
+
+
+// ── Go-to-Type-Definition ───────────────────────────────────────────────────
+// "Go to Type Definition" jumps to the *type's* class declaration, not the
+// variable's definition site. Compare with regular Go-to-Definition:
+//   • Go-to-Definition on $user   → jumps to the $user = ... assignment
+//   • Go-to-Type-Definition on $user → jumps to class User { ... }
+//
+// Try: place the cursor on $target, $result, or $pet below and invoke
+// "Go to Type Definition" (often bound to a secondary shortcut or
+// right-click menu). Union types produce a peek list with all classes.
+
+class GoToTypeDefinitionDemo
+{
+    public function demo(): void
+    {
+        $target = new GtdTarget();
+        $target;                                  // Type Definition → GtdTarget
+
+        $result = $this->getResult();
+        $result;                                  // Type Definition → GtdResult
+
+        $pet = $this->getPet();
+        $pet;                                     // Type Definition → GtdAlpha | GtdBeta (two locations)
+
+        $this;                                    // Type Definition → GoToTypeDefinitionDemo
+    }
+
+    public function getResult(): GtdResult { return new GtdResult(); }
+
+    /** @return GtdAlpha|GtdBeta */
+    public function getPet(): GtdAlpha|GtdBeta { return new GtdAlpha(); }
+}
 
 
 // ── Go-to-Implementation ────────────────────────────────────────────────────
