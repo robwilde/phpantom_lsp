@@ -33,6 +33,15 @@ Per-project configuration file for user preferences and optional features like d
 # Install phpstorm-stubs into the project for projects without Composer.
 # install = true
 
+# Override which PHP extension stubs are loaded.
+# When unset, PHPantom loads core + all commonly bundled extensions.
+# extensions = ["Core", "standard", "json", "mbstring", "curl", "redis"]
+
+[formatting]
+# External formatter to proxy. Auto-detected when unset.
+# tool = "php-cs-fixer"   # or "phpcbf" or "none"
+# timeout = 10000
+
 [diagnostics]
 # Enable or disable proxied diagnostic providers.
 # Each defaults to true when the corresponding tool is detected
@@ -67,11 +76,89 @@ When a key is unset, PHPantom will prompt the user. Once the user answers, PHPan
 
 ### `[stubs]`
 
-| Key       | Type | Default | Description                                       |
-|-----------|------|---------|---------------------------------------------------|
-| `install` | bool | unset   | Whether to install phpstorm-stubs for non-Composer projects |
+| Key          | Type         | Default     | Description                                       |
+|--------------|--------------|-------------|---------------------------------------------------|
+| `install`    | bool         | unset       | Whether to install phpstorm-stubs for non-Composer projects |
+| `extensions` | string array | auto-detect | Which PHP extension stubs to load (see below)     |
 
-Same prompt-and-remember behaviour as the `[composer]` keys.
+Same prompt-and-remember behaviour as the `[composer]` keys for `install`.
+
+#### Extension stub selection
+
+By default PHPantom loads stubs for PHP core and all bundled extensions
+(matching the set that ships enabled in a stock PHP build), plus any
+extensions declared in the project's `composer.json`. The `extensions`
+key lets the user override this entirely.
+
+##### Auto-detection from `composer.json`
+
+When `extensions` is unset, PHPantom reads the `require` and
+`require-dev` sections of the project's `composer.json` and collects
+every `ext-*` key. These are added on top of the default set.
+
+For example, if `composer.json` contains:
+
+```json
+{
+    "require": {
+        "php": "^8.2",
+        "ext-redis": "*",
+        "ext-imagick": "*"
+    }
+}
+```
+
+PHPantom loads the default bundled extensions plus `redis` and
+`imagick` stubs automatically. No `.phpantom.toml` configuration
+needed.
+
+Only `composer.json` is read, not `composer.lock`. Transitive
+`ext-*` requirements pulled in by dependencies are intentionally
+ignored. Those extensions are used by vendor code, which PHPantom
+already skips for diagnostics and does not complete into. If the
+user's own code references an extension without declaring it in
+`composer.json`, the correct fix is to add the `ext-*` requirement
+(or override via `[stubs] extensions` in `.phpantom.toml`).
+
+##### Manual override
+
+```toml
+[stubs]
+extensions = [
+  "Core", "standard", "json", "mbstring", "curl",
+  "redis", "imagick", "mongodb",
+]
+```
+
+When `extensions` is set, only the listed extensions are loaded.
+The auto-detection from `composer.json` is skipped entirely. This
+is useful when the user wants full control or when the project
+has no `composer.json`.
+
+The available extension names match the directory names in
+phpstorm-stubs (e.g. `"redis"`, `"imagick"`, `"swoole"`, `"mongodb"`).
+An unrecognised name is silently ignored with a log message.
+
+**Implementation note:** The build script already embeds all stub files.
+Filtering happens at runtime: when building the stub class/function
+indices, skip entries whose source file path does not start with one
+of the enabled extension directories. This is a simple string prefix
+check on the relative path from `STUB_CLASS_MAP`.
+
+### `[formatting]`
+
+Controls formatting proxy behaviour. PHPantom does not ship a formatter;
+it proxies requests to an external tool.
+
+| Key       | Type   | Default     | Description                                        |
+|-----------|--------|-------------|----------------------------------------------------|
+| `tool`    | string | auto-detect | `"php-cs-fixer"`, `"phpcbf"`, or `"none"`          |
+| `timeout` | int    | 10000       | Maximum runtime in milliseconds                    |
+
+"Auto-detect" means PHPantom checks for `vendor/bin/php-cs-fixer` first,
+then `vendor/bin/phpcbf`, then the tools on `$PATH`. The first one found
+is used. Setting `tool = "none"` disables formatting entirely (PHPantom
+does not register the capability).
 
 ### `[diagnostics]`
 

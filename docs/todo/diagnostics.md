@@ -272,3 +272,148 @@ For the non-optimized classmap case, offer action buttons:
 - Log the detection result to the output panel regardless (already done
   for the "Loaded N classmap entries" message, just add context when
   zero user classes are found).
+
+---
+
+## 8. Argument count diagnostic
+**Impact: Medium · Effort: Low**
+
+Flag function and method calls that pass too few or too many arguments.
+This is cheap to implement because signature help already resolves the
+callee's parameter list for every call site, and the symbol map records
+`CallSite` entries with comma offsets that give us the argument count.
+
+### Behaviour
+
+| Scenario | Severity | Message |
+|---|---|---|
+| `strlen()` (0 args, expects 1) | Error | Expected 1 argument, got 0 |
+| `strlen('a', 'b')` (2 args, expects 1) | Error | Expected 1 argument, got 2 |
+| `array_map($fn)` (1 arg, expects at least 2) | Error | Expected at least 2 arguments, got 1 |
+| Variadic function with too few non-variadic args | Error | Expected at least N arguments, got M |
+| Too many args but last param is variadic | Silent | Variadic accepts unlimited trailing args |
+
+### What we already have
+
+- `CallSite` in the symbol map stores `comma_offsets`, so
+  `comma_offsets.len() + 1` gives the argument count (or 0 if
+  `args_start == args_end` after trimming whitespace).
+- `resolve_call_expression` in `call_resolution.rs` resolves a
+  `CallSite` to a `FunctionInfo` or `MethodInfo` with full parameter
+  lists.
+- The signature help handler already does this resolution on every
+  keystroke inside parentheses.
+
+### Implementation
+
+1. Walk `symbol_map.call_sites` for the file.
+2. For each call site, resolve to `FunctionInfo` or `MethodInfo`.
+3. Count required parameters (no default value, not variadic).
+4. Count total non-variadic parameters. Check if last param is variadic.
+5. Compare against the call-site argument count.
+6. Emit Error-severity diagnostics on the opening parenthesis span.
+
+### Suppression
+
+- Skip calls to functions/methods that cannot be resolved (we already
+  have an unknown-function diagnostic for that).
+- Skip `__call` / `__callStatic` magic methods (arbitrary signatures).
+- Skip calls that use argument unpacking (`...$args`) since the
+  actual count is unknown at static analysis time.
+
+### Debugging value
+
+Argument count errors frequently reveal type engine bugs. When our
+resolution returns the wrong overload, the argument count won't match,
+making the diagnostic a cheap canary for resolution correctness.
+
+---
+
+## 9. Unreachable code diagnostic
+**Impact: Low-Medium · Effort: Low**
+
+Dim code that appears after unconditional control flow exits:
+`return`, `throw`, `exit`, `die`, `continue`, `break`. This is a
+Phase 1 (fast) diagnostic since it requires only AST structure, not
+type resolution.
+
+### Behaviour
+
+| Scenario | Rendering |
+|---|---|
+| Code after `return $x;` in same block | Dimmed (DiagnosticTag::UNNECESSARY) |
+| Code after `throw new \Exception()` | Dimmed |
+| Code after `exit(1)` or `die()` | Dimmed |
+| Code after `continue` or `break` in a loop | Dimmed |
+| Code after `if (...) { return; } else { return; }` | Dimmed (both branches exit) |
+
+Severity: **Hint** with `DiagnosticTag::UNNECESSARY` so editors dim
+the text rather than underlining it. This matches how unused imports
+are rendered.
+
+### Implementation
+
+Walk the AST statement list. After encountering a statement that
+unconditionally exits the current scope (return, throw, expression
+statement containing `exit`/`die`), mark all subsequent statements in
+the same block as unreachable. The span covers from the start of the
+first unreachable statement to the end of the last statement in the
+block.
+
+Phase 1 only handles the simple single-block case. Whole-branch
+analysis (both if/else branches exit) is a future refinement.
+
+### Debugging value
+
+When our type engine silently resolves a method to a `never` return
+type (e.g. an incorrectly resolved overload), unreachable code after
+the call becomes visible, signalling the bug.
+
+---
+
+## 10. Implementation error diagnostic
+**Impact: Medium · Effort: Medium**
+
+Flag concrete classes that fail to implement all required methods from
+their interfaces or abstract parents. PHPantom already has the
+"implement missing methods" code action that detects this condition.
+Surfacing it as a diagnostic makes the problem visible without the
+user needing to trigger quick-fix.
+
+### Behaviour
+
+| Scenario | Severity | Message |
+|---|---|---|
+| Class implements interface but misses a method | Error | Class 'Foo' must implement method 'bar()' from interface 'Baz' |
+| Class extends abstract class but misses abstract method | Error | Class 'Foo' must implement abstract method 'bar()' from class 'AbstractBaz' |
+| Non-abstract class has abstract method | Error | Non-abstract class 'Foo' contains abstract method 'bar()' |
+
+### What we already have
+
+The `collect_implement_methods_actions` function in
+`code_actions/implement_methods.rs` already:
+1. Loads the class and its full inheritance chain.
+2. Collects all abstract methods from interfaces and abstract parents.
+3. Checks which ones are missing from the concrete class.
+
+The diagnostic can reuse this exact logic, just emitting a diagnostic
+instead of (or in addition to) offering a code action.
+
+### Implementation
+
+1. In the Phase 2 diagnostic collector, for each `ClassDeclaration`
+   span in the symbol map, load the class via `find_or_load_class`.
+2. Skip abstract classes, interfaces, traits, and enums.
+3. Run the same missing-method detection as the code action.
+4. Emit an Error-severity diagnostic on the class name span for each
+   missing method. Group into a single diagnostic with all missing
+   method names listed if there are multiple.
+5. Pair the diagnostic with the existing "implement missing methods"
+   code action so the quick-fix button appears inline.
+
+### Debugging value
+
+When our inheritance resolution misses a parent class or trait, the
+implementation error diagnostic fires unexpectedly (flagging methods
+that are actually implemented via a trait that we failed to resolve).
+This makes inheritance resolution bugs immediately visible.

@@ -594,3 +594,104 @@ progress tells the user "I'm working on it." Partial result streaming
 item is much simpler and provides immediate value without the
 complexity of streaming partial results. §6 can build on top of it
 later.
+
+---
+
+## 19. Formatting proxy (`textDocument/formatting`, `textDocument/rangeFormatting`)
+**Impact: Medium · Effort: Medium**
+
+PHPantom does not ship a formatter and should not build one. Instead,
+register as a formatting provider and proxy formatting requests to an
+external tool installed in the project.
+
+### Supported tools (in priority order)
+
+1. **php-cs-fixer** — the most widely used PHP formatter. Detected via
+   `vendor/bin/php-cs-fixer` or `php-cs-fixer` on `$PATH`.
+2. **phpcbf** (PHP_CodeSniffer fixer) — detected via
+   `vendor/bin/phpcbf` or `phpcbf` on `$PATH`.
+
+When both are available, prefer php-cs-fixer. The user can override
+the choice via `.phpantom.toml`:
+
+```toml
+[formatting]
+tool = "php-cs-fixer"   # or "phpcbf" or "none"
+```
+
+Setting `tool = "none"` disables formatting entirely (PHPantom does
+not register the capability).
+
+### Document formatting
+
+1. Write the file content to a temp file (or use `--dry-run --diff`
+   to avoid touching the original).
+2. Run `php-cs-fixer fix --using-cache=no --quiet <tempfile>` (or
+   `phpcbf --stdin-path=<uri> -` for phpcbf).
+3. Diff the result against the original and produce `TextEdit[]`.
+4. Return the edits to the client.
+
+For **range formatting**, php-cs-fixer does not natively support
+formatting a range. Two options:
+- Format the full file and filter the resulting edits to only those
+  that touch the requested range.
+- Skip range formatting registration if the tool does not support it.
+
+### Error handling
+
+- If the tool is not installed, do not register the formatting
+  capability at all. Log the detection result.
+- If the tool fails (non-zero exit, timeout), return an error
+  response. Do not silently return no edits.
+- Timeout: 10 seconds default, configurable via `.phpantom.toml`.
+
+### Configuration
+
+The `[formatting]` section in `.phpantom.toml`:
+
+| Key     | Type   | Default     | Description                              |
+|---------|--------|-------------|------------------------------------------|
+| `tool`  | string | auto-detect | `"php-cs-fixer"`, `"phpcbf"`, or `"none"` |
+| `timeout` | int  | 10000       | Maximum runtime in milliseconds          |
+
+---
+
+## 20. File rename on class rename
+**Impact: Medium · Effort: Medium**
+
+When a class, interface, trait, or enum is renamed and the file follows
+PSR-4 naming conventions (filename matches the class name), the file
+should be renamed to match the new class name.
+
+### Behaviour
+
+1. During `textDocument/rename` on a `ClassDeclaration`, after
+   building the normal text edits, check whether the definition file's
+   basename (without `.php`) matches the old class name.
+2. If it does, add a `DocumentChange::RenameFile` operation to the
+   `WorkspaceEdit` that renames the file to `NewClassName.php` in the
+   same directory.
+3. If the client's `workspace.workspaceEdit.resourceOperations`
+   capability does not include `rename`, fall back to text-only edits
+   (no file rename).
+
+### Namespace rename (future extension)
+
+When the user renames a namespace segment, all files under the
+corresponding PSR-4 directory could be moved to a new directory
+matching the new namespace. This is significantly more complex
+(directory creation, moving multiple files, updating all `namespace`
+declarations and `use` imports) and should be a separate item. For
+now, only single-class file renames are in scope.
+
+### Edge cases
+
+- **Multiple classes in one file.** Do not rename the file if it
+  contains more than one class/interface/trait/enum declaration.
+- **File doesn't match class name.** Do not rename (the project
+  may not follow PSR-4).
+- **Vendor files.** Already rejected by the existing vendor check.
+- **`DocumentChange` vs `changes`.** The `WorkspaceEdit` must switch
+  from the `changes` map to `documentChanges` array when file
+  operations are included, since `changes` does not support renames.
+  Check the client capability first.

@@ -17,14 +17,14 @@ with each step.
 |---|---|
 | [Type Inference](todo/type-inference.md) | Generic resolution, conditional return types, type narrowing, stub attribute handling |
 | [Completion](todo/completion.md) | Completion-specific improvements (enum return types, array shapes, expected values) |
-| [Diagnostics](todo/diagnostics.md) | Scalar member access errors, chain/return member diagnostics, unknown function errors, duplicate suppression, chain error propagation, deprecated rendering, unresolved PHPDoc types, suppression intelligence, composer warnings |
+| [Diagnostics](todo/diagnostics.md) | Scalar member access errors, chain/return member diagnostics, unknown function errors, duplicate suppression, chain error propagation, deprecated rendering, unresolved PHPDoc types, suppression intelligence, composer warnings, argument count, unreachable code, implementation errors |
 | [Code Actions](todo/actions.md) | Import class, remove unused imports, implement missing methods, null coalescing simplification, extract function, inline variable, extract variable, inline function/method, switch→match |
-| [LSP Features](todo/lsp-features.md) | Find references, document highlighting, document/workspace symbols, rename, code lens, inlay hints, PHPDoc generation, partial result streaming |
+| [LSP Features](todo/lsp-features.md) | Find references, document highlighting, document/workspace symbols, rename, code lens, inlay hints, PHPDoc generation, partial result streaming, formatting proxy, file rename on class rename |
 | [Signature Help](todo/signature-help.md) | Parameter descriptions, signature-level docs, default values, attribute/closure support |
 | [Laravel](todo/laravel.md) | Model property gaps, relationship methods, type narrowing, custom builders |
 | [Blade](todo/blade.md) | Preprocessor, component support, cross-file view intelligence |
 | [Bug Fixes](todo/bugs.md) | Incorrect behaviour that should be fixed regardless of feature priority |
-| [Configuration](todo/config.md) | Per-project `.phpantom.toml` file, PHP version override, diagnostic tool toggles, prompt-and-remember settings |
+| [Configuration](todo/config.md) | Per-project `.phpantom.toml` file, PHP version override, diagnostic tool toggles, prompt-and-remember settings, stub extension selection, formatting tool selection |
 | [Refactoring](todo/refactor.md) | Technical debt and cleanup tasks. Gate check between sprints: clear all items before starting the next sprint |
 | [Indexing](todo/indexing.md) | Self-generated classmap, staleness detection, parallel file processing, full background indexing, disk cache |
 | [External Stubs](todo/external-stubs.md) | Composer stub discovery, IDE-provided stub paths, GTD for built-in symbols, stub override priority, SPL overlay stubs |
@@ -71,6 +71,7 @@ Each one removes a reason someone might look elsewhere.
 | 23 | Type Definition (`textDocument/typeDefinition`) | Low | LSP Features | [lsp-features.md §14](todo/lsp-features.md#14-type-definition-textdocumenttypedefinition) |
 | 24 | PHPDoc block generation on `/**` | Medium | LSP Features | [lsp-features.md §3](todo/lsp-features.md#3-phpdoc-block-generation-on-) |
 | 81 | Work-done progress for GTI and Find References | Low | LSP Features | [lsp-features.md §18](todo/lsp-features.md#18-work-done-progress-for-gti-and-find-references) |
+| 99 | File rename on class rename | Medium | LSP Features | [lsp-features.md §20](todo/lsp-features.md#20-file-rename-on-class-rename) |
 
 **After Sprint 4:** PHPantom covers every commonly expected LSP feature
 and surpasses the field on type intelligence, generics, Laravel, and
@@ -100,11 +101,14 @@ deepens that lead and rounds out the remaining feature surface.
 | 39 | Simplify with null coalescing / null-safe operator (code action) | Medium | Code Actions | [actions.md §2](todo/actions.md#2-simplify-with-null-coalescing--null-safe-operator) |
 | 40 | Inlay hints (`textDocument/inlayHint`) | Medium | LSP Features | [lsp-features.md §9](todo/lsp-features.md#9-inlay-hints-textdocumentinlayhint) |
 | 91 | GTD for built-in symbols via project-level phpstorm-stubs | Low | External Stubs | [external-stubs.md §1](todo/external-stubs.md#phase-1-project-level-phpstorm-stubs-for-gtd) |
+| 100 | Formatting proxy (php-cs-fixer / phpcbf) | Medium | LSP Features | [lsp-features.md §19](todo/lsp-features.md#19-formatting-proxy-textdocumentformatting-textdocumentrangeformatting) |
+| 101 | Argument count diagnostic | Low | Diagnostics | [diagnostics.md §8](todo/diagnostics.md#8-argument-count-diagnostic) |
+| 102 | Implementation error diagnostic | Medium | Diagnostics | [diagnostics.md §10](todo/diagnostics.md#10-implementation-error-diagnostic) |
+| 103 | Stub extension selection (`[stubs] extensions`) | Low | Configuration | [config.md §stubs](todo/config.md#extension-stub-selection) |
 
 **After Sprint 5:** PHPantom has a complete, polished LSP feature set.
 Users moving to Zed/Neovim/Helix lose nothing on the intelligence side
-and gain 1000× faster startup. The remaining gaps are Blade and
-formatting (not our domain).
+and gain 1000× faster startup. The remaining gaps are Blade.
 
 ---
 
@@ -188,6 +192,7 @@ eventually but don't move the needle.
 |---|---|---|---|---|
 | 72 | Switch → match conversion | Medium | Code Actions | [actions.md §4](todo/actions.md#4-switch--match-conversion) |
 | 89 | Incremental text sync | Medium | Performance | [performance.md §8](todo/performance.md#8-incremental-text-sync) |
+| 104 | Unreachable code diagnostic | Low | Diagnostics | [diagnostics.md §9](todo/diagnostics.md#9-unreachable-code-diagnostic) |
 
 ### Performance long-tail
 
