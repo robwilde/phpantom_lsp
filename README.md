@@ -51,7 +51,6 @@ PHPantom focuses on deep type intelligence. Here's how it compares:
 - **Smart PHPDoc completion.** `@throws` detects uncaught exceptions in the method body, `@param` pre-fills from the signature, and tags are filtered to context and never suggested twice.
 - **Array shape inference.** Literal arrays offer key completion with no annotation. Nested shapes, spreads, and array functions like `array_map` preserve element types.
 - **Closure parameter inference.** `$users->map(fn($u) => $u->name)` infers `$u` as `User` from the collection's generic context.
-- **Generator body types.** `yield` and `$x = yield` resolve to the correct `TValue` and `TSend` from the generator's return annotation.
 - **Conditional return types.** PHPStan-style conditional `@return` types resolve to the concrete branch at each call site.
 - **Type aliases and shapes.** `@phpstan-type`, `@phpstan-import-type`, and `object{...}` shapes all resolve through to completions.
 - **Laravel Eloquent.** Relationships, scopes, accessors, casts, and Builder chains resolve end-to-end. No Larastan, no ide-helper, no database access required.

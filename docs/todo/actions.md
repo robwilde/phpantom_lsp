@@ -8,46 +8,14 @@ within the same impact tier.
 | **Impact** | **Critical**, **High**, **Medium-High**, **Medium**, **Low-Medium**, **Low** |
 | **Effort** | **Low** (≤ 1 day), **Medium** (2-5 days), **Medium-High** (1-2 weeks), **High** (2-4 weeks), **Very High** (> 1 month) |
 
-No quick fixes or refactoring suggestions exist today. No `codeActionProvider` in
-`ServerCapabilities`, no `textDocument/codeAction` handler, and no
-`WorkspaceEdit` generation infrastructure beyond trivial `TextEdit`s for
-use-statement insertion.
-
 **Refactoring code actions overview:** §3 (Extract Function), §7 (Inline
 Variable), §8 (Extract Variable), and §9 (Inline Function/Method) form
 the core refactoring toolkit. They share infrastructure for scope
 analysis, variable usage tracking, and `WorkspaceEdit` generation.
 
----
-
 ## 1. Implement missing abstract/interface methods
-**Impact: Medium · Effort: Medium**
 
-When a non-abstract class extends an abstract class or implements an
-interface but is missing required method implementations, offer a code
-action to generate stubs for all missing methods.
-
-### Behaviour
-
-- Detect the gap: resolve the full class hierarchy (already done by
-  `resolve_class_with_inheritance`), collect all abstract methods from
-  parent classes and all methods from implemented interfaces, subtract
-  the methods the class already defines.
-- Offer a code action: `Implement missing methods` (or list them
-  individually: `Implement Foo::bar`, `Implement Baz::qux`).
-- Generate method stubs at the end of the class body with:
-  - Correct visibility and static modifiers matching the interface/abstract declaration.
-  - Parameter names, type hints, and default values from the parent.
-  - Return type from the parent.
-  - PHPDoc block inherited from the parent (or `{@inheritDoc}`).
-  - Body: `throw new \RuntimeException('Not implemented');` or
-    `// TODO: Implement` — pick one convention.
-
-**Why this is a good first code action:** It exercises the full
-`codeActionProvider` → `WorkspaceEdit` → `TextEdit` pipeline without
-needing scope analysis or cross-file edits. The class hierarchy data
-is already fully resolved. This builds the infrastructure that Extract
-Function and other code actions depend on.
+No outstanding items. Shipped in the current release cycle.
 
 ---
 
@@ -157,7 +125,7 @@ variable X in this scope" as a natural byproduct.
 | Hover | "Resolve type at arbitrary position" — needed to type params |
 | Document Symbols (see `todo-lsp-features.md`) | AST range → symbol mapping — needed to find enclosing function and valid insertion points |
 | Find References (see `todo-lsp-features.md`) | Variable usage tracking across a scope — the same "which variables are used where" analysis |
-| Implement missing methods (§1) | Builds the code action + `WorkspaceEdit` plumbing |
+| Implement missing methods (§1, shipped) | Builds the code action + `WorkspaceEdit` plumbing |
 
 ---
 

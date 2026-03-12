@@ -51,16 +51,17 @@ feature surface grows.
 | 20 | Workspace Symbols (`workspace/symbol`) | Low-Medium | LSP Features | [lsp-features.md §5](todo/lsp-features.md#5-workspace-symbols-workspacesymbol) |
 | 21 | Folding Ranges (`textDocument/foldingRange`) | Low | LSP Features | [lsp-features.md §12](todo/lsp-features.md#12-folding-ranges-textdocumentfoldingrange) |
 | 22 | Selection Ranges (`textDocument/selectionRange`) | Low | LSP Features | [lsp-features.md §13](todo/lsp-features.md#13-selection-ranges-textdocumentselectionrange) |
+| 100 | Formatting proxy (`textDocument/formatting`) | Medium | LSP Features | [lsp-features.md §19](todo/lsp-features.md#19-formatting-proxy-textdocumentformatting-textdocumentrangeformatting) |
 | 81 | Work-done progress for GTI and Find References | Low | LSP Features | [lsp-features.md §18](todo/lsp-features.md#18-work-done-progress-for-gti-and-find-references) |
 | 101 | Argument count diagnostic | Low | Diagnostics | [diagnostics.md §7](todo/diagnostics.md#7-argument-count-diagnostic) |
 | 88 | Early-exit and `Cow` return in `apply_substitution` | Low | Performance | [performance.md §7](todo/performance.md#7-recursive-string-substitution-in-apply_substitution) |
 | 87 | Reference-counted `ClassInfo` (`Arc<ClassInfo>`) | Medium | Performance | [performance.md §2](todo/performance.md#2-reference-counted-classinfo-arcclassinfo) |
 
 **After Sprint 3:** PHPantom feels like a complete LSP to everyday
-users. Outline, breadcrumbs, workspace search, folding, and smart
-select all work. Argument count errors catch real bugs and serve as
-a canary for type engine correctness. No one says "it's missing X"
-for basic editing workflows.
+users. Outline, breadcrumbs, workspace search, folding, formatting,
+and smart select all work. Argument count errors catch real bugs and
+serve as a canary for type engine correctness. No one says "it's
+missing X" for basic editing workflows.
 
 ---
 
@@ -95,26 +96,25 @@ actions.
 ## Sprint 5 — Polish for office adoption
 
 These items close the gaps that PHPStorm and VS Code + Intelephense
-users at the office would notice. PHPDoc generation and formatting
-are the most common "where did that go?" moments. Inlay hints are
-high-visibility in VS Code. The implementation error diagnostic
-reuses existing code action logic and pairs with the quick-fix.
-File rename on class rename removes a friction point that
-Intelephense premium users expect.
+users at the office would notice. PHPDoc generation is the most
+common "where did that go?" moment. Inlay hints are high-visibility
+in VS Code. The implementation error diagnostic reuses existing code
+action logic and pairs with the quick-fix. File rename on class
+rename removes a friction point that Intelephense premium users
+expect.
 
 | # | Item | Effort | Domain | Doc Link |
 |---|---|---|---|---|
 | 24 | PHPDoc block generation on `/**` | Medium | LSP Features | [lsp-features.md §3](todo/lsp-features.md#3-phpdoc-block-generation-on-) |
-| 100 | Formatting proxy (php-cs-fixer / phpcbf) | Medium | LSP Features | [lsp-features.md §19](todo/lsp-features.md#19-formatting-proxy-textdocumentformatting-textdocumentrangeformatting) |
 | 40 | Inlay hints (`textDocument/inlayHint`) | Medium | LSP Features | [lsp-features.md §9](todo/lsp-features.md#9-inlay-hints-textdocumentinlayhint) |
 | 102 | Implementation error diagnostic | Medium | Diagnostics | [diagnostics.md §9](todo/diagnostics.md#9-implementation-error-diagnostic) |
 | 99 | File rename on class rename | Medium | LSP Features | [lsp-features.md §20](todo/lsp-features.md#20-file-rename-on-class-rename) |
 | 103 | Stub extension selection (`[stubs] extensions`) | Low | Configuration | [config.md §stubs](todo/config.md#extension-stub-selection) |
 
 **After Sprint 5:** PHPantom is ready for office colleagues. They
-get formatting, PHPDoc generation, inlay hints, and the diagnostics
-they're used to. Nobody switching from Intelephense (free or
-premium) feels like they lost more than they gained.
+get PHPDoc generation, inlay hints, and the diagnostics they're used
+to. Nobody switching from Intelephense (free or premium) feels like
+they lost more than they gained.
 
 ---
 
