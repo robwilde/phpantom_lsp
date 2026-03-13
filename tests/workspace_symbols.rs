@@ -762,3 +762,327 @@ fn query_finds_symbols_across_all_sources() {
         "expected MyWidget from classmap in {names:?}"
     );
 }
+
+// ─── Class members ──────────────────────────────────────────────────────────
+
+#[test]
+fn method_appears_in_results() {
+    let php = r#"<?php
+class UserService {
+    public function getUserEmail(): string { return ''; }
+}
+"#;
+    let symbols = get_workspace_symbols(php, "getUserEmail");
+    let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+    assert!(
+        names.contains(&"UserService::getUserEmail"),
+        "expected UserService::getUserEmail in {names:?}"
+    );
+    let method = symbols
+        .iter()
+        .find(|s| s.name == "UserService::getUserEmail")
+        .unwrap();
+    assert_eq!(method.kind, SymbolKind::METHOD);
+    assert_eq!(
+        method.container_name.as_deref(),
+        Some("UserService"),
+        "method container_name should be the owning class FQN"
+    );
+}
+
+#[test]
+fn method_with_namespace_has_fqn_container() {
+    let php = r#"<?php
+namespace App\Services;
+
+class UserService {
+    public function getUserEmail(): string { return ''; }
+}
+"#;
+    let symbols = get_workspace_symbols(php, "getUserEmail");
+    let method = symbols
+        .iter()
+        .find(|s| s.name == "App\\Services\\UserService::getUserEmail")
+        .expect("expected namespaced method");
+    assert_eq!(method.kind, SymbolKind::METHOD);
+    assert_eq!(
+        method.container_name.as_deref(),
+        Some("App\\Services\\UserService")
+    );
+}
+
+#[test]
+fn property_appears_in_results() {
+    let php = r#"<?php
+class Config {
+    public string $appName = 'test';
+}
+"#;
+    let symbols = get_workspace_symbols(php, "appName");
+    let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+    assert!(
+        names.contains(&"Config::$appName"),
+        "expected Config::$appName in {names:?}"
+    );
+    let prop = symbols
+        .iter()
+        .find(|s| s.name == "Config::$appName")
+        .unwrap();
+    assert_eq!(prop.kind, SymbolKind::PROPERTY);
+    assert_eq!(prop.container_name.as_deref(), Some("Config"));
+}
+
+#[test]
+fn property_matches_with_dollar_prefix() {
+    let php = r#"<?php
+class Config {
+    public string $appName = 'test';
+}
+"#;
+    let symbols = get_workspace_symbols(php, "$appName");
+    let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+    assert!(
+        names.contains(&"Config::$appName"),
+        "expected Config::$appName when querying with $ prefix, got {names:?}"
+    );
+}
+
+#[test]
+fn class_constant_appears_in_results() {
+    let php = r#"<?php
+class Http {
+    const STATUS_OK = 200;
+    const STATUS_NOT_FOUND = 404;
+}
+"#;
+    let symbols = get_workspace_symbols(php, "STATUS_OK");
+    let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+    assert!(
+        names.contains(&"Http::STATUS_OK"),
+        "expected Http::STATUS_OK in {names:?}"
+    );
+    let constant = symbols
+        .iter()
+        .find(|s| s.name == "Http::STATUS_OK")
+        .unwrap();
+    assert_eq!(constant.kind, SymbolKind::CONSTANT);
+    assert_eq!(constant.container_name.as_deref(), Some("Http"));
+}
+
+#[test]
+fn enum_case_appears_in_results() {
+    let php = r#"<?php
+enum Status {
+    case Active;
+    case Inactive;
+}
+"#;
+    let symbols = get_workspace_symbols(php, "Active");
+    let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+    assert!(
+        names.contains(&"Status::Active"),
+        "expected Status::Active in {names:?}"
+    );
+    let case = symbols.iter().find(|s| s.name == "Status::Active").unwrap();
+    assert_eq!(case.kind, SymbolKind::ENUM_MEMBER);
+    assert_eq!(case.container_name.as_deref(), Some("Status"));
+}
+
+#[test]
+fn virtual_members_excluded() {
+    // Virtual methods from @method tags should not appear.
+    let php = r#"<?php
+/**
+ * @method string magicMethod()
+ */
+class Magic {
+    public function realMethod(): void {}
+}
+"#;
+    let symbols = get_workspace_symbols(php, "Method");
+    let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+    assert!(
+        names.contains(&"Magic::realMethod"),
+        "expected realMethod in {names:?}"
+    );
+    assert!(
+        !names.iter().any(|n| n.contains("magicMethod")),
+        "virtual magicMethod should be excluded, got {names:?}"
+    );
+}
+
+#[test]
+fn method_query_finds_across_classes() {
+    let php = r#"<?php
+class UserRepo {
+    public function findById(int $id): void {}
+}
+class OrderRepo {
+    public function findById(int $id): void {}
+}
+class ProductRepo {
+    public function search(string $q): void {}
+}
+"#;
+    let symbols = get_workspace_symbols(php, "findById");
+    let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+    assert!(
+        names.contains(&"UserRepo::findById"),
+        "expected UserRepo::findById in {names:?}"
+    );
+    assert!(
+        names.contains(&"OrderRepo::findById"),
+        "expected OrderRepo::findById in {names:?}"
+    );
+    assert!(
+        !names.iter().any(|n| n.contains("search")),
+        "search should not match findById query"
+    );
+}
+
+#[test]
+fn deprecated_method_has_deprecated_tag() {
+    let php = r#"<?php
+class Svc {
+    /**
+     * @deprecated Use newMethod instead
+     */
+    public function oldMethod(): void {}
+}
+"#;
+    let symbols = get_workspace_symbols(php, "oldMethod");
+    assert_eq!(symbols.len(), 1);
+    let tags = symbols[0].tags.as_ref().expect("expected tags on method");
+    assert!(
+        tags.contains(&SymbolTag::DEPRECATED),
+        "expected DEPRECATED tag on method"
+    );
+}
+
+#[test]
+fn members_location_points_to_correct_file() {
+    let symbols = get_workspace_symbols_multi(
+        &[
+            (
+                "file:///a.php",
+                "<?php\nclass A { public function hello(): void {} }",
+            ),
+            (
+                "file:///b.php",
+                "<?php\nclass B { public function hello(): void {} }",
+            ),
+        ],
+        "hello",
+    );
+    let a_method = symbols
+        .iter()
+        .find(|s| s.name == "A::hello")
+        .expect("expected A::hello");
+    assert_eq!(a_method.location.uri.as_str(), "file:///a.php");
+
+    let b_method = symbols
+        .iter()
+        .find(|s| s.name == "B::hello")
+        .expect("expected B::hello");
+    assert_eq!(b_method.location.uri.as_str(), "file:///b.php");
+}
+
+// ─── Relevance-based sorting ────────────────────────────────────────────────
+
+#[test]
+fn exact_match_sorted_before_prefix() {
+    let php = r#"<?php
+class UserManager {}
+class User {}
+class UserService {}
+"#;
+    let symbols = get_workspace_symbols(php, "User");
+    let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+    // "User" is an exact match and should come first.
+    assert_eq!(
+        names[0], "User",
+        "exact match 'User' should be first, got {names:?}"
+    );
+}
+
+#[test]
+fn prefix_match_sorted_before_substring() {
+    let php = r#"<?php
+class SuperUser {}
+class UserService {}
+"#;
+    let symbols = get_workspace_symbols(php, "User");
+    let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+    // UserService is a prefix match, SuperUser is a substring match.
+    let user_svc_idx = names.iter().position(|n| *n == "UserService").unwrap();
+    let super_idx = names.iter().position(|n| *n == "SuperUser").unwrap();
+    assert!(
+        user_svc_idx < super_idx,
+        "prefix match UserService should come before substring match SuperUser, got {names:?}"
+    );
+}
+
+#[test]
+fn same_tier_sorted_alphabetically() {
+    let php = r#"<?php
+class Zebra {}
+class Apple {}
+class Mango {}
+"#;
+    let symbols = get_workspace_symbols(php, "");
+    let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["Apple", "Mango", "Zebra"],
+        "same-tier results should be alphabetical"
+    );
+}
+
+#[test]
+fn relevance_sorting_with_methods() {
+    let php = r#"<?php
+class Repository {
+    public function find(): void {}
+    public function findAll(): void {}
+}
+function myFind(): void {}
+"#;
+    let symbols = get_workspace_symbols(php, "find");
+    let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+    // "find" is exact match for the method, "findAll" is prefix, "myFind" is substring
+    let find_idx = names
+        .iter()
+        .position(|n| *n == "Repository::find")
+        .expect("expected Repository::find");
+    let find_all_idx = names
+        .iter()
+        .position(|n| *n == "Repository::findAll")
+        .expect("expected Repository::findAll");
+    let my_find_idx = names
+        .iter()
+        .position(|n| *n == "myFind")
+        .expect("expected myFind");
+    assert!(
+        find_idx < find_all_idx,
+        "exact 'find' should come before prefix 'findAll', got {names:?}"
+    );
+    assert!(
+        find_all_idx < my_find_idx,
+        "prefix 'findAll' should come before substring 'myFind', got {names:?}"
+    );
+}
+
+#[test]
+fn relevance_sorting_across_all_tiers() {
+    let php = r#"<?php
+class ContainsCache {}
+class CacheManager {}
+class Cache {}
+"#;
+    let symbols = get_workspace_symbols(php, "Cache");
+    let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+    // Cache = exact, CacheManager = prefix, ContainsCache = substring
+    assert_eq!(names[0], "Cache", "exact match first");
+    assert_eq!(names[1], "CacheManager", "prefix match second");
+    assert_eq!(names[2], "ContainsCache", "substring match last");
+}
