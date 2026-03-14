@@ -113,14 +113,14 @@ pub(super) fn build_builder_forwarded_methods(
         // Apply template and self-type substitutions.
         if !subs.is_empty() {
             if let Some(ref mut ret) = forwarded.return_type {
-                *ret = apply_substitution(ret, &subs);
+                *ret = apply_substitution(ret, &subs).into_owned();
             }
             if let Some(ref mut cond) = forwarded.conditional_return {
                 apply_substitution_to_conditional(cond, &subs);
             }
             for param in &mut forwarded.parameters {
                 if let Some(ref mut hint) = param.type_hint {
-                    *hint = apply_substitution(hint, &subs);
+                    *hint = apply_substitution(hint, &subs).into_owned();
                 }
             }
         }

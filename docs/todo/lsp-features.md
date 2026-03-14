@@ -296,32 +296,6 @@ limitation.
 
 ---
 
-## 13. Selection Ranges (`textDocument/selectionRange`)
-**Impact: Medium · Effort: Low**
-
-"Smart select" / expand selection. Given a cursor position, returns a
-nested chain of ranges from innermost to outermost (e.g. identifier,
-expression, statement, block, function, class, file). Most editors have
-basic word/line/block expansion, but AST-aware selection ranges produce
-much tighter expansions (e.g. selecting just the condition of an `if`,
-then the full `if` block, then the enclosing method).
-
-**Implementation:**
-
-1. **Register the capability** — set `selection_range_provider:
-   Some(SelectionRangeProviderCapability::Simple(true))` in
-   `ServerCapabilities`.
-
-2. **Handler:** For each requested position:
-   - Walk the AST to collect all nodes whose span contains the position,
-     from root down to the deepest leaf.
-   - Reverse the list (deepest first) and build a `SelectionRange`
-     linked list where each entry's `parent` points to the next wider
-     range.
-   - Return the innermost `SelectionRange`.
-
----
-
 ## 15. Document Links (`textDocument/documentLink`)
 **Impact: Low-Medium · Effort: Low**
 

@@ -117,10 +117,17 @@ impl Backend {
                 .iter()
                 .find(|m| m.name.eq_ignore_ascii_case(method_name))
             {
-                return Some(ResolvedCallableTarget {
-                    parameters: m.parameters.clone(),
-                    return_type: m.return_type.clone(),
-                });
+                // Skip #[Scope]-attributed methods on unresolved
+                // classes — the raw parsed method still has the
+                // `$query` parameter that the virtual member provider
+                // strips.  Fall through to full resolution so the
+                // synthesized scope method is used instead.
+                if !m.has_scope_attribute {
+                    return Some(ResolvedCallableTarget {
+                        parameters: m.parameters.clone(),
+                        return_type: m.return_type.clone(),
+                    });
+                }
             }
 
             // Fall back to full resolution for candidates that were
@@ -671,7 +678,7 @@ impl Backend {
                     // resolved conditional type (e.g. `TModel` → concrete
                     // class when TModel is a method-level @template param).
                     let effective_ty = if !template_subs.is_empty() {
-                        apply_substitution(ty, template_subs)
+                        apply_substitution(ty, template_subs).into_owned()
                     } else {
                         ty.clone()
                     };
@@ -695,7 +702,7 @@ impl Backend {
                 && let Some(ref ret) = method.return_type
             {
                 let substituted = apply_substitution(ret, template_subs);
-                if substituted != *ret {
+                if substituted.as_ref() != ret.as_str() {
                     let classes = super::type_resolution::type_hint_to_classes(
                         &substituted,
                         &class_info.name,

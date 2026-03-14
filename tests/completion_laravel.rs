@@ -237,7 +237,7 @@ class Relation {
 const COLLECTED_BY_PHP: &str = "\
 <?php
 namespace Illuminate\\Database\\Eloquent\\Attributes;
-class CollectedBy {}
+class CollectedBy { public function __construct(string $collectionClass) {} }
 ";
 
 const SCOPE_ATTR_PHP: &str = "\
@@ -3260,7 +3260,7 @@ async fn test_custom_collection_same_file_plain_backend() {
         "    }\n",
         "}\n",
         "namespace Illuminate\\Database\\Eloquent\\Attributes {\n",
-        "    class CollectedBy {}\n",
+        "    class CollectedBy { public function __construct(string $collectionClass) {} }\n",
         "}\n",
         "namespace Illuminate\\Database\\Eloquent\\Relations {\n",
         "    class HasMany {}\n",

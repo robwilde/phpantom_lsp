@@ -92,6 +92,7 @@ mod parser;
 mod references;
 mod rename;
 mod resolution;
+mod selection_range;
 mod server;
 mod signature_help;
 pub mod stubs;

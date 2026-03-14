@@ -92,7 +92,10 @@ caching the result, so substitution only runs on cache misses. But
 cache misses still happen: first access, after edits that trigger
 invalidation, and for generic classes with different type arguments.
 
-### Fix (long-term)
+The short-term mitigations (early-exit check and `Cow` return type)
+are implemented. The remaining work is the long-term structural fix.
+
+### Fix
 
 Replace the string-based type representation with a parsed type AST
 (an enum of `TypeNode` variants: `Named`, `Union`, `Intersection`,
@@ -105,22 +108,6 @@ This is a significant refactor that touches the parser, docblock
 extraction, type resolution, and inheritance merging. It should be
 evaluated after the lower-effort items are done and profiling
 confirms that substitution remains a measurable cost.
-
-### Fix (short-term)
-
-Two targeted optimisations that reduce allocation without the full
-refactor:
-
-1. **Early exit.** Before recursing, check whether the type string
-   contains any of the substitution map's keys. If no key appears
-   as a substring, return the input unchanged (no allocation). This
-   skips the majority of type strings that don't reference template
-   parameters.
-
-2. **Cow return type.** Change `apply_substitution` to return
-   `Cow<'_, str>` instead of `String`. When no substitution occurs
-   (the common case), return the borrowed input. Only allocate a new
-   `String` when a replacement actually happens.
 
 ---
 

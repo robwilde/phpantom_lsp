@@ -174,7 +174,7 @@ pub fn build_scope_methods_for_builder(
 
         // Apply substitutions to the return type.
         if let Some(ref mut ret) = m.return_type {
-            *ret = apply_substitution(ret, &subs);
+            *ret = apply_substitution(ret, &subs).into_owned();
         }
 
         methods.push(m);

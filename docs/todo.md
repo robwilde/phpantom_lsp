@@ -49,11 +49,8 @@ feature surface grows.
 | # | Item | Effort | Domain | Doc Link |
 |---|---|---|---|---|
 | 113 | Semantic Tokens (`textDocument/semanticTokens/full`) | Medium | LSP Features | [lsp-features.md §21](todo/lsp-features.md#21-semantic-tokens-textdocumentsemantictokensfull) |
-| 22 | Selection Ranges (`textDocument/selectionRange`) | Low | LSP Features | [lsp-features.md §13](todo/lsp-features.md#13-selection-ranges-textdocumentselectionrange) |
 | 100 | Formatting proxy (`textDocument/formatting`) | Medium | LSP Features | [lsp-features.md §19](todo/lsp-features.md#19-formatting-proxy-textdocumentformatting-textdocumentrangeformatting) |
 | 81 | Work-done progress for GTI and Find References | Low | LSP Features | [lsp-features.md §18](todo/lsp-features.md#18-work-done-progress-for-gti-and-find-references) |
-| 101 | Argument count diagnostic | Low | Diagnostics | [diagnostics.md §7](todo/diagnostics.md#7-argument-count-diagnostic) |
-| 88 | Early-exit and `Cow` return in `apply_substitution` | Low | Performance | [performance.md §7](todo/performance.md#7-recursive-string-substitution-in-apply_substitution) |
 | 87 | Reference-counted `ClassInfo` (`Arc<ClassInfo>`) | Medium | Performance | [performance.md §2](todo/performance.md#2-reference-counted-classinfo-arcclassinfo) |
 
 **After Sprint 3:** PHPantom feels like a complete LSP to everyday

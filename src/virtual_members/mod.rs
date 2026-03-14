@@ -569,7 +569,7 @@ fn resolve_class_fully_inner(
                             let resolved = if active_subs.is_empty() {
                                 arg.clone()
                             } else {
-                                apply_substitution(arg, &active_subs)
+                                apply_substitution(arg, &active_subs).into_owned()
                             };
                             map.insert(param_name.clone(), resolved);
                         }
@@ -598,7 +598,7 @@ fn resolve_class_fully_inner(
                         args.clone()
                     } else {
                         args.iter()
-                            .map(|a| apply_substitution(a, &level_subs))
+                            .map(|a| apply_substitution(a, &level_subs).into_owned())
                             .collect()
                     };
                     all_implements_generics.push((iface_name.clone(), resolved_args));

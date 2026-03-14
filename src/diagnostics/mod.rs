@@ -32,6 +32,7 @@
 //! design (one running, one pending) ensures diagnostics never block
 //! completion, hover, or other latency-sensitive requests.
 
+mod argument_count;
 mod deprecated;
 pub(crate) mod helpers;
 pub(crate) mod unknown_classes;
@@ -125,8 +126,11 @@ impl Backend {
         // ── Unknown function calls ──────────────────────────────────────
         self.collect_unknown_function_diagnostics(uri_str, content, &mut slow_diagnostics);
 
-        // ── Unresolved member access (opt-in) ───────────────────────────
+        // ── Unresolved member access (opt-in) ───────────────────────
         self.collect_unresolved_member_access_diagnostics(uri_str, content, &mut slow_diagnostics);
+
+        // ── Argument count errors ───────────────────────────────────
+        self.collect_argument_count_diagnostics(uri_str, content, &mut slow_diagnostics);
 
         // Cache the fresh slow diagnostics for the next fast-phase merge.
         {

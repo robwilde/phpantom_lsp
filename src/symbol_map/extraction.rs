@@ -2165,11 +2165,24 @@ fn emit_call_site(
         .iter()
         .map(|t| t.start.offset)
         .collect();
+
+    let arg_count = argument_list.arguments.len() as u32;
+
+    // Detect argument unpacking (`...$args`).  Only positional
+    // arguments can use the spread operator; the AST stores it as
+    // `ellipsis: Some(Span)` on `PositionalArgument`.
+    let has_unpacking = argument_list
+        .arguments
+        .iter()
+        .any(|arg| matches!(arg, Argument::Positional(pos) if pos.ellipsis.is_some()));
+
     call_sites.push(CallSite {
         args_start,
         args_end,
         call_expression,
         comma_offsets,
+        arg_count,
+        has_unpacking,
     });
 }
 

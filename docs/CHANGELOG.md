@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Selection Ranges.** Smart select / expand selection returns AST-aware nested ranges from innermost to outermost (identifier, expression, statement, block, function, class, file).
+- **Argument count diagnostic.** Flags function and method calls that pass too few or too many arguments. Variadic parameters and argument unpacking are handled correctly.
 - **Document Symbols.** The outline sidebar and breadcrumbs now show classes, interfaces, traits, enums, methods, properties, constants, and standalone functions with correct nesting, icons, visibility detail, and deprecation tags.
 - **Workspace Symbols.** "Go to Symbol in Workspace" (Ctrl+T / Cmd+T) searches classes, interfaces, traits, enums, functions, constants, methods, properties, and class constants across all indexed files. Vendor classes from the Composer classmap and discovered classes from the class index are included when a query is provided. Results include namespace context, deprecation markers, and are sorted by relevance (exact match, then prefix, then substring) with alphabetical tiebreaking.
 - **Folding Ranges.** AST-aware code folding for class bodies, method/function bodies, closures, arrays, argument/parameter lists, if/else/switch/match/try/catch/finally blocks, doc comments, and consecutive single-line comment groups.
@@ -16,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Generic type substitution.** `apply_substitution` now returns early when no template parameters appear in the type string, avoiding allocation and recursion in the common case.
 - **Cross-file resolution.** Fully-qualified class names are now stored in a single canonical form throughout the system, eliminating a class of bugs where name comparisons failed because one side had a leading backslash and the other did not. This improves reliability of completion, hover, go-to-definition, and cache invalidation across files.
 
 ## [0.5.0] - 2026-03-12

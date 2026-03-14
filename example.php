@@ -2168,6 +2168,31 @@ class UnresolvedMemberAccessDemo
 }
 
 
+// ── Diagnostic: Argument Count ──────────────────────────────────────────────
+// PHPantom flags calls that pass too few or too many arguments.  Variadic
+// parameters accept unlimited trailing args.  Argument unpacking (`...$args`)
+// suppresses the diagnostic because the actual count is unknown statically.
+
+class ArgumentCountDemo
+{
+    public function demo(): void
+    {
+        $user = new User('Alice', 'alice@test.com');
+
+        // Correct — no diagnostic:
+        $user->getEmail();
+        $user->setName('Bob');
+        $user->addRoles('admin', 'editor', 'viewer'); // variadic
+
+        // Too few arguments — error diagnostic appears:
+        $user->setStatus();
+
+        // Too many arguments — error diagnostic appears:
+        $user->getEmail('extra');
+    }
+}
+
+
 // ── Implement Missing Methods (Code Action) ─────────────────────────────────
 // Uncomment the class below, place the cursor inside it, and trigger
 // "Quick Fix" or "Code Action" to see "Implement 3 missing methods".
@@ -4697,7 +4722,9 @@ namespace Illuminate\Database\Eloquent\Relations {
 }
 
 namespace Illuminate\Database\Eloquent\Attributes {
-    class CollectedBy {}
+    class CollectedBy {
+        public function __construct(string $collectionClass) {}
+    }
     class Scope {}
 }
 

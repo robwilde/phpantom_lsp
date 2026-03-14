@@ -21,6 +21,8 @@ use std::collections::{HashMap, HashSet};
 /// Bundles the trait-level configuration passed through
 /// [`merge_traits_into`] so the function stays within clippy's
 /// argument-count limit.
+use std::borrow::Cow;
+
 pub(crate) struct TraitContext<'a> {
     /// Generic type arguments for `@use Trait<Type>` declarations.
     pub use_generics: &'a [(String, Vec<String>)],
@@ -673,7 +675,7 @@ fn build_substitution_map(
             let resolved = if active_subs.is_empty() {
                 arg.clone()
             } else {
-                apply_substitution(arg, active_subs)
+                apply_substitution(arg, active_subs).into_owned()
             };
             map.insert(param_name.clone(), resolved);
         }
@@ -690,8 +692,8 @@ pub(crate) fn apply_substitution_to_method(
 ) {
     if let Some(ref mut ret) = method.return_type {
         let substituted = apply_substitution(ret, subs);
-        if substituted != *ret {
-            *ret = substituted;
+        if substituted.as_ref() != ret.as_str() {
+            *ret = substituted.into_owned();
         }
     }
     if let Some(ref mut cond) = method.conditional_return {
@@ -700,8 +702,8 @@ pub(crate) fn apply_substitution_to_method(
     for param in &mut method.parameters {
         if let Some(ref mut hint) = param.type_hint {
             let substituted = apply_substitution(hint, subs);
-            if substituted != *hint {
-                *hint = substituted;
+            if substituted.as_ref() != hint.as_str() {
+                *hint = substituted.into_owned();
             }
         }
     }
@@ -719,8 +721,8 @@ pub(crate) fn apply_substitution_to_conditional(
     match cond {
         ConditionalReturnType::Concrete(ty) => {
             let substituted = apply_substitution(ty, subs);
-            if substituted != *ty {
-                *ty = substituted;
+            if substituted.as_ref() != ty.as_str() {
+                *ty = substituted.into_owned();
             }
         }
         ConditionalReturnType::Conditional {
@@ -731,8 +733,8 @@ pub(crate) fn apply_substitution_to_conditional(
         } => {
             if let ParamCondition::IsType(type_str) = condition {
                 let substituted = apply_substitution(type_str, subs);
-                if substituted != *type_str {
-                    *type_str = substituted;
+                if substituted.as_ref() != type_str.as_str() {
+                    *type_str = substituted.into_owned();
                 }
             }
             apply_substitution_to_conditional(then_type, subs);
@@ -748,8 +750,8 @@ pub(crate) fn apply_substitution_to_property(
 ) {
     if let Some(ref mut hint) = property.type_hint {
         let substituted = apply_substitution(hint, subs);
-        if substituted != *hint {
-            *hint = substituted;
+        if substituted.as_ref() != hint.as_str() {
+            *hint = substituted.into_owned();
         }
     }
 }
@@ -765,28 +767,65 @@ pub(crate) fn apply_substitution_to_property(
 ///   - Nested generics: `"Collection<TKey, list<TValue>>"` →
 ///     `"Collection<int, list<Language>>"`
 ///   - Combinations: `"?Collection<TKey, TValue>|null"` → resolved correctly
-pub(crate) fn apply_substitution(type_str: &str, subs: &HashMap<String, String>) -> String {
+pub(crate) fn apply_substitution<'a>(
+    type_str: &'a str,
+    subs: &HashMap<String, String>,
+) -> Cow<'a, str> {
     let s = type_str.trim();
     if s.is_empty() {
-        return s.to_string();
+        return Cow::Borrowed(s);
+    }
+
+    // ── Early exit: if the type string doesn't contain any of the
+    // substitution keys as a substring, no replacement can happen.
+    // This skips the vast majority of type strings that don't reference
+    // template parameters, avoiding all allocation and recursion.
+    if !subs.is_empty() && !subs.keys().any(|key| s.contains(key.as_str())) {
+        return Cow::Borrowed(s);
     }
 
     // Handle nullable prefix.
     if let Some(inner) = s.strip_prefix('?') {
         let resolved = apply_substitution(inner, subs);
-        return format!("?{resolved}");
+        return Cow::Owned(format!("?{resolved}"));
     }
 
     // Handle union types: split on `|` at depth 0.
     if let Some(parts) = split_at_depth_0(s, '|') {
-        let resolved: Vec<String> = parts.iter().map(|p| apply_substitution(p, subs)).collect();
-        return resolved.join("|");
+        let resolved: Vec<Cow<str>> = parts.iter().map(|p| apply_substitution(p, subs)).collect();
+        if resolved
+            .iter()
+            .zip(parts.iter())
+            .all(|(r, &p)| matches!(r, Cow::Borrowed(b) if *b == p))
+        {
+            return Cow::Borrowed(s);
+        }
+        return Cow::Owned(
+            resolved
+                .iter()
+                .map(|c| c.as_ref())
+                .collect::<Vec<_>>()
+                .join("|"),
+        );
     }
 
     // Handle intersection types: split on `&` at depth 0.
     if let Some(parts) = split_at_depth_0(s, '&') {
-        let resolved: Vec<String> = parts.iter().map(|p| apply_substitution(p, subs)).collect();
-        return resolved.join("&");
+        let resolved: Vec<Cow<str>> = parts.iter().map(|p| apply_substitution(p, subs)).collect();
+        if resolved
+            .iter()
+            .zip(parts.iter())
+            .all(|(r, &p)| matches!(r, Cow::Borrowed(b) if *b == p))
+        {
+            return Cow::Borrowed(s);
+        }
+        return Cow::Owned(
+            resolved
+                .iter()
+                .map(|c| c.as_ref())
+                .collect::<Vec<_>>()
+                .join("&"),
+        );
     }
 
     // Handle generic types: `Base<Arg1, Arg2>`.
@@ -803,13 +842,21 @@ pub(crate) fn apply_substitution(type_str: &str, subs: &HashMap<String, String>)
 
         // Split inner on commas at depth 0 and resolve each arg.
         let args = split_generic_args(inner);
-        let resolved_args: Vec<String> = args.iter().map(|a| apply_substitution(a, subs)).collect();
+        let resolved_args: Vec<Cow<str>> =
+            args.iter().map(|a| apply_substitution(a, subs)).collect();
 
-        let mut result = format!("{resolved_base}<{}>", resolved_args.join(", "));
+        let mut result = format!(
+            "{resolved_base}<{}>",
+            resolved_args
+                .iter()
+                .map(|c| c.as_ref())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
         if !after.is_empty() {
             result.push_str(after);
         }
-        return result;
+        return Cow::Owned(result);
     }
 
     // Handle callable/Closure signatures: `callable(TValue): RetType` or
@@ -853,11 +900,15 @@ pub(crate) fn apply_substitution(type_str: &str, subs: &HashMap<String, String>)
                     String::new()
                 } else {
                     let param_parts = split_generic_args(params_str);
-                    let resolved: Vec<String> = param_parts
+                    let resolved: Vec<Cow<str>> = param_parts
                         .iter()
                         .map(|p| apply_substitution(p, subs))
                         .collect();
-                    resolved.join(", ")
+                    resolved
+                        .iter()
+                        .map(|c| c.as_ref())
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 };
 
                 // Check for a return type after `): RetType`.
@@ -866,10 +917,10 @@ pub(crate) fn apply_substitution(type_str: &str, subs: &HashMap<String, String>)
                     let ret_type = after_colon.trim_start();
                     if !ret_type.is_empty() {
                         let resolved_ret = apply_substitution(ret_type, subs);
-                        return format!("{prefix}({resolved_params}): {resolved_ret}");
+                        return Cow::Owned(format!("{prefix}({resolved_params}): {resolved_ret}"));
                     }
                 }
-                return format!("{prefix}({resolved_params}){after_paren}");
+                return Cow::Owned(format!("{prefix}({resolved_params}){after_paren}"));
             }
         }
     }
@@ -877,23 +928,23 @@ pub(crate) fn apply_substitution(type_str: &str, subs: &HashMap<String, String>)
     // Handle array shorthand: `TValue[]`.
     if let Some(base) = s.strip_suffix("[]") {
         let resolved = apply_substitution(base, subs);
-        return format!("{resolved}[]");
+        return Cow::Owned(format!("{resolved}[]"));
     }
 
     // Strip parentheses from DNF types like `(A&B)`.
     if s.starts_with('(') && s.ends_with(')') {
         let inner = &s[1..s.len() - 1];
         let resolved = apply_substitution(inner, subs);
-        return format!("({resolved})");
+        return Cow::Owned(format!("({resolved})"));
     }
 
     // Base case: direct lookup.
     if let Some(replacement) = subs.get(s) {
-        return replacement.clone();
+        return Cow::Owned(replacement.clone());
     }
 
-    // No match — return as-is.
-    s.to_string()
+    // No match — return as-is (borrowed, no allocation).
+    Cow::Borrowed(s)
 }
 
 /// Split a type string on `delimiter` at nesting depth 0 (respecting
@@ -1028,8 +1079,8 @@ fn apply_substitution_to_generics(
     for (_class_name, type_args) in generics.iter_mut() {
         for arg in type_args.iter_mut() {
             let substituted = apply_substitution(arg, subs);
-            if substituted != *arg {
-                *arg = substituted;
+            if substituted.as_ref() != arg.as_str() {
+                *arg = substituted.into_owned();
             }
         }
     }

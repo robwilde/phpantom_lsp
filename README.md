@@ -12,15 +12,12 @@ PHPantom focuses on deep type intelligence. Here's how it compares:
 | | PHPantom | Intelephense | PHP Tools | Phpactor | PHPStorm |
 |---|---|---|---|---|---|
 | **Core LSP** | | | | | |
-| Completion, hover, signature help | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Go-to-definition, find references | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Diagnostics | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Common LSP features<sup>1</sup> | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Rename | ✅ | 💰 | ✅ | ✅ | ✅ |
 | Auto-import | ✅ | 💰 | ✅ | ✅ | ✅ |
 | Go-to-implementation | ✅ | 💰 | ❌ | ✅ | ✅ |
 | Go-to-type-definition | ✅ | 💰 | ✅ | ✅ | ✅ |
 | Workspace symbols | 🚧 | ✅ | ✅ | ✅ | ✅ |
-| Document symbols / outline | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Folding ranges | ✅ | ✅ | ✅ | ❌ | ✅ |
 | Formatting | ❌ | ✅ | ✅ | 🧩 | ✅ |
 | Code lens | ✅ | 💰 | ✅ | ❌ | ✅ |
@@ -43,7 +40,9 @@ PHPantom focuses on deep type intelligence. Here's how it compares:
 | RAM usage | 21 MB | 520 MB | 3.9 GB | 498 MB | 2.0 GB |
 | Disk cache | 0 | 45 MB | 0 | 4.1 GB | 551 MB |
 
-<sub>Performance measured on a production codebase: 21K PHP files, 1.5M lines of code (vendor + application). 🚧 = partial support. 🧩 = requires plugin.</sub>
+<sub>🚧 = partial support. 🧩 = requires plugin. 💰 = paid tier.</sub>
+<sub><sup>1</sup> Completion, hover, signature help, go-to-definition, find references, diagnostics, document symbols, selection ranges.</sub>
+<sub>Performance measured on a production codebase: 21K PHP files, 1.5M lines of code (vendor + application).</sub>
 
 > **Want to verify?** Open [`example.php`](example.php) in your editor and trigger completion at the marked locations. It exercises every type intelligence feature in the table, including edge cases where tools diverge.
 

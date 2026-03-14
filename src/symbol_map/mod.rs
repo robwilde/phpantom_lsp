@@ -173,6 +173,17 @@ pub(crate) struct CallSite {
     /// argument list.  Used to compute the active parameter index:
     /// count how many comma offsets are < cursor offset.
     pub comma_offsets: Vec<u32>,
+    /// Number of arguments passed at the call site.
+    ///
+    /// Computed from the AST argument list length during extraction.
+    /// Unlike `comma_offsets.len() + 1`, this correctly handles empty
+    /// argument lists (0) and trailing commas.
+    pub arg_count: u32,
+    /// Whether any argument uses the `...` spread/unpacking operator.
+    ///
+    /// When `true`, argument count diagnostics are suppressed because
+    /// the actual number of arguments is unknown at static analysis time.
+    pub has_unpacking: bool,
 }
 
 // ─── Variable definition site structures ────────────────────────────────────

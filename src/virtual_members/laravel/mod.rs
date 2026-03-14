@@ -283,7 +283,7 @@ fn inject_model_virtual_methods(
 
         // Substitute self-referencing return types.
         if let Some(ref mut ret) = forwarded.return_type {
-            *ret = apply_substitution(ret, &subs);
+            *ret = apply_substitution(ret, &subs).into_owned();
         }
 
         builder.methods.push(forwarded);

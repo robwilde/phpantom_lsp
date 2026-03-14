@@ -103,6 +103,7 @@ impl LanguageServer for Backend {
                 code_lens_provider: Some(CodeLensOptions {
                     resolve_provider: Some(false),
                 }),
+                selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
                 ..ServerCapabilities::default()
             },
             server_info: Some(ServerInfo {
@@ -437,6 +438,17 @@ impl LanguageServer for Backend {
         let uri = params.text_document.uri.to_string();
         self.handle_with_uri("code_lens", &uri, |content| {
             self.handle_code_lens(&uri, content)
+        })
+    }
+
+    async fn selection_range(
+        &self,
+        params: SelectionRangeParams,
+    ) -> Result<Option<Vec<SelectionRange>>> {
+        let uri = params.text_document.uri.to_string();
+        let positions = params.positions;
+        self.handle_with_uri("selection_range", &uri, |content| {
+            self.handle_selection_range(content, &positions)
         })
     }
 }

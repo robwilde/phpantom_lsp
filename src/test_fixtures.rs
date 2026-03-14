@@ -8,9 +8,18 @@
 
 use std::collections::HashMap;
 
+use crate::Backend;
 use crate::types::{
     ClassInfo, ClassLikeKind, ConstantInfo, MethodInfo, ParameterInfo, PropertyInfo, Visibility,
 };
+
+/// Create a minimal [`Backend`] for unit tests.
+///
+/// This is the in-crate equivalent of `create_test_backend()` in the
+/// integration test helpers (`tests/common/mod.rs`).
+pub fn make_backend() -> Backend {
+    Backend::new_test()
+}
 
 // Note: `Visibility` is still needed by `make_class` and `make_constant`.
 
