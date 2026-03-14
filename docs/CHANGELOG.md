@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Workspace Symbols.** "Go to Symbol in Workspace" (Ctrl+T / Cmd+T) searches classes, interfaces, traits, enums, functions, constants, methods, properties, and class constants across all indexed files. Vendor classes from the Composer classmap and discovered classes from the class index are included when a query is provided. Results include namespace context, deprecation markers, and are sorted by relevance (exact match, then prefix, then substring) with alphabetical tiebreaking.
 - **Folding Ranges.** AST-aware code folding for class bodies, method/function bodies, closures, arrays, argument/parameter lists, if/else/switch/match/try/catch/finally blocks, doc comments, and consecutive single-line comment groups.
 - **Code Lens.** Clickable annotations above methods that override a parent class method or implement an interface method. Clicking navigates to the prototype declaration. Parent/trait overrides show "↑ ClassName::method", interface implementations show "◆ InterfaceName::method".
+- **Semantic Tokens.** Type-aware syntax highlighting that goes beyond what a TextMate grammar can achieve. Classes, interfaces, enums, traits, methods, properties, parameters, variables, functions, constants, and template parameters all get distinct token types. Modifiers convey declaration sites, static access, readonly, deprecated, and abstract status.
 
 ### Changed
 

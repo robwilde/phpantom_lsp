@@ -35,6 +35,14 @@
 //!   `SymbolMap` with no additional parsing.  Variables are scoped to their
 //!   enclosing function/closure; class names, members, functions, and constants
 //!   are file-global.
+//! - `semantic_tokens` — Semantic tokens (`textDocument/semanticTokens/full`).
+//!   Type-aware syntax highlighting that goes beyond TextMate grammars.
+//!   Maps `SymbolMap` spans to LSP semantic token types (class, interface,
+//!   enum, method, property, parameter, variable, function, constant) with
+//!   modifiers (declaration, static, readonly, deprecated, abstract).
+//!   Resolves `ClassReference` spans to distinguish classes from interfaces,
+//!   enums, and traits.  Template parameter names from `@template` tags are
+//!   emitted as `typeParameter` tokens.
 //! - `code_actions` — Code actions (`textDocument/codeAction`). Provides:
 //!   - `code_actions::import_class` — Import class quick-fix (add a `use`
 //!     statement for unresolved class names)
@@ -93,6 +101,7 @@ mod references;
 mod rename;
 mod resolution;
 mod selection_range;
+mod semantic_tokens;
 mod server;
 mod signature_help;
 pub mod stubs;

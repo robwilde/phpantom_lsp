@@ -104,6 +104,18 @@ impl LanguageServer for Backend {
                     resolve_provider: Some(false),
                 }),
                 selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
+                semantic_tokens_provider: Some(
+                    SemanticTokensServerCapabilities::SemanticTokensOptions(
+                        SemanticTokensOptions {
+                            work_done_progress_options: WorkDoneProgressOptions {
+                                work_done_progress: None,
+                            },
+                            legend: crate::semantic_tokens::legend(),
+                            range: Some(false),
+                            full: Some(SemanticTokensFullOptions::Bool(true)),
+                        },
+                    ),
+                ),
                 ..ServerCapabilities::default()
             },
             server_info: Some(ServerInfo {
@@ -449,6 +461,16 @@ impl LanguageServer for Backend {
         let positions = params.positions;
         self.handle_with_uri("selection_range", &uri, |content| {
             self.handle_selection_range(content, &positions)
+        })
+    }
+
+    async fn semantic_tokens_full(
+        &self,
+        params: SemanticTokensParams,
+    ) -> Result<Option<SemanticTokensResult>> {
+        let uri = params.text_document.uri.to_string();
+        self.handle_with_uri("semantic_tokens_full", &uri, |content| {
+            self.handle_semantic_tokens_full(&uri, content)
         })
     }
 }

@@ -35,11 +35,7 @@ with each step.
 ## Sprint 3 — Quick wins: close the visible gaps
 
 Every item here directly removes something a Neovim/Zed/VS Code user
-would notice as missing on day one. Document Symbols eliminates the
-single most visible gap (empty outline, no breadcrumbs). Workspace
-Symbols gives keyboard-driven navigation back to Neovim users.
-Semantic Tokens provides type-aware syntax highlighting that goes
-beyond what a TextMate grammar can achieve. The remaining items
+would notice as missing on day one. The remaining items
 round out the feature matrix with minimal risk.
 
 The deferred performance items from Sprint 2.5 are included here
@@ -48,16 +44,14 @@ feature surface grows.
 
 | # | Item | Effort | Domain | Doc Link |
 |---|---|---|---|---|
-| 113 | Semantic Tokens (`textDocument/semanticTokens/full`) | Medium | LSP Features | [lsp-features.md §21](todo/lsp-features.md#21-semantic-tokens-textdocumentsemantictokensfull) |
 | 100 | Formatting proxy (`textDocument/formatting`) | Medium | LSP Features | [lsp-features.md §19](todo/lsp-features.md#19-formatting-proxy-textdocumentformatting-textdocumentrangeformatting) |
 | 81 | Work-done progress for GTI and Find References | Low | LSP Features | [lsp-features.md §18](todo/lsp-features.md#18-work-done-progress-for-gti-and-find-references) |
 | 87 | Reference-counted `ClassInfo` (`Arc<ClassInfo>`) | Medium | Performance | [performance.md §2](todo/performance.md#2-reference-counted-classinfo-arcclassinfo) |
 
 **After Sprint 3:** PHPantom feels like a complete LSP to everyday
 users. Outline, breadcrumbs, workspace search, semantic highlighting,
-folding, formatting, and smart select all work. Argument count errors
-catch real bugs and serve as a canary for type engine correctness.
-No one says "it's missing X" for basic editing workflows.
+folding, formatting, and smart select all work. No one says "it's
+missing X" for basic editing workflows.
 
 ---
 
