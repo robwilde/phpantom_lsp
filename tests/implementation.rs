@@ -287,11 +287,11 @@ async fn test_implementation_method_on_abstract_class() {
     );
 }
 
-// ─── Non-interface / non-abstract returns None ──────────────────────────────
+// ─── Concrete class → subclasses ────────────────────────────────────────────
 
-/// Cursor on a concrete class name → should NOT return implementations.
+/// Cursor on a non-final concrete class name → should return subclasses.
 #[tokio::test]
-async fn test_implementation_concrete_class_returns_none() {
+async fn test_implementation_concrete_class_returns_subclasses() {
     let backend = create_test_backend();
 
     let uri = Url::parse("file:///impl_concrete.php").unwrap();
@@ -316,12 +316,93 @@ async fn test_implementation_concrete_class_returns_none() {
         })
         .await;
 
-    // Cursor on "User" on line 1 — User is NOT abstract, so no implementations.
+    // Cursor on "User" on line 1 — User is concrete but not final,
+    // so Admin (which extends it) should be returned.
     let locations = implementation_at(&backend, &uri, 1, 7).await;
+    let lines: Vec<u32> = locations.iter().map(|l| l.range.start.line).collect();
+    assert!(
+        lines.contains(&4),
+        "Should include Admin (line 4), got lines: {:?}",
+        lines
+    );
+}
+
+/// Cursor on a final class name → should NOT return implementations.
+#[tokio::test]
+async fn test_implementation_final_class_returns_none() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///impl_final.php").unwrap();
+    let text = concat!(
+        "<?php\n",                   // 0
+        "final class Singleton {\n", // 1
+        "    public string $id;\n",  // 2
+        "}\n",                       // 3
+    );
+
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: uri.clone(),
+                language_id: "php".to_string(),
+                version: 1,
+                text: text.to_string(),
+            },
+        })
+        .await;
+
+    // Cursor on "Singleton" on line 1 — Singleton is final, so no implementations.
+    let locations = implementation_at(&backend, &uri, 1, 14).await;
     assert!(
         locations.is_empty(),
-        "Concrete class should not return implementations, got {:?}",
+        "Final class should not return implementations, got {:?}",
         locations
+    );
+}
+
+/// Concrete class with abstract subclass → the abstract subclass is included
+/// because we are exploring the class hierarchy (not looking for instantiable
+/// implementations of an interface).
+#[tokio::test]
+async fn test_implementation_concrete_class_includes_abstract_subclass() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///impl_concrete_abstract.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                // 0
+        "class Base {\n",                         // 1
+        "    public function run(): void {}\n",   // 2
+        "}\n",                                    // 3
+        "abstract class Middle extends Base {\n", // 4
+        "}\n",                                    // 5
+        "class Leaf extends Middle {\n",          // 6
+        "}\n",                                    // 7
+    );
+
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: uri.clone(),
+                language_id: "php".to_string(),
+                version: 1,
+                text: text.to_string(),
+            },
+        })
+        .await;
+
+    // Cursor on "Base" on line 1 — Base is concrete, so both Middle
+    // (abstract) and Leaf (concrete) should be included.
+    let locations = implementation_at(&backend, &uri, 1, 7).await;
+    let lines: Vec<u32> = locations.iter().map(|l| l.range.start.line).collect();
+    assert!(
+        lines.contains(&4),
+        "Should include abstract Middle (line 4), got lines: {:?}",
+        lines
+    );
+    assert!(
+        lines.contains(&6),
+        "Should include concrete Leaf (line 6), got lines: {:?}",
+        lines
     );
 }
 

@@ -1,19 +1,24 @@
 /// Go-to-implementation support (`textDocument/implementation`).
 ///
-/// When the cursor is on an interface name, abstract class name, or a method
-/// call where the owning type is an interface or abstract class, this module
-/// finds all concrete implementations and returns their locations.
+/// When the cursor is on an interface name, abstract class name, or any
+/// non-final class name, this module finds all concrete implementations
+/// (and, for concrete class targets, all subclasses including abstract
+/// ones) and returns their locations.  The same applies to method calls
+/// where the owning type is an interface or abstract class.
 ///
 /// When the cursor is on a method *definition* inside a concrete class, the
 /// reverse direction is also supported: the handler finds the interface or
 /// abstract class that declares the method and jumps to it.
+///
+/// Final classes cannot be extended, so go-to-implementation is a no-op
+/// for them.
 ///
 /// # Resolution strategy
 ///
 /// 1. **Determine the target symbol** — consult the precomputed `SymbolMap`
 ///    for the word under the cursor.
 /// 2. **Identify the target type** — resolve the symbol to a `ClassInfo` and
-///    check whether it is an interface or abstract class.
+///    check whether it is a non-final class or interface.
 /// 3. **Scan for implementors** — walk all classes known to the server
 ///    (`ast_map`, `class_index`, `classmap`, PSR-4 directories) and collect
 ///    those whose `interfaces` list or `parent_class` matches the target type.
@@ -125,7 +130,8 @@ impl Backend {
     /// Resolve go-to-implementation for a class/interface name.
     ///
     /// Resolves `name` to a fully-qualified class, checks that it is an
-    /// interface or abstract class, finds all concrete implementors, and
+    /// interface or abstract class (or a non-final concrete class that
+    /// may have subclasses), finds all implementors/subclasses, and
     /// returns their declaration locations.
     fn resolve_class_implementation(
         &self,
@@ -139,10 +145,16 @@ impl Backend {
         let fqn = Self::resolve_to_fqn(name, &ctx.use_map, &ctx.namespace);
         let target = class_loader(&fqn).or_else(|| class_loader(name))?;
 
-        // Only interfaces and abstract classes are meaningful targets.
-        if target.kind != ClassLikeKind::Interface && !target.is_abstract {
+        // Final classes cannot be extended, so there are no implementations.
+        if target.is_final {
             return None;
         }
+
+        // Whether the target is a concrete (non-abstract, non-interface)
+        // class.  When it is, we include abstract subclasses in the
+        // results because the user is exploring the class hierarchy
+        // rather than looking for instantiable implementations.
+        let target_is_concrete = target.kind != ClassLikeKind::Interface && !target.is_abstract;
 
         let target_short = target.name.clone();
         // Compute target FQN from the class's own namespace (most
@@ -163,7 +175,12 @@ impl Backend {
             }
         };
 
-        let implementors = self.find_implementors(&target_short, &target_fqn, &class_loader);
+        let implementors = self.find_implementors(
+            &target_short,
+            &target_fqn,
+            &class_loader,
+            target_is_concrete,
+        );
 
         if implementors.is_empty() {
             return None;
@@ -376,7 +393,7 @@ impl Backend {
             .class_fqn_for_short(&target_short)
             .unwrap_or(target_short.clone());
 
-        let implementors = self.find_implementors(&target_short, &target_fqn, class_loader);
+        let implementors = self.find_implementors(&target_short, &target_fqn, class_loader, false);
 
         let member_kind = if interface_class
             .methods
@@ -499,7 +516,8 @@ impl Backend {
                 .class_fqn_for_short(&target_short)
                 .unwrap_or(target_short.clone());
 
-            let implementors = self.find_implementors(&target_short, &target_fqn, &class_loader);
+            let implementors =
+                self.find_implementors(&target_short, &target_fqn, &class_loader, false);
 
             for imp in &implementors {
                 // Check that the implementor actually has this member.
@@ -566,8 +584,7 @@ impl Backend {
         Some(all_locations)
     }
 
-    /// Find all classes that implement a given interface or extend a given
-    /// abstract class.
+    /// Find all classes that implement or extend the target.
     ///
     /// Scans:
     /// 1. All classes already in `ast_map` (open files + autoload-discovered)
@@ -579,13 +596,17 @@ impl Backend {
     ///    are skipped because vendor classes are assumed complete in the
     ///    classmap (Phase 3).
     ///
-    /// Returns the list of concrete `ClassInfo` values (non-interface,
-    /// non-abstract).
+    /// When `include_abstract` is `false` (the default for interface and
+    /// abstract-class targets), abstract subclasses are excluded from the
+    /// results so that only concrete implementations are returned.  When
+    /// `true` (used for concrete-class targets), abstract subclasses are
+    /// included because the user is exploring the full class hierarchy.
     fn find_implementors(
         &self,
         target_short: &str,
         target_fqn: &str,
         class_loader: &dyn Fn(&str) -> Option<ClassInfo>,
+        include_abstract: bool,
     ) -> Vec<ClassInfo> {
         let mut result: Vec<ClassInfo> = Vec::new();
         // Track by FQN to avoid short-name collisions across namespaces.
@@ -603,8 +624,13 @@ impl Backend {
 
         for cls in &ast_candidates {
             let cls_fqn = Self::build_fqn(&cls.name, &cls.file_namespace);
-            if self.class_implements_or_extends(cls, target_short, target_fqn, class_loader)
-                && seen_fqns.insert(cls_fqn)
+            if self.class_implements_or_extends(
+                cls,
+                target_short,
+                target_fqn,
+                class_loader,
+                include_abstract,
+            ) && seen_fqns.insert(cls_fqn)
             {
                 result.push(cls.clone());
             }
@@ -623,7 +649,13 @@ impl Backend {
                 continue;
             }
             if let Some(cls) = class_loader(fqn)
-                && self.class_implements_or_extends(&cls, target_short, target_fqn, class_loader)
+                && self.class_implements_or_extends(
+                    &cls,
+                    target_short,
+                    target_fqn,
+                    class_loader,
+                    include_abstract,
+                )
             {
                 let cls_fqn = Self::build_fqn(&cls.name, &cls.file_namespace);
                 if seen_fqns.insert(cls_fqn) {
@@ -664,8 +696,13 @@ impl Backend {
                     if seen_fqns.contains(&cls_fqn) {
                         continue;
                     }
-                    if self.class_implements_or_extends(cls, target_short, target_fqn, class_loader)
-                    {
+                    if self.class_implements_or_extends(
+                        cls,
+                        target_short,
+                        target_fqn,
+                        class_loader,
+                        include_abstract,
+                    ) {
                         seen_fqns.insert(cls_fqn);
                         result.push(ClassInfo::clone(cls));
                     }
@@ -688,7 +725,13 @@ impl Backend {
                 continue;
             }
             if let Some(cls) = class_loader(stub_name)
-                && self.class_implements_or_extends(&cls, target_short, target_fqn, class_loader)
+                && self.class_implements_or_extends(
+                    &cls,
+                    target_short,
+                    target_fqn,
+                    class_loader,
+                    include_abstract,
+                )
             {
                 let cls_fqn = Self::build_fqn(&cls.name, &cls.file_namespace);
                 if seen_fqns.insert(cls_fqn) {
@@ -754,6 +797,7 @@ impl Backend {
                                 target_short,
                                 target_fqn,
                                 class_loader,
+                                include_abstract,
                             ) {
                                 seen_fqns.insert(cls_fqn);
                                 result.push(ClassInfo::clone(cls));
@@ -768,17 +812,21 @@ impl Backend {
     }
 
     /// Check whether `cls` implements the target interface or extends the
-    /// target abstract class (directly or transitively through its parent
-    /// chain).
+    /// target class (directly or transitively through its parent chain).
     ///
     /// Comparisons use fully-qualified names to avoid false positives when
     /// two interfaces in different namespaces share the same short name.
+    ///
+    /// When `include_abstract` is `false`, abstract classes and interfaces
+    /// are skipped (only concrete implementations are returned).  When
+    /// `true`, abstract subclasses are included in the results.
     fn class_implements_or_extends(
         &self,
         cls: &ClassInfo,
         target_short: &str,
         target_fqn: &str,
         class_loader: &dyn Fn(&str) -> Option<ClassInfo>,
+        include_abstract: bool,
     ) -> bool {
         // Build the FQN of the candidate class for comparison.
         let cls_fqn = Self::build_fqn(&cls.name, &cls.file_namespace);
@@ -788,8 +836,14 @@ impl Backend {
             return false;
         }
 
-        // Skip interfaces and abstract classes — we want concrete implementations.
-        if cls.kind == ClassLikeKind::Interface || cls.is_abstract {
+        // Always skip interfaces — they are never implementations.
+        // Skip abstract classes unless `include_abstract` is set (used
+        // when the target is a concrete class and we want the full
+        // subclass hierarchy).
+        if cls.kind == ClassLikeKind::Interface {
+            return false;
+        }
+        if cls.is_abstract && !include_abstract {
             return false;
         }
 
