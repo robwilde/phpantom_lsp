@@ -919,4 +919,26 @@ mod tests {
             diags.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
     }
+
+    #[test]
+    fn no_false_positive_for_by_reference_param() {
+        let backend = Backend::new_test();
+        let uri = "file:///test.php";
+        let content = concat!(
+            "<?php\n",
+            "namespace App;\n",
+            "\n",
+            "class Sorter {\n",
+            "    /** @param array<int> &$data */\n",
+            "    public function sort(array &$data, string $direction): void {}\n",
+            "}\n",
+        );
+
+        let diags = collect(&backend, uri, content);
+        assert!(
+            !diags.iter().any(|d| d.message.contains("$data")),
+            "by-reference @param &$data must not be flagged as unknown class, got: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
 }

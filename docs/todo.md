@@ -46,11 +46,15 @@ feature surface grows.
 | # | Item | Effort | Domain | Doc Link |
 |---|---|---|---|---|
 | 87 | Reference-counted `ClassInfo` (`Arc<ClassInfo>`) — propagate through APIs | Medium | Performance | [performance.md §2](todo/performance.md#2-reference-counted-classinfo-arcclassinfo) |
+| 92 | Type Hierarchy (`textDocument/prepareTypeHierarchy`) | Medium | LSP Features | [lsp-features.md §16](todo/lsp-features.md#16-type-hierarchy-textdocumentpreparetypehierarchy) |
+| 93 | Document Links (`textDocument/documentLink`) | Low | LSP Features | [lsp-features.md §15](todo/lsp-features.md#15-document-links-textdocumentdocumentlink) |
+| 94 | Pull diagnostics (`textDocument/diagnostic`) — replace push model | Medium | Performance | [performance.md §15](todo/performance.md#15-pull-diagnostics-textdocumentdiagnostic) |
 
 **After Sprint 3:** PHPantom feels like a complete LSP to everyday
 users. Outline, breadcrumbs, workspace search, semantic highlighting,
-folding, formatting, inlay hints, and smart select all work. No one
-says "it's missing X" for basic editing workflows.
+folding, formatting, inlay hints, type hierarchy, document links, and
+smart select all work. No one says "it's missing X" for basic editing
+workflows.
 
 ---
 

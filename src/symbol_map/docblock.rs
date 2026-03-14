@@ -576,6 +576,11 @@ pub(super) fn emit_type_spans(
     }
 
     // Handle `$this` as a self-reference (equivalent to `static`).
+    // All other `$variable` tokens are parameter names leaked from
+    // `@param` lines (e.g. `@param array<int> &$data`), not types.
+    if type_name.starts_with('$') && type_name != "$this" {
+        return;
+    }
     if type_name == "$this" {
         let start = token_file_offset + extra_offset;
         let end = start + type_name.len() as u32;

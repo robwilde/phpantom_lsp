@@ -18,11 +18,10 @@ use crate::types::FileContext;
 use crate::util::{offset_to_position, position_to_offset};
 
 impl Backend {
-    /// Entry point for the `textDocument/inlayHint` custom method.
+    /// Entry point for the `textDocument/inlayHint` request.
     ///
-    /// Registered via [`LspService::build`] in `main.rs` because
-    /// `tower-lsp` 0.18 does not include `inlay_hint` in the
-    /// [`LanguageServer`] trait.
+    /// Called by the native [`LanguageServer::inlay_hint`] trait method
+    /// (available since `tower-lsp` 0.19).
     pub async fn inlay_hint_request(
         &self,
         params: InlayHintParams,

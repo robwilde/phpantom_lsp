@@ -534,6 +534,10 @@ impl LanguageServer for Backend {
         })
     }
 
+    async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
+        self.inlay_hint_request(params).await
+    }
+
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
         let uri = params.text_document.uri.to_string();
         let config = self.config();
@@ -590,7 +594,7 @@ impl LanguageServer for Backend {
                     .await;
                 Err(tower_lsp::jsonrpc::Error {
                     code: tower_lsp::jsonrpc::ErrorCode::InternalError,
-                    message: format!("Formatting failed: {}", e),
+                    message: format!("Formatting failed: {}", e).into(),
                     data: None,
                 })
             }

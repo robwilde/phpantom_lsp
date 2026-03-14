@@ -196,6 +196,10 @@ fn consume_union_intersection_suffix(s: &str, pos: usize) -> usize {
         let rest_trimmed = rest.trim_start();
         let first = rest_trimmed.chars().next();
         if first == Some('|') || first == Some('&') {
+            // `&$var` is a by-reference parameter, not an intersection.
+            if first == Some('&') && rest_trimmed.as_bytes().get(1) == Some(&b'$') {
+                break;
+            }
             // Skip the operator character.
             let after_op = &rest_trimmed[1..];
             let after_op = after_op.trim_start();

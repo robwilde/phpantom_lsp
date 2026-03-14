@@ -64,6 +64,7 @@ fn range_from_offsets(
         end_line: end_pos.line,
         end_character: Some(end_pos.character),
         kind,
+        collapsed_text: None,
     }
 }
 
@@ -110,6 +111,7 @@ fn emit_paren_pair(
             end_line: end_pos.line,
             end_character: Some(end_pos.character),
             kind: None,
+            collapsed_text: None,
         });
     }
 }
@@ -473,6 +475,7 @@ fn collect_from_expression(expr: &Expression<'_>, content: &str, ranges: &mut Ve
                     end_line: end_pos.line,
                     end_character: Some(end_pos.character),
                     kind: None,
+                    collapsed_text: None,
                 });
             }
             collect_from_expression(arrow.expression, content, ranges);
@@ -804,6 +807,7 @@ fn collect_comment_ranges(
                     end_line: end_pos.line,
                     end_character: Some(end_pos.character),
                     kind: Some(FoldingRangeKind::Comment),
+                    collapsed_text: None,
                 });
             }
         }
@@ -843,6 +847,7 @@ fn collect_comment_ranges(
                     end_line: group_end_line,
                     end_character: Some(end_char),
                     kind: Some(FoldingRangeKind::Comment),
+                    collapsed_text: None,
                 });
             }
             // Start a new group.
@@ -863,6 +868,7 @@ fn collect_comment_ranges(
             end_line: group_end_line,
             end_character: Some(end_char),
             kind: Some(FoldingRangeKind::Comment),
+            collapsed_text: None,
         });
     }
 }

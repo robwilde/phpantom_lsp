@@ -540,6 +540,7 @@ mod tests {
             context: CodeActionContext {
                 diagnostics: vec![],
                 only: None,
+                trigger_kind: None,
             },
             work_done_progress_params: Default::default(),
             partial_result_params: Default::default(),
@@ -592,6 +593,7 @@ mod tests {
             context: CodeActionContext {
                 diagnostics: vec![],
                 only: None,
+                trigger_kind: None,
             },
             work_done_progress_params: Default::default(),
             partial_result_params: Default::default(),
@@ -640,6 +642,7 @@ mod tests {
             context: CodeActionContext {
                 diagnostics: vec![],
                 only: None,
+                trigger_kind: None,
             },
             work_done_progress_params: Default::default(),
             partial_result_params: Default::default(),
@@ -686,6 +689,7 @@ mod tests {
             context: CodeActionContext {
                 diagnostics: vec![],
                 only: None,
+                trigger_kind: None,
             },
             work_done_progress_params: Default::default(),
             partial_result_params: Default::default(),
@@ -742,6 +746,7 @@ mod tests {
             context: CodeActionContext {
                 diagnostics: vec![],
                 only: None,
+                trigger_kind: None,
             },
             work_done_progress_params: Default::default(),
             partial_result_params: Default::default(),

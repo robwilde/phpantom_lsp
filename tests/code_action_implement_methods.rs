@@ -29,6 +29,7 @@ fn get_code_actions(
         context: CodeActionContext {
             diagnostics: vec![],
             only: None,
+            trigger_kind: None,
         },
         work_done_progress_params: WorkDoneProgressParams {
             work_done_token: None,

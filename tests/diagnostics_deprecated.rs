@@ -2115,6 +2115,7 @@ fn replace_deprecated_function_call_action_offered() {
         context: CodeActionContext {
             diagnostics: vec![],
             only: None,
+            trigger_kind: None,
         },
         work_done_progress_params: WorkDoneProgressParams {
             work_done_token: None,
@@ -2199,6 +2200,7 @@ fn no_replace_action_when_no_replacement_template() {
         context: CodeActionContext {
             diagnostics: vec![],
             only: None,
+            trigger_kind: None,
         },
         work_done_progress_params: WorkDoneProgressParams {
             work_done_token: None,

@@ -1140,7 +1140,7 @@ class ParamOverrideDemo
             $ingredient->name;              // Ingredient::$name
             $ingredient->format();          // Ingredient::format()
         }
-        $this->recipe->title;               // Recipe::$title
+        $this->recipe->name;                // Recipe::$name
     }
 
     /**
@@ -3425,7 +3425,7 @@ class Pen
     /** @return static */
     public function rename(string $name): static { return $this; }
     /** @return static */
-    public static function make(): static { return new static(); }
+    public static function make(string $color = 'black'): static { return new static($color); }
     private function refill(): void {}            // trip wire — must NOT appear on external $pen->
 }
 
@@ -3486,8 +3486,10 @@ class ElasticBrandIndexService
 
 class Ingredient
 {
-    public string $name = '';
-    public float $quantity = 0.0;
+    public function __construct(
+        public string $name = '',
+        public float $quantity = 0.0,
+    ) {}
 
     public function format(): string
     {
@@ -3501,8 +3503,8 @@ class Recipe
      * @param list<Ingredient> $ingredients
      */
     public function __construct(
+        public string $name = '',
         public array $ingredients = [],
-        public string $title = '',
     ) {}
 }
 
@@ -4219,7 +4221,7 @@ function runDemoAssertions(): void
     assert($ingredient instanceof Ingredient, 'new Ingredient() must be Ingredient');
     assert(property_exists($ingredient, 'name'), 'Ingredient must have $name');
 
-    $recipe = new Recipe([new Ingredient()]);
+    $recipe = new Recipe('Test', [new Ingredient()]);
     assert($recipe instanceof Recipe, 'new Recipe() must be Recipe');
 
     // ── Inline @var on promoted property (InlineVarPromotedDemo) ────────
