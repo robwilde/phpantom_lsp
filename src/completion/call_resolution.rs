@@ -20,6 +20,7 @@
 ///   substitution map for method-level `@template` parameters from
 ///   call-site argument text.
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::Backend;
 use crate::completion::variable::{ARRAY_ELEMENT_FUNCS, ARRAY_PRESERVING_FUNCS};
@@ -45,9 +46,9 @@ use tower_lsp::lsp_types::Position;
 /// limit.
 pub(super) struct MethodReturnCtx<'a> {
     /// All classes known in the current file.
-    pub all_classes: &'a [ClassInfo],
+    pub all_classes: &'a [Arc<ClassInfo>],
     /// Cross-file class resolution callback.
-    pub class_loader: &'a dyn Fn(&str) -> Option<ClassInfo>,
+    pub class_loader: &'a dyn Fn(&str) -> Option<Arc<ClassInfo>>,
     /// Template substitution map (method-level `@template` bindings).
     pub template_subs: &'a HashMap<String, String>,
     /// Resolves a variable name to class-string values (for conditional
@@ -97,8 +98,11 @@ impl Backend {
         rctx: &ResolutionCtx<'_>,
     ) -> Option<ResolvedCallableTarget> {
         let subject_text = base.to_subject_text();
-        let owner_classes: Vec<ClassInfo> = if base.is_self_like() {
-            rctx.current_class.cloned().into_iter().collect()
+        let owner_classes: Vec<Arc<ClassInfo>> = if base.is_self_like() {
+            rctx.current_class
+                .map(|c| Arc::new(c.clone()))
+                .into_iter()
+                .collect()
         } else {
             super::resolver::resolve_target_classes(&subject_text, crate::AccessKind::Arrow, rctx)
         };
@@ -191,7 +195,7 @@ impl Backend {
     /// Loads and merges the class, then extracts `__construct` parameters.
     fn resolve_constructor_callable(
         class_name: &str,
-        class_loader: &dyn Fn(&str) -> Option<ClassInfo>,
+        class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
         cache: &crate::virtual_members::ResolvedClassCache,
     ) -> Option<ResolvedCallableTarget> {
         let ci = class_loader(class_name)?;
@@ -338,14 +342,14 @@ impl Backend {
         callee: &SubjectExpr,
         text_args: &str,
         ctx: &ResolutionCtx<'_>,
-    ) -> Vec<ClassInfo> {
+    ) -> Vec<Arc<ClassInfo>> {
         match callee {
             // ── Instance method call: base->method(…) ───────────────
             SubjectExpr::MethodCall { base, method } => {
                 let method_name = method.as_str();
 
                 // Resolve the base expression to class(es).
-                let lhs_classes: Vec<ClassInfo> =
+                let lhs_classes: Vec<Arc<ClassInfo>> =
                     super::resolver::resolve_target_classes_expr(base, AccessKind::Arrow, ctx);
 
                 let mut results = Vec::new();
@@ -432,12 +436,16 @@ impl Backend {
                         && let Some(element_type) = docblock::types::extract_generic_value_type(raw)
                     {
                         let owner_name = ctx.current_class.map(|c| c.name.as_str()).unwrap_or("");
-                        let classes = super::type_resolution::type_hint_to_classes(
-                            &element_type,
-                            owner_name,
-                            ctx.all_classes,
-                            ctx.class_loader,
-                        );
+                        let classes: Vec<Arc<ClassInfo>> =
+                            super::type_resolution::type_hint_to_classes(
+                                &element_type,
+                                owner_name,
+                                ctx.all_classes,
+                                ctx.class_loader,
+                            )
+                            .into_iter()
+                            .map(Arc::new)
+                            .collect();
                         if !classes.is_empty() {
                             return classes;
                         }
@@ -461,12 +469,16 @@ impl Backend {
                             resolve_conditional_without_args(cond, &func_info.parameters)
                         };
                         if let Some(ref ty) = resolved_type {
-                            let classes = super::type_resolution::type_hint_to_classes(
-                                ty,
-                                "",
-                                ctx.all_classes,
-                                ctx.class_loader,
-                            );
+                            let classes: Vec<Arc<ClassInfo>> =
+                                super::type_resolution::type_hint_to_classes(
+                                    ty,
+                                    "",
+                                    ctx.all_classes,
+                                    ctx.class_loader,
+                                )
+                                .into_iter()
+                                .map(Arc::new)
+                                .collect();
                             if !classes.is_empty() {
                                 return classes;
                             }
@@ -492,12 +504,16 @@ impl Backend {
                             && let Some(ref ret) = func_info.return_type
                         {
                             let substituted = apply_substitution(ret, &subs);
-                            let classes = super::type_resolution::type_hint_to_classes(
-                                &substituted,
-                                "",
-                                ctx.all_classes,
-                                ctx.class_loader,
-                            );
+                            let classes: Vec<Arc<ClassInfo>> =
+                                super::type_resolution::type_hint_to_classes(
+                                    &substituted,
+                                    "",
+                                    ctx.all_classes,
+                                    ctx.class_loader,
+                                )
+                                .into_iter()
+                                .map(Arc::new)
+                                .collect();
                             if !classes.is_empty() {
                                 return classes;
                             }
@@ -510,7 +526,10 @@ impl Backend {
                             "",
                             ctx.all_classes,
                             ctx.class_loader,
-                        );
+                        )
+                        .into_iter()
+                        .map(Arc::new)
+                        .collect();
                     }
                 }
 
@@ -529,12 +548,16 @@ impl Backend {
                     var_name,
                 ) && let Some(ret) = crate::docblock::extract_callable_return_type(&raw_type)
                 {
-                    let classes = super::type_resolution::type_hint_to_classes(
-                        &ret,
-                        "",
-                        ctx.all_classes,
-                        ctx.class_loader,
-                    );
+                    let classes: Vec<Arc<ClassInfo>> =
+                        super::type_resolution::type_hint_to_classes(
+                            &ret,
+                            "",
+                            ctx.all_classes,
+                            ctx.class_loader,
+                        )
+                        .into_iter()
+                        .map(Arc::new)
+                        .collect();
                     if !classes.is_empty() {
                         return classes;
                     }
@@ -548,12 +571,16 @@ impl Backend {
                         cursor_offset,
                     )
                 {
-                    let classes = super::type_resolution::type_hint_to_classes(
-                        &ret,
-                        "",
-                        ctx.all_classes,
-                        ctx.class_loader,
-                    );
+                    let classes: Vec<Arc<ClassInfo>> =
+                        super::type_resolution::type_hint_to_classes(
+                            &ret,
+                            "",
+                            ctx.all_classes,
+                            ctx.class_loader,
+                        )
+                        .into_iter()
+                        .map(Arc::new)
+                        .collect();
                     if !classes.is_empty() {
                         return classes;
                     }
@@ -563,12 +590,16 @@ impl Backend {
                 if let Some(ret) =
                     super::source::helpers::extract_first_class_callable_return_type(var_name, ctx)
                 {
-                    let classes = super::type_resolution::type_hint_to_classes(
-                        &ret,
-                        "",
-                        ctx.all_classes,
-                        ctx.class_loader,
-                    );
+                    let classes: Vec<Arc<ClassInfo>> =
+                        super::type_resolution::type_hint_to_classes(
+                            &ret,
+                            "",
+                            ctx.all_classes,
+                            ctx.class_loader,
+                        )
+                        .into_iter()
+                        .map(Arc::new)
+                        .collect();
                     if !classes.is_empty() {
                         return classes;
                     }
@@ -583,12 +614,16 @@ impl Backend {
                     if let Some(invoke) = owner.methods.iter().find(|m| m.name == "__invoke")
                         && let Some(ref ret) = invoke.return_type
                     {
-                        let classes = super::type_resolution::type_hint_to_classes(
-                            ret,
-                            "",
-                            ctx.all_classes,
-                            ctx.class_loader,
-                        );
+                        let classes: Vec<Arc<ClassInfo>> =
+                            super::type_resolution::type_hint_to_classes(
+                                ret,
+                                "",
+                                ctx.all_classes,
+                                ctx.class_loader,
+                            )
+                            .into_iter()
+                            .map(Arc::new)
+                            .collect();
                         if !classes.is_empty() {
                             return classes;
                         }
@@ -602,7 +637,7 @@ impl Backend {
             // A `NewExpr` callee means the call is `new Foo(…)` — the
             // return type is always the class itself.
             SubjectExpr::NewExpr { class_name } => find_class_by_name(ctx.all_classes, class_name)
-                .cloned()
+                .map(Arc::clone)
                 .or_else(|| (ctx.class_loader)(class_name))
                 .into_iter()
                 .collect(),
@@ -623,12 +658,16 @@ impl Backend {
                     if let Some(invoke) = owner.methods.iter().find(|m| m.name == "__invoke")
                         && let Some(ref ret) = invoke.return_type
                     {
-                        let classes = super::type_resolution::type_hint_to_classes(
-                            ret,
-                            "",
-                            ctx.all_classes,
-                            ctx.class_loader,
-                        );
+                        let classes: Vec<Arc<ClassInfo>> =
+                            super::type_resolution::type_hint_to_classes(
+                                ret,
+                                "",
+                                ctx.all_classes,
+                                ctx.class_loader,
+                            )
+                            .into_iter()
+                            .map(Arc::new)
+                            .collect();
                         if !classes.is_empty() {
                             return classes;
                         }
@@ -653,14 +692,14 @@ impl Backend {
         method_name: &str,
         text_args: &str,
         mr_ctx: &MethodReturnCtx<'_>,
-    ) -> Vec<ClassInfo> {
+    ) -> Vec<Arc<ClassInfo>> {
         let all_classes = mr_ctx.all_classes;
         let class_loader = mr_ctx.class_loader;
         let template_subs = mr_ctx.template_subs;
         let var_resolver = mr_ctx.var_resolver;
         // Helper: try to resolve a method's conditional return type, falling
         // back to template-substituted return type, then plain return type.
-        let resolve_method = |method: &MethodInfo| -> Vec<ClassInfo> {
+        let resolve_method = |method: &MethodInfo| -> Vec<Arc<ClassInfo>> {
             // Try conditional return type first (PHPStan syntax)
             if let Some(ref cond) = method.conditional_return {
                 let resolved_type = if !text_args.is_empty() {
@@ -682,12 +721,16 @@ impl Backend {
                     } else {
                         ty.clone()
                     };
-                    let classes = super::type_resolution::type_hint_to_classes(
-                        &effective_ty,
-                        &class_info.name,
-                        all_classes,
-                        class_loader,
-                    );
+                    let classes: Vec<Arc<ClassInfo>> =
+                        super::type_resolution::type_hint_to_classes(
+                            &effective_ty,
+                            &class_info.name,
+                            all_classes,
+                            class_loader,
+                        )
+                        .into_iter()
+                        .map(Arc::new)
+                        .collect();
                     if !classes.is_empty() {
                         return classes;
                     }
@@ -703,12 +746,16 @@ impl Backend {
             {
                 let substituted = apply_substitution(ret, template_subs);
                 if substituted.as_ref() != ret.as_str() {
-                    let classes = super::type_resolution::type_hint_to_classes(
-                        &substituted,
-                        &class_info.name,
-                        all_classes,
-                        class_loader,
-                    );
+                    let classes: Vec<Arc<ClassInfo>> =
+                        super::type_resolution::type_hint_to_classes(
+                            &substituted,
+                            &class_info.name,
+                            all_classes,
+                            class_loader,
+                        )
+                        .into_iter()
+                        .map(Arc::new)
+                        .collect();
                     if !classes.is_empty() {
                         return classes;
                     }
@@ -726,14 +773,17 @@ impl Backend {
                 // already applied (e.g. Builder<User> stays Builder<User>).
                 let trimmed = ret.trim();
                 if trimmed == "static" || trimmed == "self" || trimmed == "$this" {
-                    return vec![class_info.clone()];
+                    return vec![Arc::new(class_info.clone())];
                 }
                 return super::type_resolution::type_hint_to_classes(
                     ret,
                     &class_info.name,
                     all_classes,
                     class_loader,
-                );
+                )
+                .into_iter()
+                .map(Arc::new)
+                .collect();
             }
             vec![]
         };
@@ -790,7 +840,10 @@ impl Backend {
                     ctx.class_loader,
                     ctx.resolved_class_cache,
                 );
-                merged.methods.into_iter().find(|m| m.name == method_name)
+                Arc::unwrap_or_clone(merged)
+                    .methods
+                    .into_iter()
+                    .find(|m| m.name == method_name)
             });
 
         let method = match method {
@@ -993,8 +1046,8 @@ impl Backend {
                     current_class.cloned()
                 } else {
                     find_class_by_name(all_classes, class_part)
-                        .cloned()
-                        .or_else(|| class_loader(class_part))
+                        .map(|arc| ClassInfo::clone(arc))
+                        .or_else(|| class_loader(class_part).map(Arc::unwrap_or_clone))
                 };
                 if let Some(ref cls) = owner
                     && let Some(rt) = crate::inheritance::resolve_method_return_type(

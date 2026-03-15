@@ -14,6 +14,7 @@ pub use crate::subject_expr::{BracketSegment, SubjectExpr};
 
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::Arc;
 
 // ─── PHP Version ────────────────────────────────────────────────────────────
 
@@ -1337,6 +1338,25 @@ impl ClassInfo {
             Self::push_unique(results, cls);
         }
     }
+
+    /// Push an `Arc<ClassInfo>` into `results` only if no existing entry
+    /// shares the same class name.
+    pub(crate) fn push_unique_arc(results: &mut Vec<Arc<ClassInfo>>, cls: Arc<ClassInfo>) {
+        if !results.iter().any(|c| c.name == cls.name) {
+            results.push(cls);
+        }
+    }
+
+    /// Extend `results` with entries from `new_classes`, skipping any whose
+    /// name already appears in `results`.
+    pub(crate) fn extend_unique_arc(
+        results: &mut Vec<Arc<ClassInfo>>,
+        new_classes: Vec<Arc<ClassInfo>>,
+    ) {
+        for cls in new_classes {
+            Self::push_unique_arc(results, cls);
+        }
+    }
 }
 
 // ─── File Context ───────────────────────────────────────────────────────────
@@ -1351,7 +1371,7 @@ impl ClassInfo {
 /// definition, and implementation handlers.
 pub(crate) struct FileContext {
     /// Classes extracted from the file's AST (from `ast_map`).
-    pub classes: Vec<ClassInfo>,
+    pub classes: Vec<Arc<ClassInfo>>,
     /// Import table mapping short names to fully-qualified names
     /// (from `use_map`).
     pub use_map: HashMap<String, String>,

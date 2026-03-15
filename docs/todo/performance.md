@@ -16,6 +16,7 @@ within the same impact tier.
 ---
 
 ## P1. Reference-counted `ClassInfo` (`Arc<ClassInfo>`)
+
 **Impact: High · Effort: Medium**
 
 ### Completed
@@ -43,8 +44,11 @@ from the storage layer through to the class-loader boundary:
   `type_hint_to_classes`, `resolve_type_alias`, helpers in
   `source/helpers.rs`, `hover/variable_type.rs`, diagnostics,
   definition, references, etc.) accept `&[Arc<ClassInfo>]`.
-- `find_class_at_offset` and `find_class_by_name` accept
-  `&[Arc<ClassInfo>]` and return `&ClassInfo` via `Arc::Deref`.
+- `find_class_at_offset` accepts `&[Arc<ClassInfo>]` and returns
+  `&ClassInfo` via `Arc::Deref`.
+- `find_class_by_name` accepts `&[Arc<ClassInfo>]` and returns
+  `Option<&Arc<ClassInfo>>`, enabling callers to `Arc::clone`
+  instead of deep-cloning when they need ownership.
 
 The `class_loader` closures and `resolve_class_name` now return
 `Option<Arc<ClassInfo>>`, eliminating the deep clone at the
@@ -59,22 +63,62 @@ at zero cost. Mutation sites (inheritance merging in
 providers) call `Arc::unwrap_or_clone()` to obtain an owned
 `ClassInfo` only when they actually need to mutate.
 
+The full-resolution functions (`resolve_class_fully`,
+`resolve_class_fully_cached`, `resolve_class_fully_maybe_cached`)
+return `Arc<ClassInfo>`. Cache hits are a cheap `Arc::clone`
+instead of a deep copy, and cache misses allocate the `Arc` once
+(shared between the cache store and the return value).
+
+`resolve_static_owner_class` returns `Option<Arc<ClassInfo>>`,
+passing through the `Arc` from the class loader and
+`find_class_by_name` without deep-cloning. Callers that only read
+the result access it through `Deref` at zero cost.
+
+The subject-resolution pipeline returns `Vec<Arc<ClassInfo>>`:
+
+- `resolve_target_classes` and `resolve_target_classes_expr` return
+  `Vec<Arc<ClassInfo>>`. Class-loader hits and `find_class_by_name`
+  hits pass the `Arc` through without deep-cloning. The ~37 callers
+  that iterate by reference work via `Deref` with no code changes.
+- `resolve_call_return_types_expr` and
+  `resolve_method_return_types_with_args` return
+  `Vec<Arc<ClassInfo>>`, eliminating the `Arc::new` wrapping that
+  was previously needed at the `CallExpr` boundary.
+- `build_union_completion_items` accepts `&[Arc<ClassInfo>]`.
+- `push_unique_arc` and `extend_unique_arc` helpers deduplicate
+  `Vec<Arc<ClassInfo>>` collections without unwrapping.
+
 ### Remaining work
 
-1. **`resolve_class_fully_cached`** and related functions — return
-   `Arc<ClassInfo>`. Cache hits become a cheap `Arc::clone` instead
-   of a deep copy. The cache already stores `Arc<ClassInfo>` internally
-   but the public API still clones on the way out.
-2. **Propagate `Arc<ClassInfo>` through downstream return types** —
-   many intermediate functions (e.g. `resolve_static_owner_class`,
-   `resolve_lhs_to_class`, `resolve_variable_subject`) currently
-   unwrap the `Arc` from the class_loader and return an owned
-   `ClassInfo`. Changing these to return `Arc<ClassInfo>` would
-   eliminate additional deep clones along the hot path.
+**`type_hint_to_classes` → `Vec<Arc<ClassInfo>>`.**
+`type_hint_to_classes` is the main bridge between the type-string
+world and the class-object world. It is called from both the
+call-resolution pipeline (which already returns `Vec<Arc<ClassInfo>>`
+and currently wraps each result with `Arc::new`) and the variable-
+resolution pipeline (which still operates on `Vec<ClassInfo>`).
+Changing `type_hint_to_classes` (and its recursive helper
+`type_hint_to_classes_depth`) to return `Vec<Arc<ClassInfo>>` would
+eliminate ~15 `Arc::new` wraps at call sites that were added during
+the call-resolution conversion, and would be a natural stepping
+stone if someone later decides to convert the variable-resolution
+pipeline.
+
+The variable-resolution pipeline (`resolve_variable_types`,
+`resolve_rhs_expression`, `check_expression_for_assignment`, and
+~30 helper functions) still operates on `Vec<ClassInfo>` internally.
+Converting it would eliminate ~29 deep clones at bridge sites in
+`rhs_resolution.rs`, `foreach_resolution.rs`, and
+`closure_resolution.rs`, but the cascade touches ~86 sites across
+the subsystem. The effort-to-impact ratio is poor: each eliminated
+clone saves one per-request copy, not a hot-loop copy, and the
+parent-chain walks in `declaring.rs`, `inheritance.rs`, and
+`phpdoc.rs` will always need `Arc::unwrap_or_clone` for mutation
+regardless.
 
 ---
 
 ## P2. Recursive string substitution in `apply_substitution`
+
 **Impact: Medium · Effort: High**
 
 Generic type substitution (`apply_substitution`) does recursive
@@ -115,6 +159,7 @@ confirms that substitution remains a measurable cost.
 ---
 
 ## P3. Parallel pre-filter in `find_implementors`
+
 **Impact: Medium · Effort: Medium**
 
 `find_implementors` Phase 3 reads every unloaded classmap file
@@ -150,6 +195,7 @@ threshold (e.g. 8 files).
 ---
 
 ## P4. `memmem` for block comment terminator search
+
 **Impact: Low-Medium · Effort: Low**
 
 The current block comment skip in `find_classes` and `find_symbols`
@@ -174,6 +220,7 @@ the comment body.
 ---
 
 ## P5. `memmap2` for file reads during scanning
+
 **Impact: Low-Medium · Effort: Low**
 
 All file-scanning paths (`scan_files_parallel_classes`,
@@ -210,6 +257,7 @@ parallelisation, this item can be dropped.
 ---
 
 ## P6. O(n²) transitive eviction in `evict_fqn`
+
 **Impact: Low-Medium · Effort: Low**
 
 The `evict_fqn` function in `virtual_members/mod.rs` runs a
@@ -240,6 +288,7 @@ of the dependency graph within the cache.
 ---
 
 ## P7. `diag_pending_uris` uses `Vec::contains` for deduplication
+
 **Impact: Low · Effort: Low**
 
 `schedule_diagnostics` and `schedule_diagnostics_for_open_files`
@@ -261,6 +310,7 @@ not important and a plain `HashSet` suffices.
 ---
 
 ## P8. `find_class_in_ast_map` linear fallback scan
+
 **Impact: Low · Effort: Low**
 
 The fast O(1) `fqn_index` lookup in `find_class_in_ast_map` covers
@@ -284,6 +334,7 @@ window.
 ---
 
 ## P9. Pull diagnostics (`textDocument/diagnostic`)
+
 **Impact: Medium-High · Effort: Medium**
 
 Replace the current push-based diagnostic model
@@ -302,7 +353,7 @@ rather than the server pushing after every edit.
    involve type resolution and class loading.
 
 2. **PHPStan double-publish flicker.** Phase 1 publishes immediately
-   with *stale* PHPStan results, then Phase 2 publishes the full set.
+   with _stale_ PHPStan results, then Phase 2 publishes the full set.
    When PHPStan finishes later it publishes a third time. Between
    these publishes diagnostics can briefly disappear and reappear.
 

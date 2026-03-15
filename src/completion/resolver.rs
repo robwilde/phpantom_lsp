@@ -25,6 +25,8 @@
 ///   parent chain).
 /// - [`super::conditional_resolution`]: PHPStan conditional return type
 ///   resolution at call sites.
+use std::sync::Arc;
+
 use crate::Backend;
 use crate::docblock;
 use crate::types::*;
@@ -45,13 +47,13 @@ pub(crate) struct ResolutionCtx<'a> {
     /// The class the cursor is inside, if any.
     pub current_class: Option<&'a ClassInfo>,
     /// All classes known in the current file.
-    pub all_classes: &'a [ClassInfo],
+    pub all_classes: &'a [Arc<ClassInfo>],
     /// The full source text of the current file.
     pub content: &'a str,
     /// Byte offset of the cursor in `content`.
     pub cursor_offset: u32,
     /// Cross-file class resolution callback.
-    pub class_loader: &'a dyn Fn(&str) -> Option<ClassInfo>,
+    pub class_loader: &'a dyn Fn(&str) -> Option<Arc<ClassInfo>>,
     /// Shared cache of fully-resolved classes, keyed by FQN.
     ///
     /// When `Some`, [`resolve_class_fully_cached`](crate::virtual_members::resolve_class_fully_cached)
@@ -72,10 +74,10 @@ pub(crate) struct ResolutionCtx<'a> {
 pub(super) struct VarResolutionCtx<'a> {
     pub var_name: &'a str,
     pub current_class: &'a ClassInfo,
-    pub all_classes: &'a [ClassInfo],
+    pub all_classes: &'a [Arc<ClassInfo>],
     pub content: &'a str,
     pub cursor_offset: u32,
-    pub class_loader: &'a dyn Fn(&str) -> Option<ClassInfo>,
+    pub class_loader: &'a dyn Fn(&str) -> Option<Arc<ClassInfo>>,
     pub function_loader: FunctionLoaderFn<'a>,
     /// Shared cache of fully-resolved classes, keyed by FQN.
     ///
@@ -158,7 +160,7 @@ pub(crate) fn resolve_target_classes(
     subject: &str,
     access_kind: AccessKind,
     ctx: &ResolutionCtx<'_>,
-) -> Vec<ClassInfo> {
+) -> Vec<Arc<ClassInfo>> {
     let expr = SubjectExpr::parse(subject);
     resolve_target_classes_expr(&expr, access_kind, ctx)
 }
@@ -169,7 +171,7 @@ pub(crate) fn resolve_target_classes_expr(
     expr: &SubjectExpr,
     access_kind: AccessKind,
     ctx: &ResolutionCtx<'_>,
-) -> Vec<ClassInfo> {
+) -> Vec<Arc<ClassInfo>> {
     let current_class = ctx.current_class;
     let all_classes = ctx.all_classes;
     let class_loader = ctx.class_loader;
@@ -184,11 +186,17 @@ pub(crate) fn resolve_target_classes_expr(
             if let Some(override_cls) =
                 super::variable::closure_resolution::find_closure_this_override(ctx)
             {
-                return vec![override_cls];
+                return vec![Arc::new(override_cls)];
             }
-            current_class.cloned().into_iter().collect()
+            current_class
+                .map(|cc| Arc::new(cc.clone()))
+                .into_iter()
+                .collect()
         }
-        SubjectExpr::SelfKw | SubjectExpr::StaticKw => current_class.cloned().into_iter().collect(),
+        SubjectExpr::SelfKw | SubjectExpr::StaticKw => current_class
+            .map(|cc| Arc::new(cc.clone()))
+            .into_iter()
+            .collect(),
 
         // ── `parent::` — resolve to the current class's parent ──
         SubjectExpr::Parent => {
@@ -196,7 +204,7 @@ pub(crate) fn resolve_target_classes_expr(
                 && let Some(ref parent_name) = cc.parent_class
             {
                 if let Some(cls) = find_class_by_name(all_classes, parent_name) {
-                    return vec![cls.clone()];
+                    return vec![Arc::clone(cls)];
                 }
                 return class_loader(parent_name).into_iter().collect();
             }
@@ -213,7 +221,7 @@ pub(crate) fn resolve_target_classes_expr(
                 }
                 let elem_expr = SubjectExpr::parse(elem);
                 let resolved = resolve_target_classes_expr(&elem_expr, AccessKind::Arrow, ctx);
-                ClassInfo::extend_unique(&mut element_classes, resolved);
+                ClassInfo::extend_unique_arc(&mut element_classes, resolved);
             }
             element_classes
         }
@@ -221,7 +229,7 @@ pub(crate) fn resolve_target_classes_expr(
         // ── Enum case / static member access ────────────────────
         SubjectExpr::StaticAccess { class, .. } => {
             if let Some(cls) = find_class_by_name(all_classes, class) {
-                return vec![cls.clone()];
+                return vec![Arc::clone(cls)];
             }
             class_loader(class).into_iter().collect()
         }
@@ -229,7 +237,7 @@ pub(crate) fn resolve_target_classes_expr(
         // ── Bare class name ─────────────────────────────────────
         SubjectExpr::ClassName(name) => {
             if let Some(cls) = find_class_by_name(all_classes, name) {
-                return vec![cls.clone()];
+                return vec![Arc::clone(cls)];
             }
             class_loader(name).into_iter().collect()
         }
@@ -237,7 +245,7 @@ pub(crate) fn resolve_target_classes_expr(
         // ── `new ClassName` (without trailing call parens) ───────
         SubjectExpr::NewExpr { class_name } => {
             if let Some(cls) = find_class_by_name(all_classes, class_name) {
-                return vec![cls.clone()];
+                return vec![Arc::clone(cls)];
             }
             class_loader(class_name).into_iter().collect()
         }
@@ -258,7 +266,10 @@ pub(crate) fn resolve_target_classes_expr(
                     all_classes,
                     class_loader,
                 );
-                ClassInfo::extend_unique(&mut results, resolved);
+                ClassInfo::extend_unique_arc(
+                    &mut results,
+                    resolved.into_iter().map(Arc::new).collect(),
+                );
             }
 
             // ── Property-level narrowing ────────────────────────
@@ -313,7 +324,7 @@ pub(crate) fn resolve_target_classes_expr(
                 all_classes,
                 class_loader,
             ) {
-                return resolved;
+                return resolved.into_iter().map(Arc::new).collect();
             }
             // Fall through to variable resolution if the base is a bare variable
             if let SubjectExpr::Variable(_) = **base {
@@ -335,7 +346,7 @@ pub(crate) fn resolve_target_classes_expr(
         | SubjectExpr::FunctionCall(_) => {
             let text = expr.to_subject_text();
             if let Some(cls) = find_class_by_name(all_classes, &text) {
-                return vec![cls.clone()];
+                return vec![Arc::clone(cls)];
             }
             class_loader(&text).into_iter().collect()
         }
@@ -348,7 +359,7 @@ fn resolve_variable_fallback(
     var_name: &str,
     access_kind: AccessKind,
     ctx: &ResolutionCtx<'_>,
-) -> Vec<ClassInfo> {
+) -> Vec<Arc<ClassInfo>> {
     let current_class = ctx.current_class;
     let all_classes = ctx.all_classes;
     let class_loader = ctx.class_loader;
@@ -375,7 +386,7 @@ fn resolve_variable_fallback(
                 class_loader,
             );
         if !class_string_targets.is_empty() {
-            return class_string_targets;
+            return class_string_targets.into_iter().map(Arc::new).collect();
         }
     }
 
@@ -388,6 +399,9 @@ fn resolve_variable_fallback(
         class_loader,
         function_loader,
     )
+    .into_iter()
+    .map(Arc::new)
+    .collect()
 }
 
 // ── Static owner class resolution ───────────────────────────────────
@@ -400,16 +414,16 @@ fn resolve_variable_fallback(
 pub(in crate::completion) fn resolve_static_owner_class(
     class: &str,
     rctx: &ResolutionCtx<'_>,
-) -> Option<ClassInfo> {
+) -> Option<Arc<ClassInfo>> {
     if class == "self" || class == "static" {
-        rctx.current_class.cloned()
+        rctx.current_class.map(|cc| Arc::new(cc.clone()))
     } else if class == "parent" {
         rctx.current_class
             .and_then(|cc| cc.parent_class.as_ref())
             .and_then(|p| (rctx.class_loader)(p))
     } else {
         find_class_by_name(rctx.all_classes, class)
-            .cloned()
+            .map(Arc::clone)
             .or_else(|| (rctx.class_loader)(class))
             .or_else(|| {
                 resolve_target_classes(class, crate::AccessKind::DoubleColon, rctx)
@@ -434,9 +448,13 @@ fn apply_property_narrowing(
     property_path: &str,
     current_class: &ClassInfo,
     rctx: &ResolutionCtx<'_>,
-    results: &mut Vec<ClassInfo>,
+    results: &mut Vec<Arc<ClassInfo>>,
 ) {
     use crate::parser::with_parsed_program;
+
+    // The narrowing walk functions operate on Vec<ClassInfo>, so unwrap
+    // the Arcs, run narrowing, then re-wrap.
+    let mut plain: Vec<ClassInfo> = results.drain(..).map(Arc::unwrap_or_clone).collect();
 
     with_parsed_program(
         rctx.content,
@@ -453,9 +471,11 @@ fn apply_property_narrowing(
                 resolved_class_cache: None,
                 enclosing_return_type: None,
             };
-            walk_property_narrowing_in_statements(program.statements.iter(), &ctx, results);
+            walk_property_narrowing_in_statements(program.statements.iter(), &ctx, &mut plain);
         },
     );
+
+    *results = plain.into_iter().map(Arc::new).collect();
 }
 
 /// Walk top-level statements to find the class + method containing the

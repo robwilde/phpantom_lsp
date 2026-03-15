@@ -23,6 +23,7 @@
 //!   are accessed via `::` but stored as constants).
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use tower_lsp::lsp_types::*;
 
@@ -76,12 +77,8 @@ impl Backend {
 
         let file_namespace: Option<String> = self.namespace_map.read().get(uri).cloned().flatten();
 
-        let local_classes: Vec<ClassInfo> = self
-            .ast_map
-            .read()
-            .get(uri)
-            .map(|v| v.iter().map(|c| ClassInfo::clone(c)).collect())
-            .unwrap_or_default();
+        let local_classes: Vec<Arc<ClassInfo>> =
+            self.ast_map.read().get(uri).cloned().unwrap_or_default();
 
         let class_loader = self.class_loader_with(&local_classes, &file_use_map, &file_namespace);
         let function_loader = self.function_loader_with(&file_use_map, &file_namespace);
@@ -134,7 +131,7 @@ impl Backend {
                 function_loader: Some(&function_loader),
             };
 
-            let base_classes: Vec<ClassInfo> =
+            let base_classes: Vec<Arc<ClassInfo>> =
                 resolve_target_classes(subject_text, access_kind, &rctx);
 
             // ── Subject did not resolve to any class ────────────────────
@@ -288,11 +285,11 @@ impl Backend {
             // their members and must NOT go through the cache (every
             // object shape shares the same name, so the cache would
             // return the wrong entry).
-            let resolved_classes: Vec<ClassInfo> = base_classes
+            let resolved_classes: Vec<Arc<ClassInfo>> = base_classes
                 .iter()
                 .map(|c| {
                     if c.name == "__object_shape" {
-                        c.clone()
+                        Arc::clone(c)
                     } else {
                         resolve_class_fully_cached(c, &class_loader, cache)
                     }
@@ -349,7 +346,7 @@ impl Backend {
                     resolved_classes.len(),
                     resolved_classes
                         .iter()
-                        .map(display_class_name)
+                        .map(|c| display_class_name(c))
                         .collect::<Vec<_>>()
                         .join(", "),
                 )
@@ -480,7 +477,7 @@ fn resolve_scalar_subject_type(
     expr: &SubjectExpr,
     access_kind: AccessKind,
     rctx: &ResolutionCtx<'_>,
-    class_loader: &dyn Fn(&str) -> Option<ClassInfo>,
+    class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
     function_loader: &dyn Fn(&str) -> Option<crate::types::FunctionInfo>,
     cache: &crate::virtual_members::ResolvedClassCache,
 ) -> Option<String> {
@@ -607,7 +604,7 @@ fn resolve_scalar_subject_type(
 fn resolve_unresolvable_class_subject(
     expr: &SubjectExpr,
     rctx: &ResolutionCtx<'_>,
-    class_loader: &dyn Fn(&str) -> Option<ClassInfo>,
+    class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
     function_loader: &dyn Fn(&str) -> Option<crate::types::FunctionInfo>,
 ) -> Option<String> {
     let raw_type = match expr {
