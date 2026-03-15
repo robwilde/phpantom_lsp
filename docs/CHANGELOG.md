@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Pull diagnostics.** Diagnostics are now delivered via the LSP 3.17 pull model (`textDocument/diagnostic`) when the editor supports it. The editor requests diagnostics only for visible files, and cross-file invalidation uses `workspace/diagnostic/refresh` instead of recomputing every open tab. PHPStan results integrate cleanly with a single refresh signal instead of multiple publish cycles. Clients without pull support fall back to the previous push model automatically.
 - **Memory efficiency.** Class metadata is now shared via reference counting (`Arc<ClassInfo>`) from storage through the resolved-class cache, class-lookup helpers, and full-resolution pipeline to all consumers, eliminating deep copies on cache hits and along the most common resolution paths.
 - **Generic type substitution.** `apply_substitution` now returns early when no template parameters appear in the type string, avoiding allocation and recursion in the common case.
 - **Cross-file resolution.** Fully-qualified class names are now stored in a single canonical form throughout the system, eliminating a class of bugs where name comparisons failed because one side had a leading backslash and the other did not. This improves reliability of completion, hover, go-to-definition, and cache invalidation across files.

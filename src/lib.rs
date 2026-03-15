@@ -48,9 +48,10 @@
 //!     statement for unresolved class names)
 //!   - `code_actions::remove_unused_import` — Remove unused import quick-fix
 //!     (delete individual or all unused `use` statements)
-//! - [`diagnostics`] — Diagnostics publishing (`textDocument/publishDiagnostics`).
-//!   Collects and publishes diagnostics on `didOpen` / `didChange`, clears on
-//!   `didClose`.  Currently implemented providers:
+//! - [`diagnostics`] — Diagnostic collection and delivery.  Supports both
+//!   pull diagnostics (`textDocument/diagnostic`, LSP 3.17) and push
+//!   diagnostics (`textDocument/publishDiagnostics`) as a fallback.
+//!   Currently implemented providers:
 //!   - `diagnostics::deprecated` — `@deprecated` usage diagnostics (strikethrough
 //!     via `DiagnosticTag::Deprecated` on references to deprecated symbols)
 //!   - `diagnostics::unused_imports` — unused `use` dimming
@@ -384,6 +385,30 @@ pub struct Backend {
     /// and triggers a re-publish of the affected file.
     pub(crate) phpstan_last_diags:
         Arc<Mutex<HashMap<String, Vec<tower_lsp::lsp_types::Diagnostic>>>>,
+    /// Per-file `resultId` for pull diagnostics (`textDocument/diagnostic`).
+    ///
+    /// Maps file URI → monotonically increasing counter.  Bumped whenever
+    /// the diagnostics for a file change (on every `did_change` or when
+    /// PHPStan finishes).  The client sends the previous `resultId` back
+    /// in the next pull request; if it matches, the server returns
+    /// `Unchanged` instead of recomputing.
+    pub(crate) diag_result_ids: Arc<Mutex<HashMap<String, u64>>>,
+    /// Combined diagnostic cache for pull diagnostics.
+    ///
+    /// Stores the last-computed full diagnostic set (fast + slow + PHPStan)
+    /// per file URI.  When the client pulls diagnostics, the server
+    /// returns this cached set.  Updated by the background diagnostic
+    /// worker after each pass and by the PHPStan worker after each run.
+    pub(crate) diag_last_full: Arc<Mutex<HashMap<String, Vec<tower_lsp::lsp_types::Diagnostic>>>>,
+    /// Whether the client supports pull diagnostics.
+    ///
+    /// Set during `initialize` based on the client's
+    /// `textDocument.diagnostic` capability.  When `true`, the server
+    /// uses pull diagnostics (`textDocument/diagnostic`) as the primary
+    /// path and sends `workspace/diagnostic/refresh` instead of
+    /// `schedule_diagnostics_for_open_files`.  When `false`, the server
+    /// falls back to the push model (`textDocument/publishDiagnostics`).
+    pub(crate) supports_pull_diagnostics: Arc<std::sync::atomic::AtomicBool>,
     // NOTE: resolved_class_cache uses parking_lot::Mutex because it is
     // frequently written (cache stores) and RwLock read→write upgrades
     // are error-prone.
@@ -437,6 +462,9 @@ impl Backend {
             phpstan_notify: Arc::new(tokio::sync::Notify::new()),
             phpstan_pending_uri: Arc::new(Mutex::new(None)),
             phpstan_last_diags: Arc::new(Mutex::new(HashMap::new())),
+            diag_result_ids: Arc::new(Mutex::new(HashMap::new())),
+            diag_last_full: Arc::new(Mutex::new(HashMap::new())),
+            supports_pull_diagnostics: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             config: Mutex::new(config::Config::default()),
         }
     }
@@ -620,6 +648,9 @@ impl Backend {
             phpstan_notify: Arc::clone(&self.phpstan_notify),
             phpstan_pending_uri: Arc::clone(&self.phpstan_pending_uri),
             phpstan_last_diags: Arc::clone(&self.phpstan_last_diags),
+            diag_result_ids: Arc::clone(&self.diag_result_ids),
+            diag_last_full: Arc::clone(&self.diag_last_full),
+            supports_pull_diagnostics: Arc::clone(&self.supports_pull_diagnostics),
             config: Mutex::new(self.config.lock().clone()),
         }
     }

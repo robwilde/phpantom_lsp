@@ -2,18 +2,28 @@
 ///
 /// This module contains the `impl LanguageServer for Backend` block,
 /// which handles all LSP protocol messages (initialize, didOpen, didChange,
-/// didClose, completion, etc.).
+/// didClose, completion, diagnostic, etc.).
 ///
-/// **Diagnostic debouncing.** `did_open` publishes diagnostics immediately
-/// (the user just opened the file, they want to see issues right away).
-/// `did_change` debounces: each keystroke bumps a per-file version counter
-/// and sleeps for 200 ms.  If another edit arrives before the timer fires,
-/// the version counter won't match and the stale handler skips publishing.
-/// tower-lsp runs each notification handler as an independent async task,
-/// so the sleep only blocks that handler, not the server.
-use std::collections::HashSet;
+/// **Diagnostic delivery.** Two models are supported, selected automatically
+/// based on the client's capabilities:
+///
+/// - **Pull model** (preferred) — when the client advertises
+///   `textDocument.diagnostic` support, the server registers a
+///   `diagnostic_provider` capability.  The editor requests diagnostics
+///   via `textDocument/diagnostic` for visible files and
+///   `workspace/diagnostic` for all open files.  Cross-file invalidation
+///   (e.g. a class signature change) sends `workspace/diagnostic/refresh`
+///   so the editor re-pulls only the files it cares about.
+///
+/// - **Push model** (fallback) — for clients without pull support, the
+///   server pushes diagnostics via `textDocument/publishDiagnostics`
+///   from a debounced background worker.  Each `did_change` bumps a
+///   version counter; the worker waits for a quiet period before
+///   publishing.
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use tower_lsp::LanguageServer;
 use tower_lsp::jsonrpc::Result;
@@ -41,6 +51,16 @@ impl LanguageServer for Backend {
         if let Some(root) = workspace_root {
             *self.workspace_root.write() = Some(root);
         }
+
+        // Detect whether the client supports pull diagnostics.
+        let client_supports_pull = params
+            .capabilities
+            .text_document
+            .as_ref()
+            .and_then(|td| td.diagnostic.as_ref())
+            .is_some();
+        self.supports_pull_diagnostics
+            .store(client_supports_pull, Ordering::Release);
 
         Ok(InitializeResult {
             offset_encoding: None,
@@ -125,6 +145,18 @@ impl LanguageServer for Backend {
                         },
                     ),
                 ),
+                diagnostic_provider: if client_supports_pull {
+                    Some(DiagnosticServerCapabilities::Options(DiagnosticOptions {
+                        identifier: Some("phpantom".to_string()),
+                        inter_file_dependencies: true,
+                        workspace_diagnostics: true,
+                        work_done_progress_options: WorkDoneProgressOptions {
+                            work_done_progress: None,
+                        },
+                    }))
+                } else {
+                    None
+                },
                 ..ServerCapabilities::default()
             },
             server_info: Some(ServerInfo {
@@ -668,6 +700,135 @@ impl LanguageServer for Backend {
                 })
             }
         }
+    }
+
+    async fn diagnostic(
+        &self,
+        params: DocumentDiagnosticParams,
+    ) -> Result<DocumentDiagnosticReportResult> {
+        let uri_str = params.text_document.uri.to_string();
+
+        // Check resultId — if the client sends back the same resultId we
+        // last returned, the diagnostics have not changed and we can
+        // return Unchanged immediately.
+        if let Some(prev_id) = &params.previous_result_id {
+            let ids = self.diag_result_ids.lock();
+            if let Some(&current_id) = ids.get(&uri_str)
+                && prev_id == &current_id.to_string()
+            {
+                return Ok(DocumentDiagnosticReportResult::Report(
+                    DocumentDiagnosticReport::Unchanged(RelatedUnchangedDocumentDiagnosticReport {
+                        related_documents: None,
+                        unchanged_document_diagnostic_report: UnchangedDocumentDiagnosticReport {
+                            result_id: current_id.to_string(),
+                        },
+                    }),
+                ));
+            }
+        }
+
+        // Return cached diagnostics only.  The pull handler never
+        // computes diagnostics inline — that work is done by the
+        // background diagnostic worker which caches results and sends
+        // `workspace/diagnostic/refresh`.  On cache miss (e.g. the
+        // file was just opened and the worker hasn't finished yet) we
+        // return empty results; the worker will send a refresh once
+        // the real diagnostics are ready.
+        let (diagnostics, result_id) = {
+            let cache = self.diag_last_full.lock();
+            let ids = self.diag_result_ids.lock();
+            let diags = cache.get(&uri_str).cloned().unwrap_or_default();
+            let rid = ids.get(&uri_str).copied().unwrap_or(0).to_string();
+            (diags, rid)
+        };
+
+        Ok(DocumentDiagnosticReportResult::Report(
+            DocumentDiagnosticReport::Full(RelatedFullDocumentDiagnosticReport {
+                related_documents: None,
+                full_document_diagnostic_report: FullDocumentDiagnosticReport {
+                    result_id: Some(result_id),
+                    items: diagnostics,
+                },
+            }),
+        ))
+    }
+
+    async fn workspace_diagnostic(
+        &self,
+        params: WorkspaceDiagnosticParams,
+    ) -> Result<WorkspaceDiagnosticReportResult> {
+        // Build a set of previous result IDs sent by the client so we
+        // can return Unchanged for files that haven't changed.
+        let previous: HashMap<&str, &str> = params
+            .previous_result_ids
+            .iter()
+            .map(|p| (p.uri.as_str(), p.value.as_str()))
+            .collect();
+
+        let open_uris: Vec<String> = {
+            let files = self.open_files.read();
+            files.keys().cloned().collect()
+        };
+
+        let mut items = Vec::new();
+
+        for uri_str in &open_uris {
+            // Read the current resultId for this file.
+            let current_id = {
+                let ids = self.diag_result_ids.lock();
+                ids.get(uri_str.as_str()).copied().unwrap_or(0)
+            };
+
+            // Check if the client already has up-to-date diagnostics.
+            if let Some(prev_id) = previous.get(uri_str.as_str())
+                && *prev_id == current_id.to_string()
+            {
+                let uri = match uri_str.parse::<Url>() {
+                    Ok(u) => u,
+                    Err(_) => continue,
+                };
+                items.push(WorkspaceDocumentDiagnosticReport::Unchanged(
+                    WorkspaceUnchangedDocumentDiagnosticReport {
+                        uri,
+                        version: None,
+                        unchanged_document_diagnostic_report:
+                            UnchangedDocumentDiagnosticReport {
+                                result_id: current_id.to_string(),
+                            },
+                    },
+                ));
+                continue;
+            }
+
+            // Return cached diagnostics only — never compute inline.
+            // On cache miss the background worker hasn't finished yet;
+            // return empty results and let the worker send a refresh
+            // once the real diagnostics are ready.
+            let diagnostics = {
+                let cache = self.diag_last_full.lock();
+                cache.get(uri_str.as_str()).cloned().unwrap_or_default()
+            };
+
+            let uri = match uri_str.parse::<Url>() {
+                Ok(u) => u,
+                Err(_) => continue,
+            };
+
+            items.push(WorkspaceDocumentDiagnosticReport::Full(
+                WorkspaceFullDocumentDiagnosticReport {
+                    uri,
+                    version: None,
+                    full_document_diagnostic_report: FullDocumentDiagnosticReport {
+                        result_id: Some(current_id.to_string()),
+                        items: diagnostics,
+                    },
+                },
+            ));
+        }
+
+        Ok(WorkspaceDiagnosticReportResult::Report(
+            WorkspaceDiagnosticReport { items },
+        ))
     }
 }
 
