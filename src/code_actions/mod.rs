@@ -18,7 +18,7 @@
 //!   error, offer to add `@phpstan-ignore <identifier>`.  When PHPStan
 //!   reports an unnecessary ignore, offer to remove it.
 
-mod implement_methods;
+pub(crate) mod implement_methods;
 mod import_class;
 mod phpstan_ignore;
 mod remove_unused_import;

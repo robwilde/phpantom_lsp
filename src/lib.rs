@@ -81,6 +81,12 @@ use std::sync::atomic::AtomicU64;
 use parking_lot::{Mutex, RwLock};
 use tower_lsp::Client;
 
+/// A single parse error entry: `(message, start_byte_offset, end_byte_offset)`.
+///
+/// Stored per file in [`Backend::parse_errors`] during `update_ast` and
+/// consumed by the syntax-error diagnostic collector.
+pub(crate) type ParseErrorEntry = (String, u32, u32);
+
 // ─── Module declarations ────────────────────────────────────────────────────
 
 pub mod classmap_scanner;
@@ -170,6 +176,14 @@ pub struct Backend {
     /// variables, function calls, etc.).  Consulted by `resolve_definition`
     /// to replace character-level backward-walking with a binary search.
     pub(crate) symbol_maps: Arc<RwLock<HashMap<String, Arc<symbol_map::SymbolMap>>>>,
+    /// Per-file parse errors from the Mago parser.
+    ///
+    /// Each entry is `(message, start_byte_offset, end_byte_offset)`.
+    /// Populated during `update_ast` from `Program::errors` and consumed
+    /// by the syntax-error diagnostic collector.  When the parser panics
+    /// (caught by `catch_unwind`), a single "Parse failed" entry is
+    /// stored instead.
+    pub(crate) parse_errors: Arc<RwLock<HashMap<String, Vec<ParseErrorEntry>>>>,
     pub(crate) client: Option<Client>,
     /// The root directory of the workspace (set during `initialize`).
     pub(crate) workspace_root: Arc<RwLock<Option<PathBuf>>>,
@@ -435,6 +449,7 @@ impl Backend {
             open_files: Arc::new(RwLock::new(HashMap::new())),
             ast_map: Arc::new(RwLock::new(HashMap::new())),
             symbol_maps: Arc::new(RwLock::new(HashMap::new())),
+            parse_errors: Arc::new(RwLock::new(HashMap::new())),
             client: None,
             workspace_root: Arc::new(RwLock::new(None)),
             vendor_uri_prefixes: Mutex::new(Vec::new()),
@@ -619,6 +634,7 @@ impl Backend {
             open_files: Arc::clone(&self.open_files),
             ast_map: Arc::clone(&self.ast_map),
             symbol_maps: Arc::clone(&self.symbol_maps),
+            parse_errors: Arc::clone(&self.parse_errors),
             // RwLock fields are shared by Arc::clone — the diagnostic
             // worker reads them concurrently with the main Backend.
             client: self.client.clone(),

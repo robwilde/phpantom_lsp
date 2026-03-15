@@ -42,10 +42,22 @@ impl Backend {
         let content_owned = content.to_string();
         let uri_owned = uri.to_string();
 
-        crate::util::catch_panic_unwind_safe("parse", uri, None, || {
+        let result = crate::util::catch_panic_unwind_safe("parse", uri, None, || {
             self.update_ast_inner(&uri_owned, &content_owned)
-        })
-        .unwrap_or(false)
+        });
+
+        match result {
+            Some(changed) => changed,
+            None => {
+                // Parser panicked — store a single "Parse failed" error
+                // so the syntax-error diagnostic collector can report it.
+                self.parse_errors.write().insert(
+                    uri.to_string(),
+                    vec![("Parse failed (internal error)".to_string(), 0, 0)],
+                );
+                false
+            }
+        }
     }
 
     /// Inner implementation of [`update_ast`] that performs the actual
@@ -57,6 +69,23 @@ impl Backend {
         let arena = Bump::new();
         let file_id = mago_database::file::FileId::new("input.php");
         let program = parse_file_content(&arena, file_id, content);
+
+        // Cache parse errors for the syntax-error diagnostic collector.
+        // Extract (message, start_byte, end_byte) tuples from the
+        // arena-allocated errors before the arena is dropped.
+        {
+            use mago_span::HasSpan;
+
+            let errors: Vec<(String, u32, u32)> = program
+                .errors
+                .iter()
+                .map(|e| {
+                    let span = e.span();
+                    (e.to_string(), span.start.offset, span.end.offset)
+                })
+                .collect();
+            self.parse_errors.write().insert(uri.to_string(), errors);
+        }
 
         let doc_ctx = DocblockCtx {
             trivias: program.trivia.as_slice(),

@@ -17,6 +17,10 @@
 //!
 //! ## Phase 1 — fast (no type resolution)
 //!
+//! - **Syntax error diagnostics** — surface parse errors from the Mago
+//!   parser as Error-severity diagnostics.  The most fundamental
+//!   diagnostic: without it, a user with a typo gets no feedback until
+//!   they try to run the code.
 //! - **`@deprecated` usage diagnostics** — report references to symbols
 //!   marked `@deprecated` with `DiagnosticTag::Deprecated` (renders as
 //!   strikethrough in most editors).
@@ -42,6 +46,10 @@
 //!   the editor in warnings.
 //! - **Argument count diagnostics** — report calls where the number of
 //!   arguments does not match the function/method signature.
+//! - **Implementation error diagnostics** — report concrete classes that
+//!   fail to implement all required methods from their interfaces or
+//!   abstract parents.  Reuses the same missing-method detection as the
+//!   "Implement missing methods" code action.
 //!
 //! ## Phase 3 — heavy (external process, dedicated worker)
 //!
@@ -59,15 +67,25 @@
 //!
 //! ## Publishing strategy
 //!
-//! Each phase publishes immediately, merging its fresh results with
-//! **cached** results from the other phases:
+//! Fast diagnostics are **always pushed** immediately via
+//! `textDocument/publishDiagnostics`, merged with cached slow and
+//! PHPStan results so the editor never shows a gap.  This gives
+//! instant feedback (strikethrough, dimming) regardless of client
+//! capabilities.
 //!
-//! - Phase 1 publishes: fresh fast + cached slow + cached PHPStan
-//! - Phase 2 publishes: fresh fast + fresh slow + cached PHPStan
-//! - PHPStan worker publishes: cached fast+slow + fresh PHPStan
+//! Slow diagnostics are then computed by the background worker:
 //!
-//! This ensures diagnostics from all providers remain visible at all
-//! times, without flickering when any single phase updates.
+//! - **Pull mode** — the worker caches the full result (fast + fresh
+//!   slow + cached PHPStan) and sends `workspace/diagnostic/refresh`.
+//!   The editor re-pulls and gets the complete set.  No second push
+//!   is needed.
+//!
+//! - **Push mode** (fallback) — the worker pushes the full result
+//!   (fast + fresh slow + cached PHPStan) via `publishDiagnostics`,
+//!   replacing the Phase 1 snapshot.
+//!
+//! - **PHPStan worker** — caches its results and triggers a re-deliver
+//!   (refresh in pull mode, full re-publish in push mode).
 //!
 //! Diagnostics are published **asynchronously** via [`Backend::schedule_diagnostics`].
 //! On every `did_change` event a version counter is bumped and the
@@ -82,6 +100,8 @@
 mod argument_count;
 mod deprecated;
 pub(crate) mod helpers;
+mod implementation_errors;
+mod syntax_errors;
 pub(crate) mod unknown_classes;
 pub(crate) mod unknown_functions;
 pub(crate) mod unknown_members;
@@ -95,59 +115,67 @@ use tower_lsp::lsp_types::*;
 use crate::Backend;
 use crate::phpstan;
 
-// ── Shared diagnostic collection ────────────────────────────────────────────
+// ── Shared helpers ──────────────────────────────────────────────────────────
 
 impl Backend {
-    /// Collect all diagnostics (fast + slow + cached PHPStan) for a single
-    /// file and return them as a deduplicated `Vec<Diagnostic>`.
-    ///
-    /// This is the shared core used by both the pull-diagnostic handler
-    /// (`textDocument/diagnostic`) and the push-diagnostic publisher.
-    /// It runs Phase 1 and Phase 2 collectors synchronously, then merges
-    /// cached PHPStan results.
-    pub fn collect_all_diagnostics(&self, uri_str: &str, content: &str) -> Vec<Diagnostic> {
-        // Skip stub files and vendor files.
+    /// Returns `true` if the URI should be skipped for diagnostics
+    /// (stub files and vendor files).
+    fn should_skip_diagnostics(&self, uri_str: &str) -> bool {
         if uri_str.starts_with("phpantom-stub://") || uri_str.starts_with("phpantom-stub-fn://") {
-            return Vec::new();
+            return true;
         }
+        let prefixes = self.vendor_uri_prefixes.lock();
+        prefixes.iter().any(|p| uri_str.starts_with(p.as_str()))
+    }
+
+    /// Collect Phase 1 (fast) diagnostics: syntax errors, deprecated
+    /// usage, unused imports.  These are cheap — no type resolution.
+    fn collect_fast_diagnostics(
+        &self,
+        uri_str: &str,
+        content: &str,
+        out: &mut Vec<Diagnostic>,
+    ) {
+        self.collect_syntax_error_diagnostics(uri_str, content, out);
+        self.collect_deprecated_diagnostics(uri_str, content, out);
+        self.collect_unused_import_diagnostics(uri_str, content, out);
+    }
+
+    /// Collect Phase 2 (slow) diagnostics: unknown class/member/function,
+    /// argument count, implementation errors.  These require type
+    /// resolution and are expensive.
+    fn collect_slow_diagnostics(
+        &self,
+        uri_str: &str,
+        content: &str,
+        out: &mut Vec<Diagnostic>,
+    ) {
+        self.collect_unknown_class_diagnostics(uri_str, content, out);
+        self.collect_unknown_member_diagnostics(uri_str, content, out);
+        self.collect_unknown_function_diagnostics(uri_str, content, out);
+        self.collect_unresolved_member_access_diagnostics(uri_str, content, out);
+        self.collect_argument_count_diagnostics(uri_str, content, out);
+        self.collect_implementation_error_diagnostics(uri_str, content, out);
+    }
+
+    /// Build a merged diagnostic set from fresh fast diagnostics,
+    /// cached slow diagnostics, and cached PHPStan diagnostics.
+    fn merge_fast_with_cached(&self, uri_str: &str, fast: &[Diagnostic]) -> Vec<Diagnostic> {
+        let mut merged = fast.to_vec();
         {
-            let prefixes = self.vendor_uri_prefixes.lock();
-            if prefixes.iter().any(|p| uri_str.starts_with(p.as_str())) {
-                return Vec::new();
+            let cache = self.diag_last_slow.lock();
+            if let Some(prev_slow) = cache.get(uri_str) {
+                merged.extend(prev_slow.iter().cloned());
             }
         }
-
-        // ── Phase 1: fast diagnostics (no type resolution) ──────────
-        let mut fast_diagnostics = Vec::new();
-        self.collect_deprecated_diagnostics(uri_str, content, &mut fast_diagnostics);
-        self.collect_unused_import_diagnostics(uri_str, content, &mut fast_diagnostics);
-
-        // ── Phase 2: slow diagnostics (require type resolution) ─────
-        let mut slow_diagnostics = Vec::new();
-        self.collect_unknown_class_diagnostics(uri_str, content, &mut slow_diagnostics);
-        self.collect_unknown_member_diagnostics(uri_str, content, &mut slow_diagnostics);
-        self.collect_unknown_function_diagnostics(uri_str, content, &mut slow_diagnostics);
-        self.collect_unresolved_member_access_diagnostics(uri_str, content, &mut slow_diagnostics);
-        self.collect_argument_count_diagnostics(uri_str, content, &mut slow_diagnostics);
-
-        // Cache the slow diagnostics for the push-model fast-phase merge.
-        {
-            let mut cache = self.diag_last_slow.lock();
-            cache.insert(uri_str.to_string(), slow_diagnostics.clone());
-        }
-
-        // ── Combine fast + slow + cached PHPStan ────────────────────
-        let mut diagnostics = fast_diagnostics;
-        diagnostics.extend(slow_diagnostics);
         {
             let cache = self.phpstan_last_diags.lock();
             if let Some(prev_phpstan) = cache.get(uri_str) {
-                diagnostics.extend(prev_phpstan.iter().cloned());
+                merged.extend(prev_phpstan.iter().cloned());
             }
         }
-
-        deduplicate_diagnostics(&mut diagnostics);
-        diagnostics
+        deduplicate_diagnostics(&mut merged);
+        merged
     }
 }
 
@@ -161,70 +189,121 @@ const DIAGNOSTIC_DEBOUNCE_MS: u64 = 500;
 const PHPSTAN_DEBOUNCE_MS: u64 = 2_000;
 
 impl Backend {
-    /// Collect all diagnostics for a single file and deliver them.
+    /// Deliver diagnostics for a single file.
     ///
-    /// Called from the diagnostic worker task spawned by
-    /// [`schedule_diagnostics`](Self::schedule_diagnostics).
+    /// Called from the background diagnostic worker after debouncing.
     ///
-    /// In **push mode**, computes diagnostics and publishes them via
-    /// `textDocument/publishDiagnostics`.
+    /// **Phase 1 (instant, both modes):** Run fast collectors (syntax
+    /// errors, deprecated, unused imports), merge with *cached* slow
+    /// and PHPStan results, and push via `publishDiagnostics`.  The
+    /// editor shows strikethrough and dimming within milliseconds.
     ///
-    /// In **pull mode**, computes diagnostics, caches them, bumps the
-    /// `resultId`, and sends `workspace/diagnostic/refresh` so the
-    /// editor re-pulls.  The pull handlers only return cached data, so
-    /// this background path is the only place where
-    /// `collect_all_diagnostics` runs.
+    /// **Phase 2 (background, mode-dependent):**
     ///
-    /// `uri_str` is the file URI string (e.g. `"file:///path/to/file.php"`).
-    /// `content` is the full text of the file.
+    /// - **Pull mode:** Compute slow diagnostics, build the full set
+    ///   (fast + fresh slow + cached PHPStan), cache it in
+    ///   `diag_last_full`, bump the `resultId`, and send
+    ///   `workspace/diagnostic/refresh`.  The editor re-pulls and
+    ///   gets the complete set.  Push always serves cached slow, so
+    ///   no second push is needed.
+    ///
+    /// - **Push mode (fallback):** Compute slow diagnostics, then
+    ///   push the full set (fast + fresh slow + cached PHPStan),
+    ///   replacing the Phase 1 snapshot.
     pub(crate) async fn publish_diagnostics_for_file(&self, uri_str: &str, content: &str) {
         let client = match &self.client {
             Some(c) => c,
             None => return,
         };
 
+        if self.should_skip_diagnostics(uri_str) {
+            return;
+        }
+
         let pull_mode = self.supports_pull_diagnostics.load(Ordering::Acquire);
 
-        // Collect all diagnostics via the shared method.
-        let diagnostics = self.collect_all_diagnostics(uri_str, content);
+        // ── Phase 1: push fast diagnostics immediately ──────────────
+        // Merge fresh fast with cached slow + PHPStan so the editor
+        // never shows a gap where those diagnostics vanish then
+        // reappear.
+        let mut fast_diagnostics = Vec::new();
+        self.collect_fast_diagnostics(uri_str, content, &mut fast_diagnostics);
+
+        let phase1 = self.merge_fast_with_cached(uri_str, &fast_diagnostics);
+
+        let uri = match uri_str.parse::<Url>() {
+            Ok(u) => u,
+            Err(_) => return,
+        };
+        client.publish_diagnostics(uri.clone(), phase1, None).await;
+
+        // ── Phase 2: compute slow diagnostics ───────────────────────
+        let mut slow_diagnostics = Vec::new();
+        self.collect_slow_diagnostics(uri_str, content, &mut slow_diagnostics);
+
+        // Cache fresh slow diagnostics for the next Phase 1 merge.
+        {
+            let mut cache = self.diag_last_slow.lock();
+            cache.insert(uri_str.to_string(), slow_diagnostics.clone());
+        }
+
+        // Build the full set: fast + fresh slow + cached PHPStan.
+        let mut full = fast_diagnostics;
+        full.extend(slow_diagnostics);
+        let phpstan_before: Vec<Diagnostic> = {
+            let cache = self.phpstan_last_diags.lock();
+            match cache.get(uri_str) {
+                Some(diags) => diags.clone(),
+                None => Vec::new(),
+            }
+        };
+        full.extend(phpstan_before.iter().cloned());
+        deduplicate_diagnostics(&mut full);
+
+        // If deduplication suppressed any full-line PHPStan diagnostics
+        // (because a precise native diagnostic covers the same line),
+        // prune them from the PHPStan cache too.  Without this, the
+        // next Phase 1 merge would resurrect the stale full-line
+        // diagnostic as soon as the user fixes the precise error (the
+        // precise diagnostic disappears from the slow cache, so the
+        // full-line one would no longer be suppressed).
+        if !phpstan_before.is_empty() {
+            let pruned: Vec<Diagnostic> = phpstan_before
+                .into_iter()
+                .filter(|d| full.iter().any(|f| f.range == d.range && f.message == d.message))
+                .collect();
+            let mut cache = self.phpstan_last_diags.lock();
+            if let Some(cached) = cache.get(uri_str)
+                && pruned.len() != cached.len()
+            {
+                cache.insert(uri_str.to_string(), pruned);
+            }
+        }
 
         if pull_mode {
-            // Cache the results and bump the resultId so the next
-            // pull request returns the fresh diagnostics.
+            // Cache for pull handlers, bump resultId, signal refresh.
             {
                 let mut cache = self.diag_last_full.lock();
-                cache.insert(uri_str.to_string(), diagnostics);
+                cache.insert(uri_str.to_string(), full);
             }
             {
                 let mut ids = self.diag_result_ids.lock();
                 let id = ids.entry(uri_str.to_string()).or_insert(0);
                 *id += 1;
             }
-            // Signal the editor to re-pull.
             let _ = client.workspace_diagnostic_refresh().await;
         } else {
-            // Push mode: publish diagnostics directly.
-            let uri = match uri_str.parse::<Url>() {
-                Ok(u) => u,
-                Err(_) => return,
-            };
-            client.publish_diagnostics(uri, diagnostics, None).await;
+            // Push the full set, replacing the Phase 1 snapshot.
+            client.publish_diagnostics(uri, full, None).await;
         }
     }
 
     /// Notify the diagnostic system that a file needs fresh diagnostics.
     ///
-    /// In **pull mode**, this invalidates the cached diagnostics and
-    /// queues the file for the background worker.  The worker computes
-    /// diagnostics, caches the result, and sends
-    /// `workspace/diagnostic/refresh` so the editor re-pulls.  The pull
-    /// handlers (`textDocument/diagnostic`, `workspace/diagnostic`) only
-    /// ever return cached results — they never compute inline — so they
-    /// never block the LSP request thread.
-    ///
-    /// In **push mode**, this queues the file for the background worker
-    /// which debounces, computes diagnostics, and publishes them via
-    /// `textDocument/publishDiagnostics`.
+    /// Queues the file for the background diagnostic worker.  In pull
+    /// mode, also invalidates the cached full diagnostics so the worker
+    /// recomputes them.  The pull handlers only ever return cached data,
+    /// so they never block the LSP request thread.
     ///
     /// This returns immediately — all diagnostic computation happens
     /// in the background so that completion, hover, and signature help
@@ -261,12 +340,9 @@ impl Backend {
     /// deprecated usage) may depend on the changed class.  The edited
     /// file itself is excluded (it is already scheduled by the caller).
     ///
-    /// In both modes, this queues all open files (except the excluded
-    /// one) for the background diagnostic worker.  In **pull mode** it
+    /// Queues all open files for the background worker.  In pull mode,
     /// also invalidates the cached full diagnostics so the worker
-    /// recomputes them; the worker then caches the fresh results and
-    /// sends `workspace/diagnostic/refresh`.  In **push mode** the
-    /// worker publishes directly via `textDocument/publishDiagnostics`.
+    /// recomputes them.
     pub(crate) fn schedule_diagnostics_for_open_files(&self, exclude_uri: &str) {
         let pull_mode = self.supports_pull_diagnostics.load(Ordering::Acquire);
 
@@ -526,35 +602,16 @@ impl Backend {
                 cache.insert(uri.clone(), phpstan_diags);
             }
 
-            let pull_mode = self.supports_pull_diagnostics.load(Ordering::Acquire);
-
-            if pull_mode {
-                // In pull mode, bump the resultId so the next pull
-                // returns fresh diagnostics (including PHPStan), and
-                // invalidate the cached full set so it is recomputed.
-                {
-                    let mut ids = self.diag_result_ids.lock();
-                    let id = ids.entry(uri.clone()).or_insert(0);
-                    *id += 1;
+            // Re-deliver diagnostics for this file so the editor sees
+            // the fresh PHPStan results merged with native diagnostics.
+            let content = {
+                let files = self.open_files.read();
+                match files.get(&uri) {
+                    Some(c) => c.clone(),
+                    None => continue,
                 }
-                self.diag_last_full.lock().remove(&uri);
-                if let Some(client) = &self.client {
-                    let _ = client.workspace_diagnostic_refresh().await;
-                }
-            } else {
-                // Push mode: re-run the full publish (phases 1+2
-                // + fresh PHPStan cache) so the editor sees the
-                // merged result.  `publishDiagnostics` replaces the
-                // entire diagnostic set for the file.
-                let content = {
-                    let files = self.open_files.read();
-                    match files.get(&uri) {
-                        Some(c) => c.clone(),
-                        None => continue,
-                    }
-                };
-                self.publish_diagnostics_for_file(&uri, &content).await;
-            }
+            };
+            self.publish_diagnostics_for_file(&uri, &content).await;
         }
     }
 
@@ -573,19 +630,18 @@ impl Backend {
             None => return,
         };
 
-        let pull_mode = self.supports_pull_diagnostics.load(Ordering::Acquire);
+        let uri = match uri_str.parse::<Url>() {
+            Ok(u) => u,
+            Err(_) => return,
+        };
 
-        if pull_mode {
-            // In pull mode, the editor will stop pulling for closed
-            // files automatically.  Send a refresh in case it still
-            // has stale results cached.
+        // Always push empty diagnostics to clear any Phase 1 snapshot.
+        client.publish_diagnostics(uri, Vec::new(), None).await;
+
+        if self.supports_pull_diagnostics.load(Ordering::Acquire) {
+            // Also send a refresh so the editor re-pulls (and gets
+            // empty results for the now-closed file).
             let _ = client.workspace_diagnostic_refresh().await;
-        } else {
-            let uri = match uri_str.parse::<Url>() {
-                Ok(u) => u,
-                Err(_) => return,
-            };
-            client.publish_diagnostics(uri, Vec::new(), None).await;
         }
     }
 }

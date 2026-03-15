@@ -128,20 +128,22 @@ impl Backend {
 /// Walks the full inheritance chain (parent classes, interfaces, traits)
 /// and returns methods that are abstract and not already defined on the
 /// class itself or inherited as concrete from parent classes.
-fn collect_missing_methods(
+pub(crate) fn collect_missing_methods(
     class: &ClassInfo,
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
 ) -> Vec<MethodInfo> {
     // Build the full set of concrete method names already available on
-    // this class: own methods + concrete methods inherited from the
-    // parent chain.  This ensures that if a parent implements an
-    // interface method, the child doesn't re-stub it.
+    // this class: own methods + concrete methods from used traits +
+    // concrete methods inherited from the parent chain (including
+    // their traits).  This ensures that if a trait or parent implements
+    // an interface method, the child doesn't re-stub it.
     let mut implemented_names: Vec<String> = class
         .methods
         .iter()
         .map(|m| m.name.to_lowercase())
         .collect();
 
+    collect_concrete_trait_methods(&class.used_traits, class_loader, &mut implemented_names, 0);
     collect_concrete_parent_methods(&class.parent_class, class_loader, &mut implemented_names, 0);
 
     let mut missing: Vec<MethodInfo> = Vec::new();
@@ -175,6 +177,9 @@ fn collect_missing_methods(
 /// Walk the parent chain and collect names of concrete (non-abstract)
 /// methods into `implemented`.  This lets us know which interface or
 /// abstract methods are already satisfied by a parent class.
+///
+/// Also collects concrete methods from traits used by each parent,
+/// since trait methods are effectively part of the class in PHP.
 fn collect_concrete_parent_methods(
     parent_name: &Option<String>,
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
@@ -204,7 +209,61 @@ fn collect_concrete_parent_methods(
         }
     }
 
+    // Traits used by the parent also provide concrete methods.
+    collect_concrete_trait_methods(&parent.used_traits, class_loader, implemented, depth + 1);
+
     collect_concrete_parent_methods(&parent.parent_class, class_loader, implemented, depth + 1);
+}
+
+/// Walk a list of used traits (and their sub-traits and parent classes)
+/// and collect names of concrete (non-abstract) methods into
+/// `implemented`.  In PHP, trait methods are effectively part of the
+/// class that uses them, so they satisfy interface and abstract-method
+/// requirements.
+fn collect_concrete_trait_methods(
+    trait_names: &[String],
+    class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
+    implemented: &mut Vec<String>,
+    depth: usize,
+) {
+    if depth > crate::types::MAX_INHERITANCE_DEPTH as usize {
+        return;
+    }
+
+    for trait_name in trait_names {
+        let trait_info = match class_loader(trait_name) {
+            Some(c) => c,
+            None => continue,
+        };
+
+        for method in &trait_info.methods {
+            if !method.is_abstract {
+                let lower = method.name.to_lowercase();
+                if !implemented.contains(&lower) {
+                    implemented.push(lower);
+                }
+            }
+        }
+
+        // Traits can use other traits — recurse into sub-traits.
+        if !trait_info.used_traits.is_empty() {
+            collect_concrete_trait_methods(
+                &trait_info.used_traits,
+                class_loader,
+                implemented,
+                depth + 1,
+            );
+        }
+
+        // Traits can also extend a parent class (rare but valid in
+        // the class model — e.g. stubs may model this).
+        collect_concrete_parent_methods(
+            &trait_info.parent_class,
+            class_loader,
+            implemented,
+            depth + 1,
+        );
+    }
 }
 
 /// Recursively collect unimplemented methods from an interface and its
