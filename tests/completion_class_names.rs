@@ -1652,16 +1652,16 @@ async fn test_new_context_demotes_likely_non_instantiable_classmap() {
     let items = complete_at(&backend, &uri, text, 1, 11).await;
     let classes = class_items(&items);
 
-    // New sort_text format: {quality}{tier}{affinity:4}{gap:3}{demote}_{name}
-    // Demote flag is at position 9 ('0' = normal, '1' = demoted).
+    // New sort_text format: {quality}{tier}{affinity:4}{demote}{gap:3}_{name}
+    // Demote flag is at position 6 ('0' = normal, '1' = demoted).
     // Within the same match quality group, demoted items sort after
     // normal items.
 
-    // Helper: extract the demote flag (position 9) from a sort_text.
+    // Helper: extract the demote flag (position 6) from a sort_text.
     let demote_flag = |item: &CompletionItem| -> char {
         item.sort_text
             .as_deref()
-            .and_then(|s| s.chars().nth(9))
+            .and_then(|s| s.chars().nth(6))
             .unwrap_or('?')
     };
 

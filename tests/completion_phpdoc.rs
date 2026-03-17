@@ -2801,3 +2801,173 @@ async fn test_phpdoc_inline_var_compound_assignment_is_unknown() {
         v.label
     );
 }
+
+// ─── PHPDoc type references exclude traits ──────────────────────────────────
+
+/// `@param` type completions should exclude traits (they are meaningless
+/// as type hints in PHP).
+#[tokio::test]
+async fn test_phpdoc_param_type_excludes_traits() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test/phpdoc_trait_filter.php").unwrap();
+
+    let src = concat!(
+        "<?php\n",
+        "namespace DocTraitTest;\n",
+        "class SomeClass {}\n",
+        "interface SomeInterface {}\n",
+        "trait SomeTrait {}\n",
+        "enum SomeEnum {}\n",
+        "class Demo {\n",
+        "    /**\n",
+        "     * @param Some\n",
+        "     */\n",
+        "    public function foo($x): void {}\n",
+        "}\n",
+    );
+    // Line 8: `     * @param Some`
+    // cursor after "Some" = col 17
+    let items = complete_at(&backend, &uri, src, 8, 17).await;
+    let class_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::CLASS))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        class_labels.contains(&"SomeClass"),
+        "@param type should include classes, got: {:?}",
+        class_labels
+    );
+    assert!(
+        class_labels.contains(&"SomeInterface"),
+        "@param type should include interfaces, got: {:?}",
+        class_labels
+    );
+    assert!(
+        class_labels.contains(&"SomeEnum"),
+        "@param type should include enums, got: {:?}",
+        class_labels
+    );
+    assert!(
+        !class_labels.contains(&"SomeTrait"),
+        "@param type should NOT include traits, got: {:?}",
+        class_labels
+    );
+}
+
+/// `@return` type completions should exclude traits.
+#[tokio::test]
+async fn test_phpdoc_return_type_excludes_traits() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test/phpdoc_return_trait.php").unwrap();
+
+    let src = concat!(
+        "<?php\n",
+        "namespace DocReturnTest;\n",
+        "class SomeClass {}\n",
+        "trait SomeTrait {}\n",
+        "class Demo {\n",
+        "    /**\n",
+        "     * @return Some\n",
+        "     */\n",
+        "    public function foo() {}\n",
+        "}\n",
+    );
+    // Line 6: `     * @return Some`
+    // cursor after "Some" = col 18
+    let items = complete_at(&backend, &uri, src, 6, 18).await;
+    let class_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::CLASS))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        class_labels.contains(&"SomeClass"),
+        "@return type should include classes, got: {:?}",
+        class_labels
+    );
+    assert!(
+        !class_labels.contains(&"SomeTrait"),
+        "@return type should NOT include traits, got: {:?}",
+        class_labels
+    );
+}
+
+/// `@var` type completions should exclude traits.
+#[tokio::test]
+async fn test_phpdoc_var_type_excludes_traits() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test/phpdoc_var_trait.php").unwrap();
+
+    let src = concat!(
+        "<?php\n",
+        "namespace DocVarTest;\n",
+        "class SomeClass {}\n",
+        "trait SomeTrait {}\n",
+        "class Demo {\n",
+        "    /**\n",
+        "     * @var Some\n",
+        "     */\n",
+        "    public $prop;\n",
+        "}\n",
+    );
+    // Line 6: `     * @var Some`
+    // cursor after "Some" = col 15
+    let items = complete_at(&backend, &uri, src, 6, 15).await;
+    let class_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::CLASS))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        class_labels.contains(&"SomeClass"),
+        "@var type should include classes, got: {:?}",
+        class_labels
+    );
+    assert!(
+        !class_labels.contains(&"SomeTrait"),
+        "@var type should NOT include traits, got: {:?}",
+        class_labels
+    );
+}
+
+/// `@throws` type completions should still use Throwable-filtered
+/// completion (not the TypeHint filter), so this is unchanged.
+#[tokio::test]
+async fn test_phpdoc_throws_uses_throwable_filter_not_type_hint() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test/phpdoc_throws_filter.php").unwrap();
+
+    let src = concat!(
+        "<?php\n",
+        "namespace DocThrowsTest;\n",
+        "class SomeClass {}\n",
+        "class SomeException extends \\Exception {}\n",
+        "class Demo {\n",
+        "    /**\n",
+        "     * @throws Some\n",
+        "     */\n",
+        "    public function foo(): void {}\n",
+        "}\n",
+    );
+    // Line 6: `     * @throws Some`
+    // cursor after "Some" = col 18
+    let items = complete_at(&backend, &uri, src, 6, 18).await;
+    let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+
+    // SomeException extends RuntimeException → Throwable descendant → included
+    assert!(
+        labels.contains(&"SomeException"),
+        "@throws should include Throwable descendants, got: {:?}",
+        labels
+    );
+    // SomeClass has no parent → confirmed NOT Throwable → filtered out
+    assert!(
+        !labels.contains(&"SomeClass"),
+        "@throws should filter out non-Throwable classes, got: {:?}",
+        labels
+    );
+}

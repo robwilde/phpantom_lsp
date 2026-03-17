@@ -786,21 +786,24 @@ When the user types a class name outside of a member-access chain (`->`, `::`), 
 
 ### Context Detection
 
-`detect_class_name_context()` in `class_completion.rs` walks backward from the cursor through whitespace and comma-separated identifier lists to find the keyword that governs the completion position. It recognises eleven contexts:
+`detect_class_name_context()` in `class_completion.rs` walks backward from the cursor through whitespace and comma-separated identifier lists to find the keyword that governs the completion position. It recognises twelve contexts:
 
-| Context                | Trigger                               | What is shown                                      |
-| ---------------------- | ------------------------------------- | -------------------------------------------------- |
-| `Any`                  | Bare identifier (e.g. `$x = DateT\|`) | All class-likes, constants, and functions          |
-| `New`                  | `new \|`                              | Concrete (non-abstract) classes only               |
-| `ExtendsClass`         | `class A extends \|`                  | Non-final classes (abstract is OK)                 |
-| `ExtendsInterface`     | `interface B extends \|`              | Interfaces only                                    |
-| `Implements`           | `class C implements \|`               | Interfaces only                                    |
-| `TraitUse`             | `class D { use \|`                    | Traits only                                        |
-| `Instanceof`           | `$x instanceof \|`                    | Classes, interfaces, enums (not traits)            |
-| `UseImport`            | `use \|` (top level)                  | All class-likes + `function`/`const` keyword hints |
-| `UseFunction`          | `use function \|`                     | Functions only                                     |
-| `UseConst`             | `use const \|`                        | Constants only                                     |
-| `NamespaceDeclaration` | `namespace \|`                        | Namespace names only                               |
+| Context                | Trigger                                | What is shown                                      |
+| ---------------------- | -------------------------------------- | -------------------------------------------------- |
+| `Any`                  | Bare identifier (e.g. `$x = DateT\|`)  | All class-likes, constants, and functions          |
+| `New`                  | `new \|`                               | Concrete (non-abstract) classes only               |
+| `ExtendsClass`         | `class A extends \|`                   | Non-final classes (abstract is OK)                 |
+| `ExtendsInterface`     | `interface B extends \|`               | Interfaces only                                    |
+| `Implements`           | `class C implements \|`                | Interfaces only                                    |
+| `TraitUse`             | `class D { use \|`                     | Traits only                                        |
+| `Instanceof`           | `$x instanceof \|`                     | Classes, interfaces, enums (not traits)            |
+| `TypeHint`             | `function f(\|)`, `): \|`, `public \|` | Classes, interfaces, enums (not traits)            |
+| `UseImport`            | `use \|` (top level)                   | All class-likes + `function`/`const` keyword hints |
+| `UseFunction`          | `use function \|`                      | Functions only                                     |
+| `UseConst`             | `use const \|`                         | Constants only                                     |
+| `NamespaceDeclaration` | `namespace \|`                         | Namespace names only                               |
+
+`TypeHint` is not detected by `detect_class_name_context` (which only handles keyword-triggered contexts). Instead, the type-hint completion handler (`complete_type_hint`) and the PHPDoc type completion handler (`complete_docblock_type_or_variable`) pass `ClassNameContext::TypeHint` directly to `build_class_name_completions`. This excludes traits from parameter types, return types, property types, and PHPDoc `@param`/`@return`/`@var` type positions. `@throws` uses a separate Throwable-filtered path instead.
 
 Comma-separated lists are handled by walking past `Identifier,` sequences so that `implements Foo, Bar, \|` still resolves to `Implements`. Multi-line declarations work the same way because the backward walk skips all whitespace including newlines.
 
@@ -825,7 +828,7 @@ Comma-separated lists are handled by walking past `Identifier,` sequences so tha
 `build_class_name_completions` collects candidates from five sources. Deduplication is by FQN (`seen_fqns` set). All candidates are ranked by a five-dimension `sort_text` key:
 
 ```
-{match_quality}{source_tier}{affinity}{gap}{demote}_{short_name_lower}
+{match_quality}{source_tier}{affinity}{demote}{gap}_{short_name_lower}
 ```
 
 **Match quality** (highest weight). Compares the typed prefix against the short name: `a` = exact match, `b` = starts-with (or empty prefix), `c` = substring only. An exact match always ranks above every prefix match, regardless of source or affinity.
@@ -840,9 +843,9 @@ Comma-separated lists are handled by walking past `Identifier,` sequences so tha
 
 **Import affinity**. A four-digit inverted score derived from the file's namespace declaration and existing `use` imports. Namespaces that appear frequently in the file's imports score higher, pushing related classes above unrelated ones within the same tier. The score sums occurrence counts across all ancestor prefixes of the candidate's namespace.
 
-**Name-length gap**. A three-digit distance between the short name length and the typed prefix length (`short_name.len() - prefix.len()`). Smaller gaps sort first. This sits after affinity so namespace proximity remains the stronger signal, but it breaks ties within the same affinity group. The effect: typing `"Pro"` ranks `Product` (gap 4) above `ProductFilterTerm` (gap 14) when both live in the same namespace. This smooths the visual transition as a prefix match narrows toward an exact match. Without it, there is a visible "snap" when a candidate suddenly jumps to the top upon becoming an exact match.
+**Heuristic demotion**. `0` = normal, `1` = demoted by naming-convention heuristics (see below). Demotion sits after affinity but before gap, so a demoted exact match still ranks above every non-demoted prefix match (match quality is higher weight), and a non-demoted name always beats a demoted name within the same affinity group regardless of name length.
 
-**Heuristic demotion**. `0` = normal, `1` = demoted by naming-convention heuristics (see below). Demotion sits after match quality in the key, so a demoted exact match still ranks above every non-demoted prefix match.
+**Name-length gap**. A three-digit distance between the short name length and the typed prefix length (`short_name.len() - prefix.len()`). Smaller gaps sort first. This is the lowest-weight dimension, breaking ties within the same affinity and demotion group. The effect: typing `"Pro"` ranks `Product` (gap 4) above `ProductFilterTerm` (gap 14) when both live in the same namespace. This smooths the visual transition as a prefix match narrows toward an exact match. Without it, there is a visible "snap" when a candidate suddenly jumps to the top upon becoming an exact match.
 
 The result set is capped at 300 items. When truncated, `is_incomplete` is set to `true` so the editor re-requests completions as the user types more characters. Items are sorted by `sort_text` before truncation so higher-priority items survive.
 
@@ -901,7 +904,7 @@ When a class is not loaded and not a stub (typically a classmap or class_index e
 - Names ending in `Interface` or starting with `I[A-Z]` are demoted in `ExtendsClass` and `New`.
 - Names starting with `Abstract` or `Base[A-Z]` are demoted in `Implements`, `ExtendsInterface`, `TraitUse`, and `New`.
 
-Demotion sets the fifth dimension of the sort key to `1`, pushing the item below non-demoted items within the same match quality, tier, affinity, and gap group. The item is never removed, because naming conventions are not reliable enough to exclude candidates entirely. A demoted exact match still ranks above every non-demoted prefix match, since match quality is the primary dimension.
+Demotion sets the fourth dimension of the sort key to `1`, pushing the item below non-demoted items within the same match quality, tier, and affinity group. The item is never removed, because naming conventions are not reliable enough to exclude candidates entirely. A demoted exact match still ranks above every non-demoted prefix match, since match quality is the primary dimension.
 
 ## Memory Overhead
 

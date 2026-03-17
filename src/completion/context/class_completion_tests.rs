@@ -325,6 +325,95 @@ fn test_new_rejects_interface() {
     );
 }
 
+// ── ClassNameContext::TypeHint ───────────────────────────────────
+
+#[test]
+fn test_type_hint_accepts_class() {
+    assert!(
+        ClassNameContext::TypeHint.matches_kind_flags(ClassLikeKind::Class, false, false),
+        "TypeHint should accept classes"
+    );
+}
+
+#[test]
+fn test_type_hint_accepts_interface() {
+    assert!(
+        ClassNameContext::TypeHint.matches_kind_flags(ClassLikeKind::Interface, false, false),
+        "TypeHint should accept interfaces"
+    );
+}
+
+#[test]
+fn test_type_hint_accepts_enum() {
+    assert!(
+        ClassNameContext::TypeHint.matches_kind_flags(ClassLikeKind::Enum, false, false),
+        "TypeHint should accept enums"
+    );
+}
+
+#[test]
+fn test_type_hint_rejects_trait() {
+    assert!(
+        !ClassNameContext::TypeHint.matches_kind_flags(ClassLikeKind::Trait, false, false),
+        "TypeHint should reject traits"
+    );
+}
+
+#[test]
+fn test_type_hint_accepts_abstract_class() {
+    assert!(
+        ClassNameContext::TypeHint.matches_kind_flags(ClassLikeKind::Class, true, false),
+        "TypeHint should accept abstract classes (they are valid type hints)"
+    );
+}
+
+#[test]
+fn test_type_hint_accepts_final_class() {
+    assert!(
+        ClassNameContext::TypeHint.matches_kind_flags(ClassLikeKind::Class, false, true),
+        "TypeHint should accept final classes"
+    );
+}
+
+#[test]
+fn test_type_hint_is_class_only() {
+    assert!(
+        ClassNameContext::TypeHint.is_class_only(),
+        "TypeHint should be class-only (no constants or functions)"
+    );
+}
+
+#[test]
+fn test_type_hint_matches_class_info() {
+    let cls = ClassInfo {
+        kind: ClassLikeKind::Class,
+        name: "Foo".to_string(),
+        ..Default::default()
+    };
+    assert!(ClassNameContext::TypeHint.matches(&cls));
+
+    let iface = ClassInfo {
+        kind: ClassLikeKind::Interface,
+        name: "Bar".to_string(),
+        ..Default::default()
+    };
+    assert!(ClassNameContext::TypeHint.matches(&iface));
+
+    let enm = ClassInfo {
+        kind: ClassLikeKind::Enum,
+        name: "Baz".to_string(),
+        ..Default::default()
+    };
+    assert!(ClassNameContext::TypeHint.matches(&enm));
+
+    let trait_info = ClassInfo {
+        kind: ClassLikeKind::Trait,
+        name: "Qux".to_string(),
+        ..Default::default()
+    };
+    assert!(!ClassNameContext::TypeHint.matches(&trait_info));
+}
+
 // ── UseImport / UseFunction / UseConst detection ────────────────
 
 #[test]
@@ -728,7 +817,7 @@ fn test_class_sort_text_format() {
     let mut table = HashMap::new();
     table.insert("App".to_string(), 4);
     let result = class_sort_text("Order", "App\\Models\\Order", "Order", '2', false, &table);
-    // quality='a' (exact), tier='2', affinity=9999-4=9995 → "9995", gap=5-5=0 → "000", demote='0'
+    // quality='a' (exact), tier='2', affinity=9999-4=9995 → "9995", demote='0', gap=5-5=0 → "000"
     assert_eq!(result, "a299950000_order");
 }
 

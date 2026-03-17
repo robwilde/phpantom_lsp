@@ -1861,27 +1861,25 @@ async fn test_instanceof_no_heuristic_demotion() {
     assert!(repo_item.is_some(), "UserRepository should be present");
     assert!(iface_item.is_some(), "UserInterface should be present");
 
-    // Both should have the same sort prefix (no demotion).
-    let repo_prefix = repo_item
-        .unwrap()
-        .sort_text
-        .as_deref()
-        .unwrap_or("")
-        .split('_')
-        .next()
-        .unwrap_or("");
-    let iface_prefix = iface_item
-        .unwrap()
-        .sort_text
-        .as_deref()
-        .unwrap_or("")
-        .split('_')
-        .next()
-        .unwrap_or("");
+    // sort_text format: {quality}{tier}{affinity:4}{demote}{gap:3}_{name}
+    // Demote flag is at position 6.  Neither should be demoted in
+    // instanceof context.
+    let demote_flag = |item: &CompletionItem| -> char {
+        item.sort_text
+            .as_deref()
+            .and_then(|s| s.chars().nth(6))
+            .unwrap_or('?')
+    };
 
     assert_eq!(
-        repo_prefix, iface_prefix,
-        "instanceof should not demote interface-looking names: repo={repo_prefix}, iface={iface_prefix}"
+        demote_flag(repo_item.unwrap()),
+        '0',
+        "UserRepository should not be demoted in instanceof context"
+    );
+    assert_eq!(
+        demote_flag(iface_item.unwrap()),
+        '0',
+        "UserInterface should not be demoted in instanceof context"
     );
 }
 
@@ -1912,27 +1910,25 @@ async fn test_extends_interface_does_not_demote_interface_names() {
     assert!(logger_item.is_some(), "LoggerInterface should be present");
     assert!(loggable_item.is_some(), "Loggable should be present");
 
-    // LoggerInterface should NOT be demoted; both should have same prefix.
-    let logger_prefix = logger_item
-        .unwrap()
-        .sort_text
-        .as_deref()
-        .unwrap_or("")
-        .split('_')
-        .next()
-        .unwrap_or("");
-    let loggable_prefix = loggable_item
-        .unwrap()
-        .sort_text
-        .as_deref()
-        .unwrap_or("")
-        .split('_')
-        .next()
-        .unwrap_or("");
+    // sort_text format: {quality}{tier}{affinity:4}{demote}{gap:3}_{name}
+    // Demote flag is at position 6.  Neither should be demoted in
+    // extends-interface context.
+    let demote_flag = |item: &CompletionItem| -> char {
+        item.sort_text
+            .as_deref()
+            .and_then(|s| s.chars().nth(6))
+            .unwrap_or('?')
+    };
 
     assert_eq!(
-        logger_prefix, loggable_prefix,
-        "interface extends should not demote interface-looking names: logger={logger_prefix}, loggable={loggable_prefix}"
+        demote_flag(logger_item.unwrap()),
+        '0',
+        "LoggerInterface should not be demoted in interface extends context"
+    );
+    assert_eq!(
+        demote_flag(loggable_item.unwrap()),
+        '0',
+        "Loggable should not be demoted in interface extends context"
     );
 }
 

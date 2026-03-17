@@ -430,24 +430,39 @@ impl Backend {
 
         // Look up ClassInfo from ast_map (no disk I/O).
         match self.find_class_in_ast_map(class_name) {
-            Some(ci) => match &ci.parent_class {
-                Some(parent) => self.is_throwable_descendant(parent, depth + 1),
-                None => false, // no parent, not a Throwable type
-            },
+            Some(ci) => {
+                // Walk the parent class chain first.
+                if let Some(parent) = &ci.parent_class
+                    && self.is_throwable_descendant(parent, depth + 1)
+                {
+                    return true;
+                }
+                // Walk implemented/extended interfaces (covers
+                // `interface Foo extends \Throwable` and
+                // `class Bar implements \Throwable`).
+                for iface in &ci.interfaces {
+                    if self.is_throwable_descendant(iface, depth + 1) {
+                        return true;
+                    }
+                }
+                false
+            }
             None => false, // class not loaded — can't confirm
         }
     }
 
-    /// Check whether the class identified by `class_name` is a concrete,
-    /// non-abstract `class` (i.e. `ClassLikeKind::Class` and not
-    /// `is_abstract`) in the `ast_map`.
+    /// Check whether the class identified by `class_name` is a class or
+    /// interface in the `ast_map` (i.e. not a trait or enum).
     ///
-    /// Returns `false` for interfaces, traits, enums, abstract classes,
-    /// and classes that are not currently loaded.  This never triggers
-    /// disk I/O.
-    fn is_concrete_class_in_ast_map(&self, class_name: &str) -> bool {
+    /// Used by catch-clause completion to allow both concrete classes,
+    /// abstract classes, and interfaces (e.g. `\Throwable` itself is an
+    /// interface, and `catch (\Throwable $e)` is idiomatic PHP).
+    ///
+    /// Returns `false` for traits, enums, and classes that are not
+    /// currently loaded.  This never triggers disk I/O.
+    fn is_class_or_interface_in_ast_map(&self, class_name: &str) -> bool {
         self.find_class_in_ast_map(class_name)
-            .is_some_and(|c| c.kind == ClassLikeKind::Class && !c.is_abstract)
+            .is_some_and(|c| matches!(c.kind, ClassLikeKind::Class | ClassLikeKind::Interface))
     }
 
     /// Collect the FQN of every class that is currently loaded in the
@@ -478,10 +493,10 @@ impl Backend {
     ///
     /// The logic follows this priority:
     ///
-    /// 1. **Loaded concrete classes** (use-imports, same-namespace,
-    ///    class_index): only classes (not interfaces/traits/enums) whose
-    ///    parent chain is fully walkable to `\Throwable` / `\Exception`
-    ///    / `\Error`.
+    /// 1. **Loaded classes and interfaces** (use-imports, same-namespace,
+    ///    class_index): only classes and interfaces (not traits/enums)
+    ///    whose parent/interface chain is fully walkable to `\Throwable`
+    ///    / `\Exception` / `\Error`.
     /// 2. **Classmap** entries (not yet parsed) whose short name ends
     ///    with `Exception` — filtered to exclude already-loaded FQNs.
     /// 3. **Stub** entries whose short name ends with `Exception` —
@@ -549,7 +564,7 @@ impl Backend {
         // classmap / stub sources can exclude already-evaluated classes.
         let loaded_fqns = self.collect_loaded_fqns();
 
-        // ── 1a. Use-imported classes (must be concrete + Throwable) ─
+        // ── 1a. Use-imported classes/interfaces (must be Throwable) ─
         for (short_name, fqn) in file_use_map {
             if !matches_class_prefix(short_name, fqn, &prefix_lower, is_fqn_prefix) {
                 continue;
@@ -557,8 +572,8 @@ impl Backend {
             if !seen_fqns.insert(fqn.clone()) {
                 continue;
             }
-            // Only concrete classes (not interfaces/traits/enums)
-            if !self.is_concrete_class_in_ast_map(fqn) {
+            // Only classes and interfaces (not traits/enums)
+            if !self.is_class_or_interface_in_ast_map(fqn) {
                 continue;
             }
             // Strict check: only include if confirmed Throwable descendant
@@ -591,12 +606,14 @@ impl Backend {
         // Collect candidates while holding the lock, then drop the lock
         // before calling `is_throwable_descendant` (which re-locks
         // `ast_map` internally — Rust's Mutex is not re-entrant).
-        if let Some(ns) = file_namespace {
+        {
             let nmap = self.namespace_map.read();
             let same_ns_uris: Vec<String> = nmap
                 .iter()
                 .filter_map(|(uri, opt_ns)| {
-                    if opt_ns.as_deref() == Some(ns.as_str()) {
+                    let uri_ns = opt_ns.as_deref();
+                    let file_ns = file_namespace.as_deref();
+                    if uri_ns == file_ns {
                         Some(uri.clone())
                     } else {
                         None
@@ -606,7 +623,7 @@ impl Backend {
             drop(nmap);
 
             // Phase 1: collect candidate (name, fqn, deprecation_message)
-            // tuples under the ast_map lock — only concrete classes.
+            // tuples under the ast_map lock — classes and interfaces only.
             let mut candidates: Vec<(String, String, Option<String>)> = Vec::new();
             {
                 let amap = self.ast_map.read();
@@ -616,10 +633,14 @@ impl Backend {
                             if is_anonymous_class(&cls.name) {
                                 continue;
                             }
-                            if cls.kind != ClassLikeKind::Class || cls.is_abstract {
+                            if !matches!(cls.kind, ClassLikeKind::Class | ClassLikeKind::Interface)
+                            {
                                 continue;
                             }
-                            let cls_fqn = format!("{}\\{}", ns, cls.name);
+                            let cls_fqn = match file_namespace {
+                                Some(ns) => format!("{}\\{}", ns, cls.name),
+                                None => cls.name.clone(),
+                            };
                             if !matches_class_prefix(
                                 &cls.name,
                                 &cls_fqn,
@@ -628,13 +649,12 @@ impl Backend {
                             ) {
                                 continue;
                             }
-                            let fqn = cls_fqn;
-                            if !seen_fqns.insert(fqn.clone()) {
+                            if !seen_fqns.insert(cls_fqn.clone()) {
                                 continue;
                             }
                             candidates.push((
                                 cls.name.clone(),
-                                fqn,
+                                cls_fqn,
                                 cls.deprecation_message.clone(),
                             ));
                         }
@@ -669,7 +689,7 @@ impl Backend {
             }
         }
 
-        // ── 1c. class_index (must be concrete + Throwable) ──────────
+        // ── 1c. class_index (must be class/interface + Throwable) ───
         {
             let idx = self.class_index.read();
             for fqn in idx.keys() {
@@ -680,7 +700,7 @@ impl Backend {
                 if !seen_fqns.insert(fqn.clone()) {
                     continue;
                 }
-                if !self.is_concrete_class_in_ast_map(fqn) {
+                if !self.is_class_or_interface_in_ast_map(fqn) {
                     continue;
                 }
                 if !self.is_throwable_descendant(fqn, 0) {

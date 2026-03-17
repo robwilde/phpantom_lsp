@@ -31,11 +31,11 @@ discovery:
 
 These scanners serve three scenarios at startup:
 
-| Scenario | Class discovery | Function & constant discovery |
-|---|---|---|
-| **Composer project** (classmap complete) | composer-classmap | `autoload_files.php` byte-level scan + lazy parse |
-| **Composer project** (classmap missing/incomplete) | PSR-4 scanner + vendor packages | `autoload_files.php` byte-level scan + lazy parse |
-| **No `composer.json`** | full-scan on all workspace files | full-scan on all workspace files |
+| Scenario                                                  | Class discovery                                                                                    | Function & constant discovery                                                             |
+| --------------------------------------------------------- | -------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| **Composer project** (classmap complete)                  | composer-classmap                                                                                  | `autoload_files.php` byte-level scan + lazy parse                                         |
+| **Composer project** (classmap missing/incomplete)        | PSR-4 scanner + vendor packages                                                                    | `autoload_files.php` byte-level scan + lazy parse                                         |
+| **No `composer.json`**                                    | full-scan on all workspace files                                                                   | full-scan on all workspace files                                                          |
 | **Monorepo** (no root `composer.json`, subprojects found) | Per-subproject: composer-classmap or PSR-4 + vendor packages. Loose files: full-scan with skip set | Per-subproject: `autoload_files.php` byte-level scan + lazy parse. Loose files: full-scan |
 
 The "no `composer.json`" path is fully lightweight: `find_symbols`
@@ -76,11 +76,11 @@ strategy = "composer"
 
 ### `"composer"` (default)
 
-Merged classmap + self-scan.  Load Composer's classmap (if it exists)
+Merged classmap + self-scan. Load Composer's classmap (if it exists)
 as a skip set, then self-scan all PSR-4 and vendor directories for
-anything the classmap missed.  Whatever the classmap already covers is
-a free performance win; whatever it's missing, we find ourselves.  No
-completeness heuristic needed.  This is the zero-config experience.
+anything the classmap missed. Whatever the classmap already covers is
+a free performance win; whatever it's missing, we find ourselves. No
+completeness heuristic needed. This is the zero-config experience.
 
 ### `"self"`
 
@@ -326,9 +326,9 @@ Each stage improves on the last without blocking the previous one.
    when higher-priority work arrives.
 2. Process user code first, then vendor.
 3. Report progress via `$/progress` tokens so the editor can show
-   "Indexing: 1,234 / 5,678 files".  The `$/progress` infrastructure
+   "Indexing: 1,234 / 5,678 files". The `$/progress` infrastructure
    (token creation, begin/report/end helpers) is already in place and
-   used during workspace initialization.  The second pass just needs
+   used during workspace initialization. The second pass just needs
    to call `progress_report` as it processes each file.
 
 ### Memory
@@ -360,6 +360,7 @@ one-time hint suggesting they enable `strategy = "full"` in
 ---
 
 ## X5. Granular progress reporting
+
 **Impact: Medium · Effort: Medium**
 
 All progress indicators in PHPantom currently report coarse
@@ -459,6 +460,7 @@ require a full rescan.
 
 Only if X4 background indexing is slow enough on cold start that
 users complain. Given that:
+
 - Mago can lint 45K files in 2 seconds.
 - A regex classmap scan over 21K files should be sub-second.
 - Full AST parsing of a few thousand user files should take single
@@ -492,6 +494,7 @@ Libretto's `IncrementalCache` approach and it works well.
 ### Decision criteria
 
 Implement disk caching only if:
+
 1. Full-mode cold start exceeds 10 seconds on a representative large
    codebase, AND
 2. The memory overhead of holding the full index exceeds the 512 MB
@@ -499,3 +502,52 @@ Implement disk caching only if:
 
 If neither condition is met, skip this phase entirely. Simpler is
 better.
+
+---
+
+## X7. Recency tracking
+
+**Impact: Medium · Effort: Medium**
+
+The current lazy-loading design provides an implicit recency signal:
+classes in `ast_map` were loaded because the developer interacted with
+their file during this session (hovered, navigated, completed). Source
+tiers 0 (use-imported) and 1 (same-namespace) already capture this
+for the current file's neighborhood. The `class_index` source captures
+cross-file interactions (go-to-definition, hover, or completion that
+triggered a load).
+
+This implicit signal works because unloaded classes are in a separate
+bucket (classmap/stubs, tier 2) with lower priority. If the project
+moves to eager indexing (X4, parsing all files at startup), every class
+would appear equally "loaded" and the tier distinction would collapse.
+The same-namespace tier would contain every class in the namespace, not
+just the ones the developer recently touched.
+
+**When to implement:** Only when eager loading (X4) ships. Until then,
+the implicit signal is sufficient and no explicit tracking is needed.
+
+**Design sketch:**
+
+1. **Track accepted completions.** When the editor sends
+   `completionItem/resolve` or the next `didChange` contains text
+   matching a recently offered completion, record the FQN and a
+   timestamp.
+
+2. **Track navigation.** When go-to-definition or hover resolves a
+   class, record the FQN.
+
+3. **Score decay.** Use an exponential decay function so that a class
+   used 5 minutes ago scores higher than one used 2 hours ago, but
+   both score higher than one never interacted with.
+
+4. **Integration with sort key.** The recency score could replace the
+   source tier dimension (since tier 0/1/2 distinctions become less
+   meaningful with full indexing) or be added as a new dimension
+   between affinity and demotion. The sort_text scheme is documented
+   in [ARCHITECTURE.md § Class Name Sources and Priority](../ARCHITECTURE.md#class-name-sources-and-priority).
+
+5. **Persistence.** The recency table can be in-memory only (reset on
+   server restart). Cross-session persistence is a nice-to-have but
+   not essential; the affinity table already provides a good cold-start
+   ordering.

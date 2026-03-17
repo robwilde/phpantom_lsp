@@ -50,6 +50,10 @@ pub(crate) enum ClassNameContext {
     TraitUse,
     /// After `instanceof` — classes, interfaces, enums (not traits).
     Instanceof,
+    /// In a type-hint position (parameter type, return type, property
+    /// type) or PHPDoc type reference (`@param`, `@return`, `@var`).
+    /// Accepts classes, interfaces, and enums but rejects traits.
+    TypeHint,
     /// After `use` at the top level — any class (namespace import).
     /// Treated specially: FQN is always inserted, no `use` text-edit.
     UseImport,
@@ -72,7 +76,7 @@ impl ClassNameContext {
             Self::ExtendsInterface => cls.kind == ClassLikeKind::Interface,
             Self::Implements => cls.kind == ClassLikeKind::Interface,
             Self::TraitUse => cls.kind == ClassLikeKind::Trait,
-            Self::Instanceof => cls.kind != ClassLikeKind::Trait,
+            Self::Instanceof | Self::TypeHint => cls.kind != ClassLikeKind::Trait,
             Self::UseImport => true,
             Self::UseFunction | Self::UseConst | Self::NamespaceDeclaration => false,
         }
@@ -94,7 +98,7 @@ impl ClassNameContext {
             Self::ExtendsInterface => kind == ClassLikeKind::Interface,
             Self::Implements => kind == ClassLikeKind::Interface,
             Self::TraitUse => kind == ClassLikeKind::Trait,
-            Self::Instanceof => kind != ClassLikeKind::Trait,
+            Self::Instanceof | Self::TypeHint => kind != ClassLikeKind::Trait,
             Self::UseFunction | Self::UseConst | Self::NamespaceDeclaration => false,
         }
     }
@@ -110,6 +114,7 @@ impl ClassNameContext {
                 | Self::Implements
                 | Self::TraitUse
                 | Self::Instanceof
+                | Self::TypeHint
                 | Self::UseImport
         )
     }
@@ -574,18 +579,18 @@ pub(in crate::completion) fn match_quality(short_name: &str, prefix: &str) -> ch
 
 /// Assemble a sort_text string for a class name completion item.
 ///
-/// The format is `{match_quality}{source_tier}{affinity}{gap}{demote}_{short_name_lower}`
+/// The format is `{match_quality}{source_tier}{affinity}{demote}{gap}_{short_name_lower}`
 /// where:
 /// - `match_quality`: `'a'` exact, `'b'` starts-with, `'c'` contains
 /// - `source_tier`: `'0'` use-imported, `'1'` same-namespace, `'2'` everything else
 /// - `affinity`: 4-digit inverted score (`9999 - score`, so higher scores sort first)
-/// - `gap`: 3-digit distance between short name length and prefix length
-///   (`short_name.len() - prefix.len()`).  Within the same affinity
-///   group, names closer in length to what the user typed sort first.
-///   This smooths the visual transition as a prefix match narrows toward
-///   an exact match (e.g. typing "Pro" ranks `Product` above
-///   `ProductFilterTerm` when both share the same affinity).
 /// - `demote`: `'0'` normal, `'1'` heuristically demoted
+/// - `gap`: 3-digit distance between short name length and prefix length
+///   (`short_name.len() - prefix.len()`).  Within the same affinity and
+///   demotion group, names closer in length to what the user typed sort
+///   first.  This smooths the visual transition as a prefix match
+///   narrows toward an exact match (e.g. typing "Pro" ranks `Product`
+///   above `ProductFilterTerm` when both share the same affinity).
 pub(in crate::completion) fn class_sort_text(
     short_name: &str,
     fqn: &str,
@@ -607,8 +612,8 @@ pub(in crate::completion) fn class_sort_text(
         quality,
         source_tier,
         affinity,
-        gap,
         demote,
+        gap,
         short_name.to_lowercase()
     )
 }
@@ -990,7 +995,7 @@ impl Backend {
     ///
     /// After this limit the result is marked `is_incomplete = true` so
     /// the editor re-requests as the user types more characters.
-    pub(in crate::completion) const MAX_CLASS_COMPLETIONS: usize = 300;
+    pub(in crate::completion) const MAX_CLASS_COMPLETIONS: usize = 100;
 
     /// Build completion items for class, interface, trait, and enum
     /// names.

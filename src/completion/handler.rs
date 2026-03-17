@@ -448,7 +448,7 @@ impl Backend {
                         file_namespace: &ctx.namespace,
                         prefix: &partial,
                         content,
-                        context: ClassNameContext::Any,
+                        context: ClassNameContext::TypeHint,
                         position,
                         affinity_table_override: None,
                     });
@@ -548,7 +548,7 @@ impl Backend {
                 file_namespace: &ctx.namespace,
                 prefix: &th_ctx.partial,
                 content,
-                context: ClassNameContext::Any,
+                context: ClassNameContext::TypeHint,
                 position,
                 affinity_table_override: None,
             });

@@ -1814,7 +1814,12 @@ class ClassFilteringDemo extends Model implements Renderable
 // ── Type Hint Completion in Definitions ─────────────────────────────────────
 // Try: trigger completion when typing a type hint — PHP scalars (string,
 // int, float, bool) appear alongside class names, with no constants or
-// functions in the list.
+// functions in the list. Traits are excluded because they cannot be used
+// as type hints in PHP (the type check always fails at runtime).
+//
+// The same filtering applies in PHPDoc type positions: @param, @return,
+// and @var exclude traits, while @throws uses Throwable-filtered
+// completion (only exception classes and Throwable interfaces).
 
 function typeHintDemo(User $user, string $name): string { return $user->displayName . $name; }
 

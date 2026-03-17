@@ -7,12 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-
-- **Class name completion ordering.** Completions now rank by match quality first (exact match, then starts-with, then substring), so typing `Order` puts `Order` above `OrderLine` above `CheckOrderFlowJob` regardless of where the class comes from. Within each match quality group, use-imported and same-namespace classes appear first, followed by everything else sorted by namespace affinity (classes from heavily-imported namespaces rank higher). Source tiers collapsed from five to three: use-imported, same-namespace, and everything else.
-- **Use-import completion.** Same-namespace classes no longer appear in `use` statement completions (PHP auto-resolves them without an import). Classes that are already imported are filtered out. Namespace affinity still ranks the remaining candidates.
-- **Import class code action ordering.** The "Import Class" code action now sorts candidates by namespace affinity (derived from existing imports) instead of alphabetically, so the most likely namespace appears first.
-
 ### Added
 
 - **File rename on class rename.** Renaming a class, interface, trait, or enum whose file follows PSR-4 naming (filename matches the class name) now also renames the file to match the new class name. The file is only renamed when it contains a single class-like declaration and the editor supports file rename operations.
@@ -49,6 +43,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **tower-lsp 0.20.** Upgraded the LSP framework from 0.18 to 0.20, bringing native trait support for inlay hints, type hierarchy, and pull diagnostics. Inlay hints are now served through the standard protocol method instead of a custom handler.
 - **Logging.** Replaced `log`/`env_logger` with `tracing`/`tracing-subscriber`, aligning with the logging framework tower-lsp already uses internally.
 - **Dependencies.** Bumped minimum versions for `clap` (4.5) and `tokio` (1.39). Ran `cargo update` to pull latest compatible patch releases across the lockfile.
+- **Class name completion ordering.** Completions now rank by match quality first (exact match, then starts-with, then substring), so typing `Order` puts `Order` above `OrderLine` above `CheckOrderFlowJob` regardless of where the class comes from. Within each match quality group, use-imported and same-namespace classes appear first, followed by everything else sorted by namespace affinity (classes from heavily-imported namespaces rank higher). Source tiers collapsed from five to three: use-imported, same-namespace, and everything else.
+- **Use-import completion.** Same-namespace classes no longer appear in `use` statement completions (PHP auto-resolves them without an import). Classes that are already imported are filtered out. Namespace affinity still ranks the remaining candidates.
+- **Import class code action ordering.** The "Import Class" code action now sorts candidates by namespace affinity (derived from existing imports) instead of alphabetically, so the most likely namespace appears first.
 
 ### Fixed
 
@@ -60,6 +57,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Diagnostics.** By-reference `@param` annotations (e.g. `@param array<int> &$data`) no longer produce a false "unknown class '$data'" diagnostic.
 - **Hover on empty arrays.** `[]` and `array()` literals now show `array` on hover instead of nothing.
 - **Rename updates imports.** Renaming a class now updates `use` statement FQNs (last segment only), preserves explicit aliases, and introduces an alias when the new name collides with an existing import in the same file. Previously, `use` statements were left unchanged, breaking the file.
+- **Catch clause completion.** Throwable interfaces (e.g. `\Throwable` itself and user-defined interfaces extending it) and abstract exception classes now appear in catch clause completions. Previously only concrete, non-abstract classes were offered.
+- **Type-hint completion.** Traits are now excluded from completions in parameter types, return types, and property types. PHP accepts traits syntactically in these positions but the type check always fails at runtime.
+- **PHPDoc type completion.** Traits are now excluded from `@param`, `@return`, and `@var` type completions, matching the native type-hint filtering. `@throws` continues to use Throwable-filtered completion.
 
 ## [0.5.0] - 2026-03-12
 

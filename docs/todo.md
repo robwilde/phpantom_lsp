@@ -1,214 +1,157 @@
 # PHPantom — Roadmap
 
-This is the master index for all planned work. Each row links to the
-domain document that contains the full specification. Items are
-sequenced by **sprint priority** — what to build next to widen the type
-intelligence lead, then close the LSP feature gap, maximising coverage
-with each step.
+This document tracks planned work for PHPantom. Each item links to a
+domain document with full context. Items are grouped into time-boxed
+sprints (roughly 1-2 weeks each) and a backlog of ideas not yet
+scheduled.
+
+**Guiding priorities:** Completion accuracy → Type intelligence →
+Cross-file navigation → Diagnostics → Code actions → Performance.
+
+Items inside each sprint are ordered by priority (top = do first).
+The backlog is ordered by impact (descending), then effort (ascending)
+within the same impact tier.
 
 | Label      | Scale                                                                                                                  |
 | ---------- | ---------------------------------------------------------------------------------------------------------------------- |
 | **Impact** | **Critical**, **High**, **Medium-High**, **Medium**, **Low-Medium**, **Low**                                           |
 | **Effort** | **Low** (≤ 1 day), **Medium** (2-5 days), **Medium-High** (1-2 weeks), **High** (2-4 weeks), **Very High** (> 1 month) |
 
-**Task ID prefixes:** Each domain document has its own prefix letter so
-IDs are stable across renumbering. **C** = Completion, **T** = Type
-Inference, **D** = Diagnostics, **A** = Code Actions, **F** = LSP
-Features, **S** = Signature Help, **L** = Laravel, **E** = External
-Stubs, **P** = Performance, **X** = Indexing, **B** = Bug Fixes,
-**N** = Inline Completion.
-
----
-
 # Scheduled Sprints
 
 ## Sprint 4 — Refactoring toolkit
 
-Extract Function is the #1 personal feature request and something
-that was available before the switch to PHPantom. Inline Variable,
-Extract Variable, and Inline Function/Method have been specifically
-requested by the Neovim tester. These all share scope analysis
-infrastructure, so the sprint begins by building the `ScopeCollector`
-as standalone shared infrastructure. This de-risks Extract Function
-and lets the other refactorings proceed independently if A2 stalls.
-
-| #   | Item                                                       | Effort | Domain       | Doc Link                                                            |
-| --- | ---------------------------------------------------------- | ------ | ------------ | ------------------------------------------------------------------- |
-| —   | Clear refactoring gate                                     | —      | Refactoring  | [refactor.md](todo/refactor.md)                                     |
-| A11 | `ScopeCollector` infrastructure (shared by A2/A4/A5/A6/A7) | Medium | Code Actions | [actions.md A11](todo/actions.md#a11-scopecollector-infrastructure) |
-| A2  | Extract Function refactoring                               | High   | Code Actions | [actions.md A2](todo/actions.md#a2-extract-function-refactoring)    |
-| A4  | Inline Variable                                            | Medium | Code Actions | [actions.md A4](todo/actions.md#a4-inline-variable)                 |
-| A5  | Extract Variable                                           | Medium | Code Actions | [actions.md A5](todo/actions.md#a5-extract-variable)                |
-| A6  | Inline Function/Method                                     | High   | Code Actions | [actions.md A6](todo/actions.md#a6-inline-functionmethod)           |
-| A7  | Extract Constant                                           | Medium | Code Actions | [actions.md A7](todo/actions.md#a7-extract-constant)                |
-
-**After Sprint 4:** The core refactoring toolkit is complete. The
-two most active testers have the features they specifically asked
-for. The `ScopeCollector` infrastructure also benefits D8 (undefined
-variable diagnostic) in Sprint 5 and any future scope-aware features.
-
----
+| #   | Item                                                                              | Impact | Effort |
+| --- | --------------------------------------------------------------------------------- | ------ | ------ |
+|     | Clear [refactoring gate](todo/refactor.md)                                        | —      | —      |
+| A1  | [Extract method](todo/actions.md#a1-extract-method)                               | High   | High   |
+| A2  | [Extract variable](todo/actions.md#a2-extract-variable)                           | Medium | Medium |
+| A4  | [Inline variable](todo/actions.md#a4-inline-variable)                             | Medium | Medium |
+| A5  | [Change visibility](todo/actions.md#a5-change-visibility)                         | Medium | Low    |
+| A6  | [Generate constructor](todo/actions.md#a6-generate-constructor)                   | Medium | Medium |
+| A7  | [Promote constructor parameter](todo/actions.md#a7-promote-constructor-parameter) | Medium | Low    |
 
 ## Sprint 5 — Polish for office adoption
 
-These items close the gaps that PHPStorm and VS Code + Intelephense
-users at the office would notice. Undefined variable detection is the
-single most impactful missing diagnostic (leveraging Sprint 4's
-`ScopeCollector`). The two low-effort diagnostics (deprecated
-rendering and unreachable code) round out the diagnostic story with
-minimal cost. The null coalescing code action is independent of scope
-analysis and grouped here by user-facing impact.
-
-| #   | Item                                                             | Effort | Domain         | Doc Link                                                                                    |
-| --- | ---------------------------------------------------------------- | ------ | -------------- | ------------------------------------------------------------------------------------------- |
-| —   | Clear refactoring gate                                           | —      | Refactoring    | [refactor.md](todo/refactor.md)                                                             |
-| D8  | Undefined variable diagnostic                                    | Medium | Diagnostics    | [diagnostics.md D8](todo/diagnostics.md#d8-undefined-variable-diagnostic)                   |
-| D3  | Deprecated rendering gaps                                        | Low    | Diagnostics    | [diagnostics.md D3](todo/diagnostics.md#d3-deprecated-rendering)                            |
-| D6  | Unreachable code diagnostic                                      | Low    | Diagnostics    | [diagnostics.md D6](todo/diagnostics.md#d6-unreachable-code-diagnostic)                     |
-| E5  | Stub extension selection (`[stubs] extensions`)                  | Low    | External Stubs | [external-stubs.md E5](todo/external-stubs.md#e5-extension-stub-selection-stubs-extensions) |
-| A1  | Simplify with null coalescing / null-safe operator (code action) | Medium | Code Actions   | [actions.md A1](todo/actions.md#a1-simplify-with-null-coalescing--null-safe-operator)       |
-
-**After Sprint 5:** PHPantom is ready for office colleagues. They
-get undefined variable detection, unreachable code dimming, proper
-deprecated strikethrough, file rename on class rename, and the null
-coalescing quick-fix. Nobody switching from Intelephense (free or
-premium) feels like they lost more than they gained.
-
----
+| #   | Item                                                                          | Impact      | Effort |
+| --- | ----------------------------------------------------------------------------- | ----------- | ------ |
+|     | Clear [refactoring gate](todo/refactor.md)                                    | —           | —      |
+| F1  | [Workspace symbol search](todo/lsp-features.md#f1-workspace-symbol-search)    | High        | Medium |
+| F2  | [Document symbols / outline](todo/lsp-features.md#f2-document-symbols)        | High        | Low    |
+| A8  | [Implement interface methods](todo/actions.md#a8-implement-interface-methods) | Medium-High | Medium |
+| A9  | [Add missing use import (auto)](todo/actions.md#a9-auto-import)               | Medium-High | Medium |
+| D1  | [Unknown class diagnostic](todo/diagnostics.md#d1-unknown-class-diagnostic)   | Medium      | Medium |
+| D3  | [Unknown method / property diagnostic](todo/diagnostics.md#d3-unknown-member) | Medium      | Medium |
+| D4  | [Unused variable warning](todo/diagnostics.md#d4-unused-variable)             | Medium      | Medium |
 
 ## Sprint 6 — Type intelligence depth
 
-Type intelligence depth is PHPantom's defining advantage. This sprint
-deepens that lead with features that benefit the PHPStan enthusiast
-and Laravel developer alike. File system watching eliminates the
-"restart the server after composer update" friction.
-
-| #   | Item                                                      | Effort | Domain         | Doc Link                                                                                              |
-| --- | --------------------------------------------------------- | ------ | -------------- | ----------------------------------------------------------------------------------------------------- |
-| —   | Clear refactoring gate                                    | —      | Refactoring    | [refactor.md](todo/refactor.md)                                                                       |
-| T1  | Inherited docblock type propagation                       | Medium | Type Inference | [type-inference.md T1](todo/type-inference.md#t1-inherited-docblock-type-propagation)                 |
-| T7  | `key-of<T>` and `value-of<T>` resolution                  | Medium | Type Inference | [type-inference.md T7](todo/type-inference.md#t7-key-oft-and-value-oft-resolution)                    |
-| T2  | File system watching for vendor and project changes       | Medium | Type Inference | [type-inference.md T2](todo/type-inference.md#t2-file-system-watching-for-vendor-and-project-changes) |
-| T3  | Property hooks and asymmetric visibility (PHP 8.4)        | Medium | Type Inference | [type-inference.md T3](todo/type-inference.md#t3-property-hooks-php-84)                               |
-| D4  | Unresolved type in PHPDoc diagnostic                      | Medium | Diagnostics    | [diagnostics.md D4](todo/diagnostics.md#d4-unresolved-type-in-phpdoc)                                 |
-| E1  | GTD for built-in symbols via project-level phpstorm-stubs | Low    | External Stubs | [external-stubs.md E1](todo/external-stubs.md#e1-project-level-phpstorm-stubs-for-gtd)                |
-
-**After Sprint 6:** PHPantom has the deepest type intelligence of
-any PHP language server. `key-of`/`value-of`, property hooks, and
-inherited docblock types all work. The type engine advantage is
-unambiguous.
-
----
+| #   | Item                                                                                                                       | Impact      | Effort |
+| --- | -------------------------------------------------------------------------------------------------------------------------- | ----------- | ------ |
+|     | Clear [refactoring gate](todo/refactor.md)                                                                                 | —           | —      |
+| C2  | [`LanguageLevelTypeAware` version-aware type hints](todo/completion.md#c2-languageleveltypeaware-version-aware-type-hints) | Medium-High | Medium |
+| C3  | [`#[ArrayShape]` return shapes on stub functions](todo/completion.md#c3-arrayshape-return-shapes-on-stub-functions)        | Medium      | Medium |
+| T1  | [First-class callable resolution](todo/type-inference.md#t1-first-class-callables)                                         | Medium      | Medium |
+| T2  | [`@phpstan-type` / `@psalm-type` local type aliases](todo/type-inference.md#t2-local-type-aliases)                         | Medium      | Medium |
+| T3  | [`@phpstan-import-type` cross-file type imports](todo/type-inference.md#t3-cross-file-type-imports)                        | Medium      | Medium |
 
 ## Sprint 7 — Laravel excellence & stub accuracy
 
-Facade resolution (L1) is the highest-impact Laravel item remaining
-and the primary interaction pattern for Laravel developers. The rest
-of the sprint focuses on stub accuracy (version-aware types, array
-shapes, SPL iterators) and signature help gaps. Partial result
-streaming (F2) lands here to improve perceived latency for large
-projects now that the feature set is mature enough to benefit from it.
-
-| #   | Item                                              | Effort      | Domain         | Doc Link                                                                                           |
-| --- | ------------------------------------------------- | ----------- | -------------- | -------------------------------------------------------------------------------------------------- |
-| —   | Clear refactoring gate                            | —           | Refactoring    | [refactor.md](todo/refactor.md)                                                                    |
-| L1  | Facade `getFacadeAccessor` resolution             | Medium      | Laravel        | [laravel.md L1](todo/laravel.md#l1-facade-completion)                                              |
-| F2  | Partial result streaming via `$/progress`         | Medium-High | LSP Features   | [lsp-features.md F2](todo/lsp-features.md#f2-partial-result-streaming-via-progress)                |
-| L5  | `abort_if`/`abort_unless` type narrowing          | Medium      | Laravel        | [laravel.md L5](todo/laravel.md#l5-abort_ifabort_unless-type-narrowing)                            |
-| E4  | SPL iterator generic stubs (ship overlay stubs)   | Medium      | External Stubs | [external-stubs.md E4](todo/external-stubs.md#e4-embedded-stub-override-with-external-stubs)       |
-| C2  | `LanguageLevelTypeAware` version-aware type hints | Medium      | Completion     | [completion.md C2](todo/completion.md#c2-languageleveltypeaware-version-aware-type-hints)          |
-| C3  | `#[ArrayShape]` return shapes on stub functions   | Medium      | Completion     | [completion.md C3](todo/completion.md#c3-arrayshape-return-shapes-on-stub-functions)               |
-| S1  | Attribute constructor signature help              | Medium      | Signature Help | [signature-help.md S1](todo/signature-help.md#s1-attribute-constructor-signature-help)             |
-| S2  | Closure/arrow function parameter signature help   | Medium      | Signature Help | [signature-help.md S2](todo/signature-help.md#s2-closure--arrow-function-parameter-signature-help) |
-
----
+| #   | Item                                                                                          | Impact      | Effort      |
+| --- | --------------------------------------------------------------------------------------------- | ----------- | ----------- |
+|     | Clear [refactoring gate](todo/refactor.md)                                                    | —           | —           |
+| L1  | [Eloquent model attribute completion](todo/laravel.md#l1-eloquent-model-attribute-completion) | High        | High        |
+| L5  | [Blade component tag completion](todo/laravel.md#l5-blade-component-tags)                     | Medium      | Medium-High |
+| E1  | [External stub packages (ide-helper, etc.)](todo/external-stubs.md#e1-external-stub-packages) | Medium-High | Medium      |
+| E4  | [Stub version alignment with target PHP](todo/external-stubs.md#e4-stub-version-alignment)    | Medium      | Medium      |
+| E5  | [Extension stub coverage audit](todo/external-stubs.md#e5-extension-stub-audit)               | Medium      | Low         |
 
 ## Sprint 8 — Blade support
 
-Blade is a multi-phase project tracked in [todo/blade.md](todo/blade.md).
-Shipping Blade support makes PHPantom the first open-source PHP language
+| #   | Item                                             | Impact | Effort    |
+| --- | ------------------------------------------------ | ------ | --------- |
+|     | Clear [refactoring gate](todo/refactor.md)       | —      | —         |
+| BL1 | [Blade template language support](todo/blade.md) | High   | Very High |
+
+The Blade sprint is a placeholder. Scope will be refined after Sprint 7
+ships. The goal is to provide a single-binary PHP + Blade language
 server with Blade intelligence.
-
-| Phase   | Scope                        | Key Items                                                                                 |
-| ------- | ---------------------------- | ----------------------------------------------------------------------------------------- |
-| Phase 1 | Blade-to-PHP preprocessor    | Module skeleton, directive translation, source map, LSP wiring                            |
-| Phase 2 | Component support            | Template/component discovery, `<x-component>` parsing, `@props`/`@aware`, name completion |
-| Phase 3 | Cross-file view intelligence | View name GTD, signature merging for `@extends`, component→template variable typing       |
-| Phase 4 | Blade directive completion   | Directive name completion with snippet insertion                                          |
-
----
 
 # Backlog
 
 Items not yet assigned to a sprint. Worth doing eventually but
 unlikely to move the needle for most users.
 
-| #   | Item                                                                     | Impact     | Effort      |
-| --- | ------------------------------------------------------------------------ | ---------- | ----------- |
-|     | **[Completion](todo/completion.md)**                                     |            |             |
-| C1  | Array functions needing new code paths                                   | Medium     | High        |
-| C4  | Go-to-definition for array shape keys via bracket access                 | Low-Medium | Medium      |
-| C5  | Non-array functions with dynamic return types                            | Low        | High        |
-| C6  | `#[ReturnTypeContract]` parameter-dependent return types                 | Low        | Low         |
-| C7  | `#[ExpectedValues]` parameter value suggestions                          | Low        | Medium      |
-| C8  | `class_alias()` support                                                  | Low-Medium | Medium      |
-|     | **[Type Inference](todo/type-inference.md)**                             |            |             |
-| T4  | Non-empty-\* type narrowing and propagation                              | Low        | Low         |
-| T5  | Fiber type resolution                                                    | Low        | Low         |
-| T6  | `Closure::bind()` / `Closure::fromCallable()` return type preservation   | Low-Medium | Low-Medium  |
-|     | **[Diagnostics](todo/diagnostics.md)**                                   |            |             |
-| D2  | Chain error propagation (flag only the first broken link)                | Medium     | Medium      |
-| D5  | Diagnostic suppression intelligence                                      | Medium     | Medium      |
-| D10 | PHPMD diagnostic proxy                                                   | Low        | Medium      |
-|     | **[Code Actions](todo/actions.md)**                                      |            |             |
-| A3  | Switch → match conversion                                                | Low        | Medium      |
-| A10 | Generate interface from class                                            | Low-Medium | Medium      |
-|     | **[LSP Features](todo/lsp-features.md)**                                 |            |             |
-| F3  | Incremental text sync                                                    | Low-Medium | Medium      |
-|     | **[Signature Help](todo/signature-help.md)**                             |            |             |
-| S3  | Multiple overloaded signatures                                           | Medium     | Medium-High |
-| S4  | Named argument awareness in active parameter                             | Low-Medium | Medium      |
-| S5  | Language construct signature help and hover                              | Low        | Low         |
-|     | **[Laravel](todo/laravel.md)**                                           |            |             |
-| L4  | Custom Eloquent builders (`HasBuilder` / `#[UseEloquentBuilder]`)        | Medium     | Medium      |
-| L2  | `morphedByMany` missing from relationship method map                     | Low-Medium | Low         |
-| L3  | `$dates` array (deprecated)                                              | Low-Medium | Low         |
-| L6  | Factory `has*`/`for*` relationship methods                               | Low-Medium | Medium      |
-| L7  | `$pivot` property on BelongsToMany                                       | Medium     | Medium-High |
-| L8  | `withSum`/`withAvg`/`withMin`/`withMax` aggregate properties             | Low-Medium | Medium-High |
-| L9  | Higher-order collection proxies                                          | Low-Medium | Medium-High |
-| L10 | `View::withX()` / `RedirectResponse::withX()` dynamic methods            | Low        | Low         |
-| L11 | `$appends` array                                                         | Low        | Low         |
-|     | **[External Stubs](todo/external-stubs.md)**                             |            |             |
-| E2  | Project-level stubs as type resolution source                            | Medium     | Medium      |
-| E3  | IDE-provided and `.phpantom.toml` stub paths                             | Low-Medium | Low         |
-| E6  | Stub install prompt for non-Composer projects                            | Low        | Low         |
-|     | **[Performance](todo/performance.md)**                                   |            |             |
-| P1a | `type_hint_to_classes` returns `Vec<Arc<ClassInfo>>`                     | Low        | Low         |
-| P1b | Propagate `Arc<ClassInfo>` through variable-resolution pipeline          | Low        | Medium      |
-| P2  | Type AST for `apply_substitution` (full refactor)                        | Medium     | High        |
-| P3  | Parallel pre-filter in `find_implementors`                               | Low-Medium | Medium      |
-| P4  | `memmem` for block comment terminator search                             | Low        | Low         |
-| P5  | `memmap2` for file reads during scanning                                 | Low        | Low         |
-| P6  | O(n²) transitive eviction in `evict_fqn`                                 | Low        | Low         |
-| P7  | `diag_pending_uris` uses `Vec::contains` for dedup                       | Low        | Low         |
-| P8  | `find_class_in_ast_map` linear fallback scan                             | Low        | Low         |
-|     | **[Indexing](todo/indexing.md)**                                         |            |             |
-| X1  | Staleness detection and auto-refresh                                     | Medium     | Medium      |
-| X3  | Completion item detail on demand (`completionItem/resolve`)              | Medium     | Medium      |
-| X2  | Parallel file processing — remaining work                                | Low-Medium | Medium      |
-| X5  | Granular progress reporting for indexing, GTI, and Find References       | Low-Medium | Medium      |
-| X4  | Full background indexing (`strategy = "full"`)                           | Medium     | High        |
-| X6  | Disk cache (evaluate later)                                              | Medium     | High        |
-|     | **[Bug Fixes](todo/bugs.md)**                                            |            |             |
-| B2  | Orphan PHPStan processes on server shutdown                             | High       | Low         |
-| B4  | Diagnostic dedup only removes adjacent duplicates and uses wrong key    | Medium     | Low         |
-| B5  | Implementation error diagnostic skips enums                             | Medium     | Low         |
-| B7  | Inlay hints: wrong parameter name with mixed named/positional args      | Medium     | Medium      |
-| B9  | Update docblock action misparses `@param $name` with no type            | Low-Medium | Low         |
-| B10 | PHPStan cache written after file close causes stale diagnostics         | Low-Medium | Low         |
-| B1  | Native type hints not considered in virtual property specificity ranking | Low-Medium | Medium      |
-|     | **[Inline Completion](todo/inline-completion.md)**                       |            |             |
-| N1  | Template engine (type-aware snippets)                                    | Medium     | High        |
-| N2  | N-gram prediction from PHP corpus                                        | Medium     | Very High   |
-| N3  | Fine-tuned GGUF sidecar model                                            | Medium     | Very High   |
+| #   | Item                                                                     | Impact     | Effort         |
+| --- | ------------------------------------------------------------------------ | ---------- | -------------- |
+|     | **[Completion](todo/completion.md)**                                     |            |                |
+| C1  | Array functions needing new code paths                                   | Medium     | High           |
+| C4  | Go-to-definition for array shape keys via bracket access                 | Low-Medium | Medium         |
+| C5  | Non-array functions with dynamic return types                            | Low        | High           |
+| C6  | `#[ReturnTypeContract]` parameter-dependent return types                 | Low        | Low            |
+| C7  | `#[ExpectedValues]` parameter value suggestions                          | Low        | Medium         |
+| C8  | `class_alias()` support                                                  | Low-Medium | Medium         |
+| C9  | Filesystem proximity as an affinity tiebreaker                           | Low-Medium | Low            |
+| C10 | Lazy documentation via `completionItem/resolve` (see also X3)            | Medium     | Medium         |
+| C11 | Deprecation markers on class-name completions from all sources           | Low        | Low            |
+| C12 | Smarter member ordering after `->` / `::`                                | Medium     | needs planning |
+|     | **[Type Inference](todo/type-inference.md)**                             |            |                |
+| T4  | Non-empty-\* type narrowing and propagation                              | Low        | Low            |
+| T5  | Fiber type resolution                                                    | Low        | Low            |
+| T6  | `Closure::bind()` / `Closure::fromCallable()` return type preservation   | Low-Medium | Low-Medium     |
+|     | **[Diagnostics](todo/diagnostics.md)**                                   |            |                |
+| D2  | Chain error propagation (flag only the first broken link)                | Medium     | Medium         |
+| D5  | Diagnostic suppression intelligence                                      | Medium     | Medium         |
+| D10 | PHPMD diagnostic proxy                                                   | Low        | Medium         |
+|     | **[Code Actions](todo/actions.md)**                                      |            |                |
+| A3  | Switch → match conversion                                                | Low        | Medium         |
+| A10 | Generate interface from class                                            | Low-Medium | Medium         |
+|     | **[LSP Features](todo/lsp-features.md)**                                 |            |                |
+| F3  | Incremental text sync                                                    | Low-Medium | Medium         |
+|     | **[Signature Help](todo/signature-help.md)**                             |            |                |
+| S3  | Multiple overloaded signatures                                           | Medium     | Medium-High    |
+| S4  | Named argument awareness in active parameter                             | Low-Medium | Medium         |
+| S5  | Language construct signature help and hover                              | Low        | Low            |
+|     | **[Laravel](todo/laravel.md)**                                           |            |                |
+| L4  | Custom Eloquent builders (`HasBuilder` / `#[UseEloquentBuilder]`)        | Medium     | Medium         |
+| L2  | `morphedByMany` missing from relationship method map                     | Low-Medium | Low            |
+| L3  | `$dates` array (deprecated)                                              | Low-Medium | Low            |
+| L6  | Factory `has*`/`for*` relationship methods                               | Low-Medium | Medium         |
+| L7  | `$pivot` property on BelongsToMany                                       | Medium     | Medium-High    |
+| L8  | `withSum`/`withAvg`/`withMin`/`withMax` aggregate properties             | Low-Medium | Medium-High    |
+| L9  | Higher-order collection proxies                                          | Low-Medium | Medium-High    |
+| L10 | `View::withX()` / `RedirectResponse::withX()` dynamic methods            | Low        | Low            |
+| L11 | `$appends` array                                                         | Low        | Low            |
+|     | **[External Stubs](todo/external-stubs.md)**                             |            |                |
+| E2  | Project-level stubs as type resolution source                            | Medium     | Medium         |
+| E3  | IDE-provided and `.phpantom.toml` stub paths                             | Low-Medium | Low            |
+| E6  | Stub install prompt for non-Composer projects                            | Low        | Low            |
+|     | **[Performance](todo/performance.md)**                                   |            |                |
+| P1a | `type_hint_to_classes` returns `Vec<Arc<ClassInfo>>`                     | Low        | Low            |
+| P1b | Propagate `Arc<ClassInfo>` through variable-resolution pipeline          | Low        | Medium         |
+| P2  | Type AST for `apply_substitution` (full refactor)                        | Medium     | High           |
+| P3  | Parallel pre-filter in `find_implementors`                               | Low-Medium | Medium         |
+| P4  | `memmem` for block comment terminator search                             | Low        | Low            |
+| P5  | `memmap2` for file reads during scanning                                 | Low        | Low            |
+| P6  | O(n²) transitive eviction in `evict_fqn`                                 | Low        | Low            |
+| P7  | `diag_pending_uris` uses `Vec::contains` for dedup                       | Low        | Low            |
+| P8  | `find_class_in_ast_map` linear fallback scan                             | Low        | Low            |
+|     | **[Indexing](todo/indexing.md)**                                         |            |                |
+| X1  | Staleness detection and auto-refresh                                     | Medium     | Medium         |
+| X3  | Completion item detail on demand (`completionItem/resolve`)              | Medium     | Medium         |
+| X2  | Parallel file processing — remaining work                                | Low-Medium | Medium         |
+| X5  | Granular progress reporting for indexing, GTI, and Find References       | Low-Medium | Medium         |
+| X4  | Full background indexing (`strategy = "full"`)                           | Medium     | High           |
+| X6  | Disk cache (evaluate later)                                              | Medium     | High           |
+|     | **[Bug Fixes](todo/bugs.md)**                                            |            |                |
+| B2  | Orphan PHPStan processes on server shutdown                              | High       | Low            |
+| B4  | Diagnostic dedup only removes adjacent duplicates and uses wrong key     | Medium     | Low            |
+| B5  | Implementation error diagnostic skips enums                              | Medium     | Low            |
+| B7  | Inlay hints: wrong parameter name with mixed named/positional args       | Medium     | Medium         |
+| B9  | Update docblock action misparses `@param $name` with no type             | Low-Medium | Low            |
+| B10 | PHPStan cache written after file close causes stale diagnostics          | Low-Medium | Low            |
+| B1  | Native type hints not considered in virtual property specificity ranking | Low-Medium | Medium         |
+|     | **[Inline Completion](todo/inline-completion.md)**                       |            |                |
+| N1  | Template engine (type-aware snippets)                                    | Medium     | High           |
+| N2  | N-gram prediction from PHP corpus                                        | Medium     | Very High      |
+| N3  | Fine-tuned GGUF sidecar model                                            | Medium     | Very High      |

@@ -804,3 +804,144 @@ function demo(str) {}
         helper_sort
     );
 }
+
+// ─── Type hint excludes traits ──────────────────────────────────────────────
+
+/// Traits should not appear in parameter type-hint completions.
+/// PHP accepts the syntax but the type check always fails at runtime.
+#[tokio::test]
+async fn param_type_excludes_traits() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test/type_hint_trait.php").unwrap();
+
+    let src = concat!(
+        "<?php\n",
+        "namespace TypeHintTest;\n",
+        "class SomeClass {}\n",
+        "interface SomeInterface {}\n",
+        "trait SomeTrait {}\n",
+        "enum SomeEnum {}\n",
+        "function demo(Some) {}\n",
+    );
+    // Line 6: `function demo(Some) {}`
+    // cursor after "Some" = col 18
+    let items = complete_at(&backend, &uri, src, 6, 18).await;
+    let cls = class_items(&items);
+    let lbls: Vec<&str> = cls.iter().map(|i| i.label.as_str()).collect();
+
+    assert!(
+        lbls.contains(&"SomeClass"),
+        "type hint should include classes, got: {:?}",
+        lbls
+    );
+    assert!(
+        lbls.contains(&"SomeInterface"),
+        "type hint should include interfaces, got: {:?}",
+        lbls
+    );
+    assert!(
+        lbls.contains(&"SomeEnum"),
+        "type hint should include enums, got: {:?}",
+        lbls
+    );
+    assert!(
+        !lbls.contains(&"SomeTrait"),
+        "type hint should NOT include traits, got: {:?}",
+        lbls
+    );
+}
+
+/// Traits should not appear in return type-hint completions.
+#[tokio::test]
+async fn return_type_excludes_traits() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test/type_hint_return_trait.php").unwrap();
+
+    let src = concat!(
+        "<?php\n",
+        "namespace ReturnHintTest;\n",
+        "class SomeClass {}\n",
+        "trait SomeTrait {}\n",
+        "function demo(): Some {}\n",
+    );
+    // Line 4: `function demo(): Some {}`
+    // cursor after "Some" = col 21
+    let items = complete_at(&backend, &uri, src, 4, 21).await;
+    let cls = class_items(&items);
+    let lbls: Vec<&str> = cls.iter().map(|i| i.label.as_str()).collect();
+
+    assert!(
+        lbls.contains(&"SomeClass"),
+        "return type should include classes, got: {:?}",
+        lbls
+    );
+    assert!(
+        !lbls.contains(&"SomeTrait"),
+        "return type should NOT include traits, got: {:?}",
+        lbls
+    );
+}
+
+/// Traits should not appear in property type-hint completions.
+#[tokio::test]
+async fn property_type_excludes_traits() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test/type_hint_prop_trait.php").unwrap();
+
+    let src = concat!(
+        "<?php\n",
+        "namespace PropHintTest;\n",
+        "class SomeClass {}\n",
+        "trait SomeTrait {}\n",
+        "class Demo {\n",
+        "    public Some\n",
+        "}\n",
+    );
+    // Line 5: `    public Some`
+    // cursor after "Some" = col 15
+    let items = complete_at(&backend, &uri, src, 5, 15).await;
+    let cls = class_items(&items);
+    let lbls: Vec<&str> = cls.iter().map(|i| i.label.as_str()).collect();
+
+    assert!(
+        lbls.contains(&"SomeClass"),
+        "property type should include classes, got: {:?}",
+        lbls
+    );
+    assert!(
+        !lbls.contains(&"SomeTrait"),
+        "property type should NOT include traits, got: {:?}",
+        lbls
+    );
+}
+
+/// Union type hints should also exclude traits.
+#[tokio::test]
+async fn union_type_excludes_traits() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test/type_hint_union_trait.php").unwrap();
+
+    let src = concat!(
+        "<?php\n",
+        "namespace UnionHintTest;\n",
+        "class SomeClass {}\n",
+        "trait SomeTrait {}\n",
+        "function demo(string|Some) {}\n",
+    );
+    // Line 4: `function demo(string|Some) {}`
+    // cursor after "Some" = col 25
+    let items = complete_at(&backend, &uri, src, 4, 25).await;
+    let cls = class_items(&items);
+    let lbls: Vec<&str> = cls.iter().map(|i| i.label.as_str()).collect();
+
+    assert!(
+        lbls.contains(&"SomeClass"),
+        "union type should include classes, got: {:?}",
+        lbls
+    );
+    assert!(
+        !lbls.contains(&"SomeTrait"),
+        "union type should NOT include traits, got: {:?}",
+        lbls
+    );
+}

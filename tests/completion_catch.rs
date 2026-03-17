@@ -949,3 +949,125 @@ async fn test_throw_new_extra_whitespace() {
         labels
     );
 }
+
+// ─── Catch allows Throwable interfaces ──────────────────────────────────────
+
+/// `catch (\Throwable $e)` is idiomatic PHP — the Throwable interface
+/// itself should appear in catch fallback completions.
+#[tokio::test]
+async fn test_catch_fallback_includes_throwable_interface() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///catch_iface.php").unwrap();
+    // Define a custom interface that extends \Throwable and a class
+    // that implements it.  Both should appear in catch completions.
+    let text = concat!(
+        "<?php\n",
+        "interface AppException extends \\Throwable {}\n",
+        "class ConcreteAppException extends \\Exception implements AppException {}\n",
+        "class NotAnException {}\n",
+        "class CatchIfaceDemo {\n",
+        "    public function demo(): void {\n",
+        "        try {\n",
+        "            $this->doWork();\n",
+        "        } catch (\n",
+        "        }\n",
+        "    }\n",
+        "    private function doWork(): void {}\n",
+        "}\n",
+    );
+
+    let items = complete_at(&backend, &uri, text, 8, 18).await;
+    let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+
+    // The Throwable interface itself should be offered.
+    assert!(
+        labels.contains(&"AppException"),
+        "Throwable-extending interface should appear in catch, got: {:?}",
+        labels
+    );
+    // Concrete exception class should also be offered.
+    assert!(
+        labels.contains(&"ConcreteAppException"),
+        "Concrete exception class should appear in catch, got: {:?}",
+        labels
+    );
+    // Non-exception class should be filtered out.
+    assert!(
+        !labels.contains(&"NotAnException"),
+        "Non-Throwable class should be filtered out of catch, got: {:?}",
+        labels
+    );
+}
+
+/// Abstract exception classes should appear in catch completions.
+/// `catch (AbstractBaseException $e)` is valid PHP.
+#[tokio::test]
+async fn test_catch_fallback_includes_abstract_exception() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///catch_abstract.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "abstract class AbstractBaseException extends \\Exception {}\n",
+        "class ConcreteChildException extends AbstractBaseException {}\n",
+        "class CatchAbstractDemo {\n",
+        "    public function demo(): void {\n",
+        "        try {\n",
+        "            $this->doWork();\n",
+        "        } catch (\n",
+        "        }\n",
+        "    }\n",
+        "    private function doWork(): void {}\n",
+        "}\n",
+    );
+
+    let items = complete_at(&backend, &uri, text, 7, 18).await;
+    let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+
+    assert!(
+        labels.contains(&"AbstractBaseException"),
+        "Abstract exception class should appear in catch, got: {:?}",
+        labels
+    );
+    assert!(
+        labels.contains(&"ConcreteChildException"),
+        "Concrete child exception should appear in catch, got: {:?}",
+        labels
+    );
+}
+
+/// An interface that extends another interface that extends \Throwable
+/// should still be recognized as a Throwable descendant through the
+/// interface chain.
+#[tokio::test]
+async fn test_catch_fallback_interface_chain() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///catch_iface_chain.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "interface BaseAppException extends \\Throwable {}\n",
+        "interface SpecificAppException extends BaseAppException {}\n",
+        "class IfaceChainDemo {\n",
+        "    public function demo(): void {\n",
+        "        try {\n",
+        "            $this->doWork();\n",
+        "        } catch (\n",
+        "        }\n",
+        "    }\n",
+        "    private function doWork(): void {}\n",
+        "}\n",
+    );
+
+    let items = complete_at(&backend, &uri, text, 7, 18).await;
+    let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+
+    assert!(
+        labels.contains(&"BaseAppException"),
+        "Direct Throwable-extending interface should appear, got: {:?}",
+        labels
+    );
+    assert!(
+        labels.contains(&"SpecificAppException"),
+        "Transitive Throwable-extending interface should appear, got: {:?}",
+        labels
+    );
+}
