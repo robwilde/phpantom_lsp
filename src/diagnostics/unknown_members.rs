@@ -3413,4 +3413,42 @@ final class Decimal
             diags.iter().map(|d| &d.message).collect::<Vec<_>>(),
         );
     }
+
+    /// Conditional return type `($middleware is null ? array : $this)` should
+    /// resolve to `$this` when a non-null argument is provided, allowing
+    /// chained calls like `->middleware([...])->name(...)`.
+    #[test]
+    fn no_false_positive_on_conditional_this_return_in_chain() {
+        let backend = Backend::new_test();
+        let uri = "file:///test.php";
+        let content = r#"<?php
+class Route {
+    /**
+     * @param  array|string|null  $middleware
+     * @return ($middleware is null ? array : $this)
+     */
+    public function middleware($middleware = null) {
+        return $this;
+    }
+
+    public function name(string $name): self {
+        return $this;
+    }
+
+    public static function get(string $uri, $action = null): self {
+        return new self();
+    }
+}
+
+function test(): void {
+    Route::get('/api/foo', 'handler')->middleware(['auth'])->name('route-name');
+}
+"#;
+        let diags = collect(&backend, uri, content);
+        assert!(
+            diags.is_empty(),
+            "Expected no diagnostics for chained call after conditional $this return, got: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>(),
+        );
+    }
 }

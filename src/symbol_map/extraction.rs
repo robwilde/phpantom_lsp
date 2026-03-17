@@ -2321,6 +2321,51 @@ fn expr_to_subject_text(expr: &Expression<'_>) -> String {
 
         Expression::Parenthesized(paren) => expr_to_subject_text(paren.expression),
 
+        // Array literals: `[Foo::class, 'bar']` → `[Foo::class, 'bar']`.
+        // We format elements we can represent and elide the rest so that
+        // callers (especially conditional return-type resolution) can see
+        // that an argument was provided and is not null.
+        Expression::Array(array) => {
+            let mut parts = Vec::new();
+            for element in array.elements.iter() {
+                match element {
+                    mago_syntax::ast::ArrayElement::KeyValue(kv) => {
+                        let val = expr_to_subject_text(kv.value);
+                        if !val.is_empty() {
+                            let key = expr_to_subject_text(kv.key);
+                            if key.is_empty() {
+                                parts.push(val);
+                            } else {
+                                parts.push(format!("{} => {}", key, val));
+                            }
+                        } else {
+                            parts.push("...".to_string());
+                        }
+                    }
+                    mago_syntax::ast::ArrayElement::Value(v) => {
+                        let val = expr_to_subject_text(v.value);
+                        if val.is_empty() {
+                            parts.push("...".to_string());
+                        } else {
+                            parts.push(val);
+                        }
+                    }
+                    mago_syntax::ast::ArrayElement::Variadic(v) => {
+                        let val = expr_to_subject_text(v.value);
+                        if val.is_empty() {
+                            parts.push("...".to_string());
+                        } else {
+                            parts.push(format!("...{}", val));
+                        }
+                    }
+                    mago_syntax::ast::ArrayElement::Missing(_) => {
+                        parts.push("...".to_string());
+                    }
+                }
+            }
+            format!("[{}]", parts.join(", "))
+        }
+
         Expression::ArrayAccess(access) => {
             let base = expr_to_subject_text(access.array);
             if base.is_empty() {
