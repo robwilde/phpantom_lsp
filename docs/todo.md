@@ -201,6 +201,15 @@ unlikely to move the needle for most users.
 | X4  | Full background indexing (`strategy = "full"`)                           | Medium     | High        |
 | X6  | Disk cache (evaluate later)                                              | Medium     | High        |
 |     | **[Bug Fixes](todo/bugs.md)**                                            |            |             |
+| B2  | Orphan PHPStan processes on server shutdown                             | High       | Low         |
+| B3  | PHPStan `paths_match` false-positive on suffix                          | Medium     | Low         |
+| B4  | Diagnostic dedup only removes adjacent duplicates and uses wrong key    | Medium     | Low         |
+| B5  | Implementation error diagnostic skips enums                             | Medium     | Low         |
+| B6  | No cycle protection in `has_method_in_chain`                            | Medium     | Low         |
+| B7  | Inlay hints: wrong parameter name with mixed named/positional args      | Medium     | Medium      |
+| B8  | Inlay hints: spread arguments get a misleading parameter hint           | Low-Medium | Low         |
+| B9  | Update docblock action misparses `@param $name` with no type            | Low-Medium | Low         |
+| B10 | PHPStan cache written after file close causes stale diagnostics         | Low-Medium | Low         |
 | B1  | Native type hints not considered in virtual property specificity ranking | Low-Medium | Medium      |
 |     | **[Inline Completion](todo/inline-completion.md)**                       |            |             |
 | N1  | Template engine (type-aware snippets)                                    | Medium     | High        |

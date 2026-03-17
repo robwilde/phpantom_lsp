@@ -15,6 +15,185 @@ within the same impact tier.
 
 ---
 
+## B2. Orphan PHPStan processes on server shutdown
+
+**Impact: High · Effort: Low**
+
+The `shutdown()` handler in `server.rs` is a no-op. The PHPStan and
+diagnostic background workers are spawned with `tokio::spawn` and
+their `JoinHandle`s are dropped. If PHPStan is running when the user
+closes their editor, the child process continues consuming CPU and
+memory until it hits its timeout (up to 60 seconds).
+
+The `run_command_with_timeout` busy-wait loop inside `spawn_blocking`
+has no cancellation check. There is no `CancellationToken` or similar
+mechanism to signal the workers to stop.
+
+**Fix:** Store the `JoinHandle`s (or a shared `CancellationToken`).
+In `shutdown`, signal cancellation and abort the tasks. In
+`run_command_with_timeout`, check a cancellation flag in the poll
+loop so the child process is killed promptly.
+
+**Files:** `src/server.rs` (shutdown, worker spawns),
+`src/phpstan.rs` (`run_command_with_timeout`),
+`src/diagnostics/mod.rs` (worker loops).
+
+---
+
+## B3. PHPStan `paths_match` false-positive on suffix
+
+**Impact: Medium · Effort: Low**
+
+`paths_match` in `src/phpstan.rs` uses `ends_with` without requiring
+a path separator boundary. For example, `/project/src/AFoo.php`
+matches `Foo.php`, potentially attributing PHPStan diagnostics from
+one file to a different file with a similar name.
+
+**Fix:** Require a `/` before the suffix match:
+`a_norm.ends_with(&format!("/{}", b_norm))`.
+
+**File:** `src/phpstan.rs` L356-368.
+
+---
+
+## B4. Diagnostic dedup only removes adjacent duplicates and uses wrong key
+
+**Impact: Medium · Effort: Low**
+
+`suppress_redundant_diagnostics` in `src/diagnostics/mod.rs` uses
+`Vec::dedup_by`, which only removes **consecutive** duplicates.
+Diagnostics from Phase 1 (fast), Phase 2 (slow), and Phase 3
+(PHPStan) are appended sequentially without sorting, so identical
+diagnostics from different phases survive if anything sits between
+them.
+
+The dedup key also checks `a.message == b.message`, which is too
+strict. Two diagnostics covering the same range are redundant
+regardless of wording. The correct dedup key is the range alone.
+
+The current logic should prefer diagnostics with an exact range
+(specific start and end character) over diagnostics that only have a
+line number (full-line range with `character 0..MAX`). When two
+diagnostics overlap on the same line, keep the one with the more
+precise range.
+
+**Fix:** Sort diagnostics by range before deduplicating. Change the
+dedup key to range only (drop the message comparison). When a
+full-line diagnostic and a precise diagnostic cover the same line,
+keep the precise one (this is partially handled by the existing
+`is_full_line_range` suppression, but the dedup pass should also
+prefer precise ranges).
+
+**File:** `src/diagnostics/mod.rs` L724-726.
+
+---
+
+## B5. Implementation error diagnostic skips enums
+
+**Impact: Medium · Effort: Low**
+
+PHP enums can implement interfaces and must provide all required
+methods. The filter in `collect_implementation_error_diagnostics`
+skips everything that is not `ClassLikeKind::Class`, so missing
+interface methods on enums are never flagged.
+
+The fix also needs to account for the methods that the engine
+provides automatically on enums (`UnitEnum::cases`,
+`BackedEnum::from`, `BackedEnum::tryFrom`). These should be excluded
+from the "missing" set.
+
+**File:** `src/diagnostics/implementation_errors.rs` L73-76.
+
+---
+
+## B6. No cycle protection in `has_method_in_chain` / `has_abstract_method_in_chain`
+
+**Impact: Medium · Effort: Low**
+
+The recursive functions that walk class/interface hierarchies in the
+implementation error diagnostic have no visited set. A cyclic
+hierarchy caused by user error (e.g. `interface A extends B` +
+`interface B extends A`) will recurse until stack overflow, crashing
+the LSP server.
+
+**Fix:** Pass a `HashSet<String>` of visited class names through the
+recursion and skip already-seen entries.
+
+**File:** `src/diagnostics/implementation_errors.rs` L179-232.
+
+---
+
+## B7. Inlay hints: wrong parameter name with mixed named and positional arguments
+
+**Impact: Medium · Effort: Medium**
+
+`emit_parameter_hints` in `src/inlay_hints.rs` maps each argument to
+a parameter by its positional index (`arg_idx`). This is wrong when
+named arguments appear before positional arguments or consume
+parameters out of order. For example, `greet(city: 'NYC', 'Alice')`
+would label `'Alice'` as `age:` instead of `name:`.
+
+**Fix:** Track which parameters are consumed by named arguments
+first, then assign remaining positional arguments to the remaining
+parameters in order.
+
+**File:** `src/inlay_hints.rs` L115-121.
+
+---
+
+## B8. Inlay hints: spread arguments get a misleading parameter hint
+
+**Impact: Low-Medium · Effort: Low**
+
+When a call uses argument unpacking (`...$args`), the spread argument
+is labeled with the next positional parameter name (e.g. `b:`), but
+the spread could expand into multiple parameters. The `has_unpacking`
+field on `CallSite` exists but is never read by `emit_parameter_hints`.
+
+**Fix:** Skip parameter name hints for arguments that use the spread
+operator. Either bail out entirely when `has_unpacking` is true, or
+track which specific argument indices have ellipsis and skip just
+those.
+
+**File:** `src/inlay_hints.rs`.
+
+---
+
+## B9. Update docblock action misparses `@param $name` with no type
+
+**Impact: Low-Medium · Effort: Low**
+
+When a docblock contains `@param $name Some description` (no type
+before the variable name), `split_type_token` consumes `$name` as
+the type token. The remainder then fails the `contains('$')` check,
+so the parameter is skipped. The action then considers the parameter
+"missing" and adds a duplicate `@param mixed $name`.
+
+**Fix:** In the `@param` parsing loop, detect when the first token
+starts with `$` and treat it as the parameter name with no type.
+
+**File:** `src/code_actions/update_docblock.rs` L475-483.
+
+---
+
+## B10. PHPStan cache written after file close causes stale diagnostics on reopen
+
+**Impact: Low-Medium · Effort: Low**
+
+If PHPStan is running for a file when the user closes it,
+`clear_diagnostics_for_file` clears the cache first, then the
+PHPStan worker finishes and writes its results back into
+`phpstan_last_diags`. The next `did_open` merges these stale
+diagnostics.
+
+**Fix:** After the PHPStan worker writes results, check that the
+file is still in `open_files` before caching. Alternatively, tag
+cached results with a version counter and discard stale entries.
+
+**File:** `src/diagnostics/mod.rs` (PHPStan worker, around L593-596).
+
+---
+
 ## B1. Native type hints not considered in virtual property specificity ranking
 
 **Impact: Low-Medium · Effort: Medium**
