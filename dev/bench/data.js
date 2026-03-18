@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1773826889174,
+  "lastUpdate": 1773836206388,
   "repoUrl": "https://github.com/AJenbo/phpantom_lsp",
   "entries": {
     "PHPantom Benchmarks": [
@@ -20291,6 +20291,156 @@ window.BENCHMARK_DATA = {
             "name": "diagnostics/fixture/method_chain",
             "value": 810063,
             "range": "± 4181",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "anders@jenbo.dk",
+            "name": "Anders Jenbo",
+            "username": "AJenbo"
+          },
+          "committer": {
+            "email": "anders@jenbo.dk",
+            "name": "Anders Jenbo",
+            "username": "AJenbo"
+          },
+          "distinct": true,
+          "id": "fc4f37e68d4eb7a5d9ed0cd3dc8930afcc50125e",
+          "message": "Embedded stubs track upstream master",
+          "timestamp": "2026-03-18T13:10:49+01:00",
+          "tree_id": "523433845208cb32a3302d5330b319fc845baf16",
+          "url": "https://github.com/AJenbo/phpantom_lsp/commit/fc4f37e68d4eb7a5d9ed0cd3dc8930afcc50125e"
+        },
+        "date": 1773836204266,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "completion_simple_class",
+            "value": 567120,
+            "range": "± 4444",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "completion_inheritance_depth/depth_5",
+            "value": 689998,
+            "range": "± 2475",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "completion_inheritance_depth/depth_10",
+            "value": 815055,
+            "range": "± 4129",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "completion_inheritance_depth/depth_20",
+            "value": 1072599,
+            "range": "± 20886",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "completion_classmap_size/100_classes",
+            "value": 1134371,
+            "range": "± 22104",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "completion_classmap_size/500_classes",
+            "value": 3458207,
+            "range": "± 21687",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "completion_classmap_size/1000_classes",
+            "value": 6448297,
+            "range": "± 57571",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "completion_generics_and_mixins",
+            "value": 715980,
+            "range": "± 1635",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "completion_with_narrowing",
+            "value": 581369,
+            "range": "± 4063",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "completion_5_method_chain",
+            "value": 564019,
+            "range": "± 7125",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "completion_cross_file_type_hint",
+            "value": 592410,
+            "range": "± 3062",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "update_ast_parse_time/100_lines",
+            "value": 720849,
+            "range": "± 4262",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "update_ast_parse_time/500_lines",
+            "value": 1364183,
+            "range": "± 14842",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "update_ast_parse_time/2000_lines",
+            "value": 3778316,
+            "range": "± 23899",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "hover_method_call",
+            "value": 577879,
+            "range": "± 4179",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "goto_definition_method",
+            "value": 553828,
+            "range": "± 1159",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "reparse_500_line_file",
+            "value": 2317431,
+            "range": "± 7617",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diagnostics/fixture/lots_of_new_generic_objects",
+            "value": 13207,
+            "range": "± 97",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diagnostics/fixture/lots_of_new_objects",
+            "value": 12317,
+            "range": "± 67",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diagnostics/fixture/lots_of_missing_methods",
+            "value": 320224299,
+            "range": "± 1301335",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diagnostics/fixture/method_chain",
+            "value": 788420,
+            "range": "± 3871",
             "unit": "ns/iter"
           }
         ]
