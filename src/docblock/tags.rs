@@ -1186,9 +1186,18 @@ pub fn should_override_type(docblock_type: &str, native_type: &str) -> bool {
         return !parts.iter().all(|p| is_scalar(strip_nullable(p)));
     }
 
+    // If the native type is a narrow scalar (not a broad container handled
+    // above), only allow override when the docblock type is a *compatible
+    // refinement*.  For example `string` → `class-string<Foo>` is valid,
+    // but `string` → `array<int>` is not — the types are fundamentally
+    // incompatible and the native declaration wins.
+    if is_scalar(clean_native) {
+        return is_compatible_refinement(clean_doc, &native_lower);
+    }
+
     // If the docblock type carries generic parameters (e.g.
-    // `class-string<T>`, `non-empty-array<int>`), it refines the
-    // native type even when the native type is scalar.
+    // `Collection<User>`) and the native type is a class, the docblock
+    // is refining the class with generic info — allow it.
     if clean_doc.contains('<') || clean_doc.contains('{') {
         return true;
     }
@@ -1202,8 +1211,77 @@ pub fn should_override_type(docblock_type: &str, native_type: &str) -> bool {
         return true;
     }
 
-    // Simple case: if the native type is a scalar, don't override.
-    !is_scalar(clean_native)
+    // Native type is a non-scalar class — docblock can always refine.
+    true
+}
+
+/// Check whether a docblock type is a compatible refinement of a native
+/// type.  Both parameters should be stripped of nullable wrappers before
+/// calling.  `native_lower` must already be lowercased.
+///
+/// A refinement is compatible when the docblock's base type narrows the
+/// native type without changing its fundamental kind.  For example:
+/// - `string` → `class-string<Foo>` (compatible: refines string)
+/// - `string` → `non-empty-string` (compatible: refines string)
+/// - `int` → `positive-int` (compatible: refines int)
+/// - `array` → `list<User>` (compatible: refines array)
+/// - `object` → `callable-object` (compatible: refines object)
+/// - `string` → `array<int>` (incompatible: completely different type)
+/// - `int` → `Collection<User>` (incompatible: completely different type)
+///
+/// This is the single source of truth for refinement compatibility and
+/// is used by both `should_override_type` and the update-docblock
+/// contradiction checker.
+pub(crate) fn is_compatible_refinement(docblock_type: &str, native_lower: &str) -> bool {
+    // Extract the base type from the docblock (before `<` or `{`).
+    let doc_base = {
+        let idx_angle = docblock_type.find('<').unwrap_or(docblock_type.len());
+        let idx_brace = docblock_type.find('{').unwrap_or(docblock_type.len());
+        docblock_type[..idx_angle.min(idx_brace)]
+            .trim()
+            .to_ascii_lowercase()
+    };
+
+    match native_lower {
+        // `string` is refined by `class-string`, `non-empty-string`,
+        // `literal-string`, `numeric-string`, `callable-string`,
+        // `lowercase-string`, `truthy-string` etc.
+        "string" => doc_base.contains("string"),
+        // `int` / `integer` is refined by `positive-int`, `negative-int`,
+        // `non-negative-int`, `non-positive-int`, `int-mask`, `int-mask-of`,
+        // `int` (with range syntax like `int<0, max>`).
+        "int" | "integer" => doc_base.contains("int"),
+        // `float` / `double` can be refined by `non-negative-float` etc.
+        "float" | "double" => doc_base.contains("float") || doc_base.contains("double"),
+        // `bool` / `boolean` can be refined by `true` or `false` (already
+        // handled as scalars earlier, but include for completeness).
+        "bool" | "boolean" => {
+            doc_base == "true" || doc_base == "false" || doc_base.contains("bool")
+        }
+        // `array` is refined by `list`, `non-empty-array`, `non-empty-list`,
+        // `associative-array`, `callable-array`, `array<…>`, `array{…}`.
+        "array" => {
+            doc_base.contains("array") || doc_base.contains("list") || doc_base == "iterable"
+        }
+        // `iterable` is refined by `array`, `list`, or any Collection-like.
+        // Since any class implementing Traversable/Iterator could be a valid
+        // refinement, allow all non-scalar docblock types.
+        "iterable" => true,
+        // `callable` / `Closure` are broad — any callable signature refines them.
+        "callable" => true,
+        "closure" => true,
+        // `object` is refined by any class name, or `callable-object`.
+        "object" => !is_scalar(&doc_base),
+        // `mixed` can be refined by anything.
+        "mixed" => true,
+        // `resource` is refined by `closed-resource`, `open-resource`.
+        "resource" => doc_base.contains("resource"),
+        // `void`, `never`, `null`, `true`, `false` — these are so narrow
+        // that docblock refinement is never meaningful.
+        "void" | "never" | "null" | "true" | "false" => false,
+        // For any other type, be conservative — don't override.
+        _ => false,
+    }
 }
 
 // ─── Docblock Text Extraction ───────────────────────────────────────────────

@@ -44,6 +44,7 @@ pub(crate) mod type_strings;
 // working without modification.
 
 // Core tags
+pub(crate) use tags::is_compatible_refinement;
 pub use tags::{
     extract_all_param_tags, extract_deprecation_message, extract_deprecation_with_see,
     extract_link_urls, extract_mixin_tags, extract_param_closure_this, extract_param_description,

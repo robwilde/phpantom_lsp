@@ -739,6 +739,72 @@ fn override_nullable_string_with_non_empty_string() {
     assert!(should_override_type("non-empty-string", "?string"));
 }
 
+#[test]
+fn override_string_with_class_string_generic() {
+    // `class-string<Foo>` is a valid refinement of `string`.
+    assert!(should_override_type("class-string<Foo>", "string"));
+}
+
+#[test]
+fn no_override_string_with_array_generic() {
+    // `array<int>` is not compatible with native `string` — completely
+    // different type family.  The native declaration wins.
+    assert!(!should_override_type("array<int>", "string"));
+}
+
+#[test]
+fn no_override_string_with_collection_generic() {
+    // `Collection<User>` is not a string refinement.
+    assert!(!should_override_type("Collection<User>", "string"));
+}
+
+#[test]
+fn no_override_int_with_array_generic() {
+    // `array<int>` is not compatible with native `int`.
+    assert!(!should_override_type("array<int>", "int"));
+}
+
+#[test]
+fn no_override_int_with_class_name() {
+    // A class name is not a refinement of `int`.
+    assert!(!should_override_type("Session", "int"));
+}
+
+#[test]
+fn no_override_bool_with_array_shape() {
+    // `array{name: string}` is not compatible with native `bool`.
+    assert!(!should_override_type("array{name: string}", "bool"));
+}
+
+#[test]
+fn no_override_float_with_array_generic() {
+    assert!(!should_override_type("array<string>", "float"));
+}
+
+#[test]
+fn override_int_with_int_range() {
+    // `int<0, max>` is a valid refinement of `int`.
+    assert!(should_override_type("int<0, max>", "int"));
+}
+
+#[test]
+fn override_string_with_non_empty_string_generic() {
+    // `non-empty-string` pseudo-type with generic params (unusual but valid).
+    assert!(should_override_type("non-empty-string", "string"));
+}
+
+#[test]
+fn no_override_string_with_list_generic() {
+    // `list<User>` is not a string refinement.
+    assert!(!should_override_type("list<User>", "string"));
+}
+
+#[test]
+fn no_override_nullable_int_with_array_generic() {
+    // `array<int>` is not compatible with `?int`.
+    assert!(!should_override_type("array<int>", "?int"));
+}
+
 // ── resolve_effective_type ──────────────────────────────────────────
 
 #[test]

@@ -24,6 +24,7 @@ use tower_lsp::lsp_types::*;
 use crate::Backend;
 use crate::completion::phpdoc::generation::enrichment_plain;
 use crate::completion::source::throws_analysis;
+use crate::docblock::is_compatible_refinement;
 use crate::docblock::type_strings::split_type_token;
 use crate::types::ClassInfo;
 use crate::util::offset_to_position;
@@ -728,26 +729,22 @@ fn is_type_contradiction(doc_type: &str, native_type: &str) -> bool {
         return false;
     }
 
-    // If the docblock type carries generics or callable signatures, it's
-    // likely a refinement.
-    if doc_type.contains('<') || doc_type.contains('{') || doc_type.contains('(') {
-        // Check that the base type is compatible.
-        let doc_base = base_type(doc_type).to_lowercase();
-        let native_base = base_type(native_type).to_lowercase();
-        if doc_base == native_base {
-            return false;
-        }
-        // `list<X>` refines `array`.
-        if native_base == "array" && (doc_base == "list" || doc_base == "array") {
-            return false;
-        }
-    }
-
-    // PHPStan-style type refinements like `non-empty-string`, `positive-int`,
-    // `class-string`, `literal-string`, etc. are refinements, not contradictions.
-    let doc_lower = doc_type.to_lowercase();
-    let native_lower = native_type.to_lowercase();
-    if is_refinement_of(&doc_lower, &native_lower) {
+    // Check whether the docblock type is a compatible refinement of the
+    // native type (e.g. `class-string<Foo>` refines `string`,
+    // `list<User>` refines `array`, `positive-int` refines `int`).
+    // This uses the shared refinement checker that also guards
+    // `resolve_effective_type`.
+    let native_stripped = native_type
+        .strip_prefix('\\')
+        .unwrap_or(native_type)
+        .strip_prefix('?')
+        .unwrap_or(native_type.strip_prefix('\\').unwrap_or(native_type));
+    let doc_stripped = doc_type
+        .strip_prefix('\\')
+        .unwrap_or(doc_type)
+        .strip_prefix('?')
+        .unwrap_or(doc_type.strip_prefix('\\').unwrap_or(doc_type));
+    if is_compatible_refinement(doc_stripped, &native_stripped.to_ascii_lowercase()) {
         return false;
     }
 
@@ -766,7 +763,7 @@ fn is_type_contradiction(doc_type: &str, native_type: &str) -> bool {
     if doc_bases.len() == 1 && native_bases.len() == 1 {
         let db = &doc_bases[0];
         let nb = &native_bases[0];
-        if db != nb && !is_refinement_of(db, nb) {
+        if db != nb && !is_compatible_refinement(db, nb) {
             return true;
         }
     }
@@ -786,68 +783,6 @@ fn normalize_type_for_comparison(t: &str) -> String {
     let mut parts: Vec<&str> = t.split('|').map(|s| s.trim()).collect();
     parts.sort();
     parts.join("|")
-}
-
-/// Get the base type (before `<` or `{`).
-fn base_type(t: &str) -> &str {
-    let t = t.strip_prefix('\\').unwrap_or(t);
-    let t = t.strip_prefix('?').unwrap_or(t);
-    if let Some(pos) = t.find('<') {
-        &t[..pos]
-    } else if let Some(pos) = t.find('{') {
-        &t[..pos]
-    } else {
-        t
-    }
-}
-
-/// Check if `doc_type` is a known refinement of `native_type`.
-fn is_refinement_of(doc_type: &str, native_type: &str) -> bool {
-    let refinements: &[(&str, &str)] = &[
-        ("non-empty-string", "string"),
-        ("non-falsy-string", "string"),
-        ("numeric-string", "string"),
-        ("literal-string", "string"),
-        ("class-string", "string"),
-        ("callable-string", "string"),
-        ("truthy-string", "string"),
-        ("lowercase-string", "string"),
-        ("uppercase-string", "string"),
-        ("non-empty-lowercase-string", "string"),
-        ("non-empty-uppercase-string", "string"),
-        ("non-empty-literal-string", "string"),
-        ("interface-string", "string"),
-        ("trait-string", "string"),
-        ("enum-string", "string"),
-        ("positive-int", "int"),
-        ("negative-int", "int"),
-        ("non-negative-int", "int"),
-        ("non-positive-int", "int"),
-        ("non-zero-int", "int"),
-        ("int-mask", "int"),
-        ("int-mask-of", "int"),
-        ("non-empty-array", "array"),
-        ("non-empty-list", "array"),
-        ("list", "array"),
-        ("associative-array", "array"),
-        ("callable-array", "array"),
-        ("callable-object", "object"),
-        ("closed-resource", "resource"),
-        ("open-resource", "resource"),
-    ];
-    for &(refined, base) in refinements {
-        // Handle both `doc_type` directly matching and `doc_type` having
-        // generic params (e.g. `class-string<foo>`).
-        let doc_base = if let Some(pos) = doc_type.find('<') {
-            &doc_type[..pos]
-        } else {
-            doc_type
-        };
-        if doc_base == refined && native_type == base {
-            return true;
-        }
-    }
-    false
 }
 
 /// Split a union type string into its components.

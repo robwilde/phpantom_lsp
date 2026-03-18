@@ -101,5 +101,3 @@ on by default.
 - `src/config.rs` — new field + accessor + default config comment.
 - `src/diagnostics/argument_count.rs` — gate the too-many block.
 - `tests/` — update or add tests asserting the default-off behaviour.
-
----
