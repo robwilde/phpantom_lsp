@@ -15,38 +15,6 @@ within the same impact tier.
 
 ---
 
-## B4. Diagnostic dedup only removes adjacent duplicates and uses wrong key
-
-**Impact: Medium · Effort: Low**
-
-`suppress_redundant_diagnostics` in `src/diagnostics/mod.rs` uses
-`Vec::dedup_by`, which only removes **consecutive** duplicates.
-Diagnostics from Phase 1 (fast), Phase 2 (slow), and Phase 3
-(PHPStan) are appended sequentially without sorting, so identical
-diagnostics from different phases survive if anything sits between
-them.
-
-The dedup key also checks `a.message == b.message`, which is too
-strict. Two diagnostics covering the same range are redundant
-regardless of wording. The correct dedup key is the range alone.
-
-The current logic should prefer diagnostics with an exact range
-(specific start and end character) over diagnostics that only have a
-line number (full-line range with `character 0..MAX`). When two
-diagnostics overlap on the same line, keep the one with the more
-precise range.
-
-**Fix:** Sort diagnostics by range before deduplicating. Change the
-dedup key to range only (drop the message comparison). When a
-full-line diagnostic and a precise diagnostic cover the same line,
-keep the precise one (this is partially handled by the existing
-`is_full_line_range` suppression, but the dedup pass should also
-prefer precise ranges).
-
-**File:** `src/diagnostics/mod.rs` L724-726.
-
----
-
 ## B7. Inlay hints: wrong parameter name with mixed named and positional arguments
 
 **Impact: Medium · Effort: Medium**
