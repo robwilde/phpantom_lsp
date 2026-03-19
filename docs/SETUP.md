@@ -23,7 +23,7 @@ cargo build --release
 
 ## Project Requirements
 
-PHPantom works with any PHP project. It reads `composer.json` when present to discover autoload directories and vendor packages, and falls back to scanning the workspace when not present.
+PHPantom works best with Composer projects. It reads `composer.json` to discover autoload directories and vendor packages, so completions and go-to-definition only surface classes that your autoloader can actually load. Projects without `composer.json` fall back to scanning every PHP file in the workspace.
 
 ## Configuration
 
@@ -46,9 +46,46 @@ This creates a `.phpantom.toml` in the current directory. Currently supported se
 # Report member access on subjects whose type could not be resolved.
 # Useful for discovering gaps in type coverage. Off by default.
 # unresolved-member-access = true
+
+[indexing]
+# How PHPantom discovers classes across the workspace.
+#   "composer" (default) - use Composer classmap, self-scan on fallback
+#   "self"    - always self-scan, ignore Composer classmap
+#   "none"    - no proactive scanning, Composer classmap only
+# strategy = "composer"
 ```
 
 The file is optional. When absent, all settings use their defaults. New settings will be added as features land. Unknown keys are silently ignored, so the file is forward-compatible.
+
+### Indexing Strategy
+
+By default, PHPantom trusts Composer's autoloader to determine which classes exist in your project. This is intentional: it means completions, diagnostics, and go-to-definition reflect what your code will actually see at runtime. Classes that aren't autoloadable don't appear, because using them would be an error.
+
+The `strategy` setting controls this behaviour:
+
+| Strategy | Behaviour |
+| --- | --- |
+| `"composer"` (default) | Use Composer's classmap when available, self-scan to fill gaps. Results match what `composer dump-autoload` knows about. |
+| `"self"` | Ignore Composer's classmap entirely and scan every PHP file in the workspace. Discovers all classes regardless of autoloading. |
+| `"none"` | Use only Composer's classmap with no fallback scanning. The most conservative option. |
+
+Most projects should leave this at the default. Change it to `"self"` if your project loads classes outside of Composer (custom autoloaders, `require_once`, legacy inclusion patterns). Be aware that `"self"` will also surface vendor-internal classes and potential duplicates that Composer's autoloader would never load.
+
+## Troubleshooting
+
+### Classes from other files are not found
+
+PHPantom resolves cross-file classes through Composer's autoloading rules (PSR-4 mappings and the generated classmap). If a class exists in your project but PHPantom reports it as unknown, the most common causes are:
+
+1. **The class isn't Composer-autoloadable.** If your project loads classes via `require_once`, `include`, or a custom autoloader alongside Composer, those classes won't be discovered by default. Set `strategy = "self"` in `.phpantom.toml` to scan all files.
+
+2. **Composer's classmap is stale.** Run `composer dump-autoload` to regenerate it. PHPantom reads the classmap at startup.
+
+3. **The class is in a directory not covered by `autoload` or `autoload-dev`.** Check that your `composer.json` PSR-4 mappings cover the directory where the class lives.
+
+### Too many classes in completion lists
+
+If you're seeing vendor-internal classes, duplicate framework classes (common in monorepos), or other noise, your indexing strategy may be too broad. The default `"composer"` strategy only surfaces classes that Composer's autoloader can load, which filters out this noise. If you previously set `strategy = "self"`, consider switching back to `"composer"`.
 
 ## Editor Setup
 
