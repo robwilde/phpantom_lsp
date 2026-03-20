@@ -911,14 +911,9 @@ async fn test_completion_user_function_label_signature() {
     assert!(calc.is_some(), "Should find calculate_total in completions");
 
     let label = &calc.unwrap().label;
-    assert!(
-        label.contains("float $price"),
-        "Label should include typed parameters. Got: {}",
-        label
-    );
-    assert!(
-        label.contains(": float"),
-        "Label should include return type. Got: {}",
+    assert_eq!(
+        label, "calculate_total($price, $qty, $tax = ...)",
+        "Label should show function name and parameter names. Got: {}",
         label
     );
 }

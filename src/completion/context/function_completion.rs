@@ -16,41 +16,30 @@ use crate::completion::use_edit::build_use_function_edit;
 impl Backend {
     // ─── Function name completion ───────────────────────────────────
 
-    /// Build a label showing the full function signature.
+    /// Build a label showing the function name and parameter names.
     ///
-    /// Example: `array_map(callable|null $callback, array $array, array ...$arrays): array`
+    /// Example: `array_map($callback, $array, ...$arrays)`
     pub(crate) fn build_function_label(func: &FunctionInfo) -> String {
         let params: Vec<String> = func
             .parameters
             .iter()
             .map(|p| {
-                let mut parts = Vec::new();
-                if let Some(ref th) = p.type_hint {
-                    parts.push(th.clone());
-                }
-                if p.is_reference {
-                    parts.push(format!("&{}", p.name));
+                let name = if p.is_reference {
+                    format!("&{}", p.name)
                 } else if p.is_variadic {
-                    parts.push(format!("...{}", p.name));
+                    format!("...{}", p.name)
                 } else {
-                    parts.push(p.name.clone());
-                }
-                let param_str = parts.join(" ");
+                    p.name.clone()
+                };
                 if !p.is_required && !p.is_variadic {
-                    format!("{} = ...", param_str)
+                    format!("{} = ...", name)
                 } else {
-                    param_str
+                    name
                 }
             })
             .collect();
 
-        let ret = func
-            .return_type
-            .as_ref()
-            .map(|r| format!(": {}", r))
-            .unwrap_or_default();
-
-        format!("{}({}){}", func.name, params.join(", "), ret)
+        format!("{}({})", func.name, params.join(", "))
     }
 
     /// Build completion items for standalone functions from all known sources.

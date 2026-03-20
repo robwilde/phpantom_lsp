@@ -3366,7 +3366,6 @@ abstract class Model
     abstract public function toArray(): array;
 }
 
-
 // ─── Concrete Classes ───────────────────────────────────────────────────────
 
 /**
@@ -3415,6 +3414,7 @@ class User extends Model implements Renderable
 
     public function addRoles(string ...$roles): void
     {
+        $this->
         $this->roles = array_merge($this->roles, $roles);
     }
 

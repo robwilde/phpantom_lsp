@@ -587,8 +587,8 @@ async fn test_completion_method_detail_shows_signature() {
 
             // Label should show the full signature
             assert_eq!(
-                update.label, "updateText(string $text, $frogs = ...): void",
-                "Label should be the full method signature"
+                update.label, "updateText($text, $frogs = ...)",
+                "Label should show method name and parameter names"
             );
 
             // Detail should show the class name

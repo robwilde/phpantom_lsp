@@ -1139,6 +1139,53 @@ class UserRepo extends BaseRepo {
         "should show return type: {}",
         text
     );
+    // The code block should show the declaring class (BaseRepo),
+    // not the class the method was accessed on (UserRepo).
+    assert!(
+        text.contains("BaseRepo"),
+        "should show declaring class BaseRepo, got: {}",
+        text
+    );
+    assert!(
+        !text.contains("class UserRepo"),
+        "should NOT show UserRepo as the owner class, got: {}",
+        text
+    );
+}
+
+/// Hovering over an inherited static method should show the declaring
+/// class in the code block, not the subclass it was called on.
+#[test]
+fn hover_inherited_static_method_shows_declaring_class() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+abstract class Model {
+    /** @deprecated */
+    public static function find(int $id): ?static { return null; }
+}
+class User extends Model {
+    public function toArray(): array { return []; }
+}
+function demo(): void {
+    User::find(1);
+}
+"#;
+
+    // Hover on `find` (line 9, col 11)
+    let hover = hover_at(&backend, uri, content, 9, 11).expect("expected hover");
+    let text = hover_text(&hover);
+    assert!(text.contains("find"), "should show method name: {}", text);
+    assert!(
+        text.contains("class Model"),
+        "should show declaring class Model, not User, got: {}",
+        text
+    );
+    assert!(
+        !text.contains("class User"),
+        "should NOT show User as the owner class, got: {}",
+        text
+    );
 }
 
 // ─── Class with parent and implements ───────────────────────────────────────

@@ -18,6 +18,7 @@ use std::sync::Arc;
 
 use tower_lsp::lsp_types::*;
 
+use super::resolve::CompletionItemData;
 use crate::types::Visibility;
 use crate::types::*;
 
@@ -103,41 +104,30 @@ fn is_magic_method(name: &str) -> bool {
     MAGIC_METHODS.iter().any(|&m| m.eq_ignore_ascii_case(name))
 }
 
-/// Build the label showing the full method signature.
+/// Build the label showing the method name and parameter names.
 ///
-/// Example: `regularCode(string $text, $frogs = false): string`
+/// Example: `regularCode($text, $frogs = ...)`
 pub(crate) fn build_method_label(method: &MethodInfo) -> String {
     let params: Vec<String> = method
         .parameters
         .iter()
         .map(|p| {
-            let mut parts = Vec::new();
-            if let Some(ref th) = p.type_hint {
-                parts.push(th.clone());
-            }
-            if p.is_reference {
-                parts.push(format!("&{}", p.name));
+            let name = if p.is_reference {
+                format!("&{}", p.name)
             } else if p.is_variadic {
-                parts.push(format!("...{}", p.name));
+                format!("...{}", p.name)
             } else {
-                parts.push(p.name.clone());
-            }
-            let param_str = parts.join(" ");
+                p.name.clone()
+            };
             if !p.is_required && !p.is_variadic {
-                format!("{} = ...", param_str)
+                format!("{} = ...", name)
             } else {
-                param_str
+                name
             }
         })
         .collect();
 
-    let ret = method
-        .return_type
-        .as_ref()
-        .map(|r| format!(": {}", r))
-        .unwrap_or_default();
-
-    format!("{}({}){}", method.name, params.join(", "), ret)
+    format!("{}({})", method.name, params.join(", "))
 }
 
 /// Build completion items for a resolved class, filtered by access kind
@@ -168,6 +158,7 @@ pub(crate) fn build_completion_items(
     access_kind: AccessKind,
     current_class_name: Option<&str>,
     is_self_or_ancestor: bool,
+    uri: &str,
 ) -> Vec<CompletionItem> {
     // Determine whether we are inside the same class as the target.
     let same_class = current_class_name.is_some_and(|name| name == target_class.name);
@@ -221,6 +212,13 @@ pub(crate) fn build_completion_items(
         }
 
         let label = build_method_label(method);
+        let data = serde_json::to_value(CompletionItemData {
+            class_name: target_class.name.clone(),
+            member_name: method.name.clone(),
+            kind: "method".to_string(),
+            uri: uri.to_string(),
+        })
+        .ok();
         items.push(CompletionItem {
             label,
             kind: Some(CompletionItemKind::METHOD),
@@ -233,6 +231,7 @@ pub(crate) fn build_completion_items(
             } else {
                 None
             },
+            data,
             ..CompletionItem::default()
         });
     }
@@ -273,6 +272,13 @@ pub(crate) fn build_completion_items(
             format!("Class: {}", display)
         };
 
+        let data = serde_json::to_value(CompletionItemData {
+            class_name: target_class.name.clone(),
+            member_name: property.name.clone(),
+            kind: "property".to_string(),
+            uri: uri.to_string(),
+        })
+        .ok();
         items.push(CompletionItem {
             label: display_name.clone(),
             kind: Some(CompletionItemKind::PROPERTY),
@@ -284,6 +290,7 @@ pub(crate) fn build_completion_items(
             } else {
                 None
             },
+            data,
             ..CompletionItem::default()
         });
     }
@@ -308,6 +315,13 @@ pub(crate) fn build_completion_items(
                 format!("Class: {}", display)
             };
 
+            let data = serde_json::to_value(CompletionItemData {
+                class_name: target_class.name.clone(),
+                member_name: constant.name.clone(),
+                kind: "constant".to_string(),
+                uri: uri.to_string(),
+            })
+            .ok();
             items.push(CompletionItem {
                 label: constant.name.clone(),
                 kind: Some(CompletionItemKind::CONSTANT),
@@ -319,6 +333,7 @@ pub(crate) fn build_completion_items(
                 } else {
                     None
                 },
+                data,
                 ..CompletionItem::default()
             });
         }
@@ -416,6 +431,7 @@ pub(crate) fn build_union_completion_items(
     current_class: Option<&ClassInfo>,
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
     cache: &crate::virtual_members::ResolvedClassCache,
+    uri: &str,
 ) -> Vec<CompletionItem> {
     let current_class_name = current_class.map(|cc| cc.name.as_str());
     let num_candidates = candidates.len();
@@ -436,6 +452,7 @@ pub(crate) fn build_union_completion_items(
             effective_access,
             current_class_name,
             self_or_ancestor,
+            uri,
         );
 
         for item in items {

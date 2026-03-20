@@ -173,10 +173,130 @@ fn build_origin_lines(
 ///
 /// This is separate from `MemberKind` in the definition module because
 /// origin checking only needs the three broad categories.
-enum MemberKindForOrigin {
+pub(crate) enum MemberKindForOrigin {
     Method,
     Property,
     Constant,
+}
+
+/// Find the class that originally declares a member.
+///
+/// When a member is inherited (not declared on `owner` itself), this
+/// walks up the parent chain and checks traits and mixins to find the
+/// class that actually declares the member.  Returns a fully-resolved
+/// `ClassInfo` for the declaring class, or falls back to `owner` when
+/// the declaring class cannot be determined.
+///
+/// This is used by hover and completion-resolve so that the code block
+/// shows `class Model { public static function find(...) }` rather than
+/// `class User { ... }` when `find()` is inherited from `Model`.
+pub(crate) fn find_declaring_class(
+    owner: &ClassInfo,
+    member_name: &str,
+    member_kind: &MemberKindForOrigin,
+    class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
+) -> Arc<ClassInfo> {
+    // If the member is declared directly on the owner, no need to search.
+    if raw_class_has_member(owner, member_name, member_kind, class_loader) {
+        return Arc::new(owner.clone());
+    }
+
+    // Check traits used by the owner.
+    for trait_name in &owner.used_traits {
+        if let Some(trait_class) = class_loader(trait_name) {
+            let has = match member_kind {
+                MemberKindForOrigin::Method => trait_class
+                    .methods
+                    .iter()
+                    .any(|m| m.name.eq_ignore_ascii_case(member_name)),
+                MemberKindForOrigin::Property => {
+                    trait_class.properties.iter().any(|p| p.name == member_name)
+                }
+                MemberKindForOrigin::Constant => {
+                    trait_class.constants.iter().any(|c| c.name == member_name)
+                }
+            };
+            if has {
+                return trait_class;
+            }
+        }
+    }
+
+    // Walk the parent chain.
+    let mut ancestor_name = owner.parent_class.clone();
+    let mut depth = 0u32;
+    while let Some(ref name) = ancestor_name {
+        depth += 1;
+        if depth > 20 {
+            break;
+        }
+        if let Some(ancestor) = class_loader(name) {
+            // Check traits on the ancestor first.
+            for trait_name in &ancestor.used_traits {
+                if let Some(trait_class) = class_loader(trait_name) {
+                    let has = match member_kind {
+                        MemberKindForOrigin::Method => trait_class
+                            .methods
+                            .iter()
+                            .any(|m| m.name.eq_ignore_ascii_case(member_name)),
+                        MemberKindForOrigin::Property => {
+                            trait_class.properties.iter().any(|p| p.name == member_name)
+                        }
+                        MemberKindForOrigin::Constant => {
+                            trait_class.constants.iter().any(|c| c.name == member_name)
+                        }
+                    };
+                    if has {
+                        return trait_class;
+                    }
+                }
+            }
+
+            // Check the ancestor class itself.
+            let has = match member_kind {
+                MemberKindForOrigin::Method => ancestor
+                    .methods
+                    .iter()
+                    .any(|m| m.name.eq_ignore_ascii_case(member_name)),
+                MemberKindForOrigin::Property => {
+                    ancestor.properties.iter().any(|p| p.name == member_name)
+                }
+                MemberKindForOrigin::Constant => {
+                    ancestor.constants.iter().any(|c| c.name == member_name)
+                }
+            };
+            if has {
+                return ancestor;
+            }
+            ancestor_name = ancestor.parent_class.clone();
+        } else {
+            break;
+        }
+    }
+
+    // Check @mixin classes.
+    for mixin_name in &owner.mixins {
+        if let Some(mixin_class) = class_loader(mixin_name) {
+            let has = match member_kind {
+                MemberKindForOrigin::Method => mixin_class
+                    .methods
+                    .iter()
+                    .any(|m| m.name.eq_ignore_ascii_case(member_name)),
+                MemberKindForOrigin::Property => {
+                    mixin_class.properties.iter().any(|p| p.name == member_name)
+                }
+                MemberKindForOrigin::Constant => {
+                    mixin_class.constants.iter().any(|c| c.name == member_name)
+                }
+            };
+            if has {
+                return mixin_class;
+            }
+        }
+    }
+
+    // Fallback: couldn't find the declaring class, use the owner.
+    Arc::new(owner.clone())
 }
 
 // Re-export `pub(crate)` items so external callers keep using `crate::hover::`.
@@ -469,19 +589,41 @@ impl Backend {
 
                     match member_result {
                         Some(HoverMemberHit::Method(ref method)) => {
+                            let declaring = find_declaring_class(
+                                &owner,
+                                member_name,
+                                &MemberKindForOrigin::Method,
+                                &class_loader,
+                            );
                             return Some(self.hover_for_method(
                                 method,
-                                &owner,
+                                &declaring,
                                 &class_loader,
                                 uri,
                                 content,
                             ));
                         }
                         Some(HoverMemberHit::Property(prop)) => {
-                            return Some(self.hover_for_property(&prop, &owner, &class_loader));
+                            let declaring = find_declaring_class(
+                                &owner,
+                                &prop.name,
+                                &MemberKindForOrigin::Property,
+                                &class_loader,
+                            );
+                            return Some(self.hover_for_property(&prop, &declaring, &class_loader));
                         }
                         Some(HoverMemberHit::Constant(constant)) => {
-                            return Some(self.hover_for_constant(&constant, &owner, &class_loader));
+                            let declaring = find_declaring_class(
+                                &owner,
+                                &constant.name,
+                                &MemberKindForOrigin::Constant,
+                                &class_loader,
+                            );
+                            return Some(self.hover_for_constant(
+                                &constant,
+                                &declaring,
+                                &class_loader,
+                            ));
                         }
                         None => {}
                     }
@@ -861,7 +1003,7 @@ impl Backend {
     }
 
     /// Build hover content for a method.
-    fn hover_for_method(
+    pub(crate) fn hover_for_method(
         &self,
         method: &MethodInfo,
         owner: &ClassInfo,
@@ -959,7 +1101,7 @@ impl Backend {
     }
 
     /// Build hover content for a property.
-    fn hover_for_property(
+    pub(crate) fn hover_for_property(
         &self,
         property: &PropertyInfo,
         owner: &ClassInfo,
@@ -1033,7 +1175,7 @@ impl Backend {
     }
 
     /// Build hover content for a class constant.
-    fn hover_for_constant(
+    pub(crate) fn hover_for_constant(
         &self,
         constant: &ConstantInfo,
         owner: &ClassInfo,

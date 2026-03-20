@@ -44,12 +44,6 @@ use crate::symbol_map::SymbolKind;
 use crate::types::{CompletionTarget, FileContext};
 use crate::util::{find_class_at_offset, position_to_byte_offset, position_to_offset};
 
-/// Filter out completion items for classes defined in the current file.
-///
-/// When writing a `use` statement it makes no sense to import a class
-/// from the file you are already in.  The `detail` field of each item
-/// carries the FQN, which is matched against the FQNs of classes in the
-/// file's `ctx.classes` (from the ast_map).
 /// Check whether a `(` immediately follows the cursor position (past any
 /// partial identifier the user has already typed).
 ///
@@ -105,6 +99,12 @@ fn strip_snippet_parens(items: Vec<CompletionItem>) -> Vec<CompletionItem> {
         .collect()
 }
 
+/// Filter out completion items for classes defined in the current file.
+///
+/// When writing a `use` statement it makes no sense to import a class
+/// from the file you are already in.  The `detail` field of each item
+/// carries the FQN, which is matched against the FQNs of classes in the
+/// file's `ctx.classes` (from the ast_map).
 fn filter_current_file_classes(
     items: Vec<CompletionItem>,
     ctx: &FileContext,
@@ -935,6 +935,7 @@ impl Backend {
                     current_class,
                     &class_loader,
                     &self.resolved_class_cache,
+                    uri,
                 )
             },
         );
