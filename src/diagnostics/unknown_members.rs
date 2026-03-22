@@ -2165,6 +2165,54 @@ function test(\Throwable $e): void {
     }
 
     #[test]
+    fn no_diagnostic_for_instanceof_and_chain_in_return() {
+        // Real-world repro: instanceof on LHS of && inside a return
+        // statement.  The narrowing must propagate through the entire
+        // chained && even when wrapped in `return`.
+        let php = r#"<?php
+class QueryException extends \Exception {
+    public array $errorInfo = [];
+}
+
+trait UniqueConstraintViolation {
+    protected function isUniqueConstraintViolation(\Throwable $exception): bool {
+        return $exception instanceof QueryException
+            && is_array($exception->errorInfo)
+            && count($exception->errorInfo) >= 2
+            && ($exception->errorInfo[0] ?? '') === '23000'
+            && ($exception->errorInfo[1] ?? 0) === 1062;
+    }
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostics for && narrowing in return, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn no_diagnostic_for_ternary_instanceof_in_return() {
+        // Ternary instanceof narrowing inside a return statement.
+        let php = r#"<?php
+class SpecialException extends \Exception {
+    public function getDetail(): string { return ''; }
+}
+
+function test(\Throwable $e): string {
+    return $e instanceof SpecialException ? $e->getDetail() : 'unknown';
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostics for ternary instanceof in return, got: {diags:?}"
+        );
+    }
+
+    #[test]
     fn no_diagnostic_for_chained_and_instanceof() {
         // B3 variant: chained && with multiple instanceof checks.
         let php = r#"<?php

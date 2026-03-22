@@ -708,6 +708,19 @@ pub(in crate::completion) fn walk_statements_for_assignments<'b>(
                 // LHS checks instanceof, narrow accordingly.
                 narrowing::try_apply_inline_and_narrowing(expr_stmt.expression, ctx, results);
             }
+            // ── Return statements ──
+            // The return value expression can contain narrowing
+            // constructs like `return $x instanceof Foo && $x->bar()`
+            // or `return $x instanceof Foo ? $x->method() : null`.
+            // Apply the same expression-level narrowing that we
+            // apply to standalone expression statements.
+            Statement::Return(ret) => {
+                if let Some(val) = ret.value {
+                    narrowing::try_apply_match_true_narrowing(val, ctx, results);
+                    narrowing::try_apply_ternary_instanceof_narrowing(val, ctx, results);
+                    narrowing::try_apply_inline_and_narrowing(val, ctx, results);
+                }
+            }
             // Recurse into blocks — these are just `{ … }` groupings,
             // not conditional, so preserve the current `conditional` flag.
             Statement::Block(block) => {
