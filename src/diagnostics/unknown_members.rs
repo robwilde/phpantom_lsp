@@ -44,8 +44,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::parser::with_parse_cache;
 use super::unresolved_member_access::UNRESOLVED_MEMBER_ACCESS_CODE;
+use crate::parser::with_parse_cache;
 
 use tower_lsp::lsp_types::*;
 

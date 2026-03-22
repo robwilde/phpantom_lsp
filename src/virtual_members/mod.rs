@@ -58,8 +58,8 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 
 use crate::inheritance::{
-    apply_substitution, apply_substitution_to_method, apply_substitution_to_property,
-    resolve_class_with_inheritance, ClassRef,
+    ClassRef, apply_substitution, apply_substitution_to_method, apply_substitution_to_property,
+    resolve_class_with_inheritance,
 };
 use crate::types::{ClassInfo, ConstantInfo, MethodInfo, PropertyInfo};
 use crate::util::short_name;
@@ -193,9 +193,7 @@ pub fn evict_fqn(cache: &mut HashMap<ResolvedClassCacheKey, Arc<ClassInfo>>, fqn
     // bulk loading), skip the expensive transitive loop entirely.
     if !removed_direct {
         let seed = [fqn.to_string()];
-        let has_dependent = cache
-            .values()
-            .any(|cls| depends_on_any(cls, &seed));
+        let has_dependent = cache.values().any(|cls| depends_on_any(cls, &seed));
         if !has_dependent {
             return;
         }
@@ -838,19 +836,19 @@ fn merge_interface_members_into(
     // of interface methods that need lookup.
     const HASHMAP_THRESHOLD: usize = 32;
 
-    let method_index: Option<HashMap<String, usize>> =
-        if merged.methods.len() >= HASHMAP_THRESHOLD {
-            Some(
-                merged
-                    .methods
-                    .iter()
-                    .enumerate()
-                    .map(|(i, m)| (m.name.clone(), i))
-                    .collect(),
-            )
-        } else {
-            None
-        };
+    let method_index: Option<HashMap<String, usize>> = if merged.methods.len() >= HASHMAP_THRESHOLD
+    {
+        Some(
+            merged
+                .methods
+                .iter()
+                .enumerate()
+                .map(|(i, m)| (m.name.clone(), i))
+                .collect(),
+        )
+    } else {
+        None
+    };
 
     for iface_method in resolved_iface.methods.into_vec() {
         // Find the existing method index — O(1) via HashMap or O(N) linear scan.

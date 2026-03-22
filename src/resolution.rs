@@ -155,7 +155,9 @@ impl Backend {
 
         // Cache the negative result so subsequent lookups for the same
         // unknown class skip the expensive multi-phase search.
-        self.class_not_found_cache.write().insert(class_name.to_owned());
+        self.class_not_found_cache
+            .write()
+            .insert(class_name.to_owned());
         None
     }
 

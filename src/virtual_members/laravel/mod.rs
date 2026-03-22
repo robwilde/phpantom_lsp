@@ -248,7 +248,8 @@ fn inject_model_virtual_methods(
 
     // Resolve the model fully so that @method tags from traits and
     // parent classes are included.
-    let resolved_model = if let Some(cache) = crate::virtual_members::active_resolved_class_cache() {
+    let resolved_model = if let Some(cache) = crate::virtual_members::active_resolved_class_cache()
+    {
         crate::virtual_members::resolve_class_fully_cached(&model_class, class_loader, cache)
     } else {
         crate::virtual_members::resolve_class_fully(&model_class, class_loader)

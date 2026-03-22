@@ -22,8 +22,8 @@ use std::collections::HashMap;
 use tower_lsp::lsp_types::*;
 
 use crate::Backend;
-use crate::types::ResolvedCallableTarget;
 use crate::parser::with_parse_cache;
+use crate::types::ResolvedCallableTarget;
 
 use super::helpers::make_diagnostic;
 use super::offset_range_to_lsp_range;

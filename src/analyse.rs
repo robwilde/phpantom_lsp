@@ -226,9 +226,8 @@ pub async fn run(options: AnalyseOptions) -> i32 {
                         // collector's own `with_parse_cache` call becomes
                         // a no-op (nested guard).
                         let _parse_guard = with_parse_cache(content);
-                        let _cache_guard = with_active_resolved_class_cache(
-                            &backend.resolved_class_cache,
-                        );
+                        let _cache_guard =
+                            with_active_resolved_class_cache(&backend.resolved_class_cache);
                         let _subj_guard =
                             crate::completion::resolver::with_diagnostic_subject_cache();
 
@@ -244,21 +243,43 @@ pub async fn run(options: AnalyseOptions) -> i32 {
                         }
 
                         let timings = [
-                            timed_collect!("fast", backend.collect_fast_diagnostics(uri, content, &mut raw)),
-                            timed_collect!("unknown_class", backend.collect_unknown_class_diagnostics(uri, content, &mut raw)),
-                            timed_collect!("unknown_member", backend.collect_unknown_member_diagnostics(uri, content, &mut raw)),
-                            timed_collect!("unknown_function", backend.collect_unknown_function_diagnostics(uri, content, &mut raw)),
-                            timed_collect!("argument_count", backend.collect_argument_count_diagnostics(uri, content, &mut raw)),
-                            timed_collect!("implementation", backend.collect_implementation_error_diagnostics(uri, content, &mut raw)),
-                            timed_collect!("deprecated", backend.collect_deprecated_diagnostics(uri, content, &mut raw)),
+                            timed_collect!(
+                                "fast",
+                                backend.collect_fast_diagnostics(uri, content, &mut raw)
+                            ),
+                            timed_collect!(
+                                "unknown_class",
+                                backend.collect_unknown_class_diagnostics(uri, content, &mut raw)
+                            ),
+                            timed_collect!(
+                                "unknown_member",
+                                backend.collect_unknown_member_diagnostics(uri, content, &mut raw)
+                            ),
+                            timed_collect!(
+                                "unknown_function",
+                                backend
+                                    .collect_unknown_function_diagnostics(uri, content, &mut raw)
+                            ),
+                            timed_collect!(
+                                "argument_count",
+                                backend.collect_argument_count_diagnostics(uri, content, &mut raw)
+                            ),
+                            timed_collect!(
+                                "implementation",
+                                backend.collect_implementation_error_diagnostics(
+                                    uri, content, &mut raw
+                                )
+                            ),
+                            timed_collect!(
+                                "deprecated",
+                                backend.collect_deprecated_diagnostics(uri, content, &mut raw)
+                            ),
                         ];
 
                         let file_elapsed = file_start.elapsed();
                         if file_elapsed.as_secs() >= 5 {
-                            let display = files[i]
-                                .strip_prefix(root)
-                                .unwrap_or(&files[i])
-                                .display();
+                            let display =
+                                files[i].strip_prefix(root).unwrap_or(&files[i]).display();
                             let breakdown: Vec<String> = timings
                                 .iter()
                                 .filter(|(d, _)| d.as_millis() > 0)
@@ -520,7 +541,10 @@ fn print_file_table(path: &str, diagnostics: &[FileDiagnostic], use_colour: bool
     // Header.
     println!("{sep}");
     if use_colour {
-        println!("  \x1b[32m{:>line_col_w$}\x1b[0m   \x1b[32m{path}\x1b[0m", "Line");
+        println!(
+            "  \x1b[32m{:>line_col_w$}\x1b[0m   \x1b[32m{path}\x1b[0m",
+            "Line"
+        );
     } else {
         println!("  {:>line_col_w$}   {path}", "Line");
     }

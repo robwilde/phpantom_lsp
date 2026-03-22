@@ -36,8 +36,7 @@ use tower_lsp::lsp_types::*;
 
 use crate::Backend;
 use crate::completion::class_completion::{
-    ClassCompletionParams, ClassNameContext, detect_class_name_context,
-    is_class_declaration_name,
+    ClassCompletionParams, ClassNameContext, detect_class_name_context, is_class_declaration_name,
 };
 use crate::completion::named_args::{NamedArgContext, parse_existing_args};
 use crate::docblock::types::PHPDOC_TYPE_KEYWORDS;
@@ -322,8 +321,7 @@ impl Backend {
             // ── Class declaration name completion ───────────────────
             // When declaring a new class/interface/trait/enum, suggest
             // the filename (without extension) as the class name.
-            if let Some(response) =
-                self.try_class_declaration_completion(&uri, &content, position)
+            if let Some(response) = self.try_class_declaration_completion(&uri, &content, position)
             {
                 return Ok(Some(response));
             }

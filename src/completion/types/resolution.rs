@@ -168,22 +168,24 @@ fn type_hint_to_classes_depth(
     if docblock::types::is_object_shape(hint)
         && let Some(entries) = docblock::parse_object_shape(hint)
     {
-        let properties = SharedVec::from_vec(entries
-            .into_iter()
-            .map(|e| PropertyInfo {
-                name: e.key,
-                name_offset: 0,
-                type_hint: Some(e.value_type),
-                native_type_hint: None,
-                description: None,
-                is_static: false,
-                visibility: Visibility::Public,
-                deprecation_message: None,
-                deprecated_replacement: None,
-                see_refs: Vec::new(),
-                is_virtual: true,
-            })
-            .collect());
+        let properties = SharedVec::from_vec(
+            entries
+                .into_iter()
+                .map(|e| PropertyInfo {
+                    name: e.key,
+                    name_offset: 0,
+                    type_hint: Some(e.value_type),
+                    native_type_hint: None,
+                    description: None,
+                    is_static: false,
+                    visibility: Visibility::Public,
+                    deprecation_message: None,
+                    deprecated_replacement: None,
+                    see_refs: Vec::new(),
+                    is_virtual: true,
+                })
+                .collect(),
+        );
 
         let synthetic = ClassInfo {
             name: "__object_shape".to_string(),

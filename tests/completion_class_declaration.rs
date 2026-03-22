@@ -130,17 +130,13 @@ async fn test_anonymous_class_not_triggered() {
     // `new class` should NOT offer the filename completion.
     let backend = create_test_backend();
     let uri = Url::parse("file:///Foo.php").unwrap();
-    let items = complete_at(
-        &backend,
-        &uri,
-        "<?php\n\n$x = new class ",
-        2,
-        16,
-    )
-    .await;
+    let items = complete_at(&backend, &uri, "<?php\n\n$x = new class ", 2, 16).await;
     // Should not contain the filename "Foo"
     let has_foo = items.iter().any(|i| i.label == "Foo");
-    assert!(!has_foo, "anonymous class context should not offer filename");
+    assert!(
+        !has_foo,
+        "anonymous class context should not offer filename"
+    );
 }
 
 #[tokio::test]
@@ -148,17 +144,11 @@ async fn test_extends_not_triggered() {
     // `extends` context should NOT trigger class declaration completion.
     let backend = create_test_backend();
     let uri = Url::parse("file:///Child.php").unwrap();
-    let items = complete_at(
-        &backend,
-        &uri,
-        "<?php\n\nclass Child extends B",
-        2,
-        21,
-    )
-    .await;
+    let items = complete_at(&backend, &uri, "<?php\n\nclass Child extends B", 2, 21).await;
     // The items should not be a single "Child" item — this is extends context.
-    let is_declaration_only =
-        items.len() == 1 && items[0].label == "Child" && items[0].detail.as_deref() == Some("Match filename");
+    let is_declaration_only = items.len() == 1
+        && items[0].label == "Child"
+        && items[0].detail.as_deref() == Some("Match filename");
     assert!(
         !is_declaration_only,
         "extends context should not trigger class declaration completion"
@@ -170,14 +160,7 @@ async fn test_implements_not_triggered() {
     // `implements` context should NOT trigger class declaration completion.
     let backend = create_test_backend();
     let uri = Url::parse("file:///MyClass.php").unwrap();
-    let items = complete_at(
-        &backend,
-        &uri,
-        "<?php\n\nclass MyClass implements S",
-        2,
-        26,
-    )
-    .await;
+    let items = complete_at(&backend, &uri, "<?php\n\nclass MyClass implements S", 2, 26).await;
     let is_declaration_only = items.len() == 1
         && items[0].label == "MyClass"
         && items[0].detail.as_deref() == Some("Match filename");

@@ -843,7 +843,8 @@ mod tests {
                 },
                 // Concrete method — should NOT be in missing list.
                 MethodInfo::virtual_method("helper", Some("void")),
-            ].into(),
+            ]
+            .into(),
             ..Default::default()
         };
 
@@ -914,7 +915,8 @@ mod tests {
             methods: vec![
                 MethodInfo::virtual_method("serialize", Some("string")),
                 MethodInfo::virtual_method("unserialize", None),
-            ].into(),
+            ]
+            .into(),
             ..Default::default()
         };
 
