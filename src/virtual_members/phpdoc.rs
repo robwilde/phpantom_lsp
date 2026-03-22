@@ -26,6 +26,33 @@ use crate::types::{
     Visibility,
 };
 
+thread_local! {
+    /// Thread-local cache of base-resolved mixin classes.
+    ///
+    /// Keyed by fully-qualified mixin name, stores the result of
+    /// [`resolve_class_with_inheritance`](crate::inheritance::resolve_class_with_inheritance)
+    /// so that expensive inheritance walks (e.g. for
+    /// `\Illuminate\Database\Eloquent\Builder`) are performed at most
+    /// once per thread.
+    ///
+    /// Must be cleared between test runs via [`clear_mixin_cache`]
+    /// because different tests may define classes with the same short
+    /// name but different members.
+    static MIXIN_CACHE: RefCell<HashMap<String, Arc<ClassInfo>>> =
+        RefCell::new(HashMap::new());
+}
+
+/// Clear the thread-local mixin resolution cache.
+///
+/// In production the cache lives for the lifetime of the thread and is
+/// safe because the same FQN always maps to the same class.  In tests,
+/// however, each test may define classes with identical short names but
+/// different members.  Call this function when creating a new test
+/// backend so that stale entries from a previous test do not leak.
+pub fn clear_mixin_cache() {
+    MIXIN_CACHE.with(|cache| cache.borrow_mut().clear());
+}
+
 /// Tracks member names already seen during mixin collection.
 ///
 /// Passed through [`collect_mixin_members`] (including recursive calls)
@@ -381,11 +408,6 @@ fn collect_mixin_members(
     depth: u32,
     dedup: &mut MixinDedup,
 ) {
-    thread_local! {
-        static MIXIN_CACHE: RefCell<HashMap<String, Arc<ClassInfo>>> =
-            RefCell::new(HashMap::new());
-    }
-
     if depth > MAX_MIXIN_DEPTH {
         return;
     }

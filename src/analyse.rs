@@ -141,10 +141,11 @@ pub async fn run(options: AnalyseOptions) -> i32 {
     // Read each file from disk and call `update_ast`.  Store the
     // (uri, content) pairs so Phase 2 can reuse them without re-reading.
     //
-    // The progress bar spans both phases: 0→total for parsing, then
-    // total→total*2 for diagnosing, so the user sees continuous
-    // progress instead of hitting 100 % and then stalling.
-    let total_steps = file_count * 2;
+    // Parsing is fast, so the progress bar is drawn at 0% before Phase 1
+    // and only advances during Phase 2 (the expensive diagnostic pass).
+    if use_colour {
+        eprint!("\r\x1b[2K {}", progress_bar(0, file_count));
+    }
     let next_idx = AtomicUsize::new(0);
 
     let file_data: Vec<Option<(String, String)>> = std::thread::scope(|s| {
@@ -159,9 +160,6 @@ pub async fn run(options: AnalyseOptions) -> i32 {
                         let i = next_idx.fetch_add(1, Ordering::Relaxed);
                         if i >= file_count {
                             break;
-                        }
-                        if use_colour && i.is_multiple_of(20) {
-                            eprint!("\r\x1b[2K {}", progress_bar(i + 1, total_steps));
                         }
 
                         let file_path = &files[i];
@@ -210,10 +208,7 @@ pub async fn run(options: AnalyseOptions) -> i32 {
                             break;
                         }
                         if use_colour && i.is_multiple_of(20) {
-                            eprint!(
-                                "\r\x1b[2K {}",
-                                progress_bar(file_count + i + 1, total_steps),
-                            );
+                            eprint!("\r\x1b[2K {}", progress_bar(i + 1, file_count));
                         }
 
                         let (uri, content) = match &file_data[i] {
@@ -334,7 +329,7 @@ pub async fn run(options: AnalyseOptions) -> i32 {
     });
 
     if use_colour {
-        eprint!("\r\x1b[2K {}\n", progress_bar(total_steps, total_steps));
+        eprint!("\r\x1b[2K {}\n", progress_bar(file_count, file_count));
     }
 
     // Sort by path so output order is deterministic.

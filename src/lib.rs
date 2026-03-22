@@ -162,8 +162,8 @@ pub use virtual_members::resolve_class_fully;
 /// - `definition` — `resolve_definition`, member resolution, function resolution
 /// - `diagnostics` — `publish_diagnostics_for_file`, `clear_diagnostics_for_file`,
 ///   `collect_deprecated_diagnostics`, `collect_unused_import_diagnostics`,
-///   `collect_unknown_class_diagnostics`, `collect_unknown_member_diagnostics`,
-///   `collect_unresolved_member_access_diagnostics`
+///   `collect_unknown_class_diagnostics`,
+///   `collect_unknown_member_diagnostics` (includes unresolved-member-access logic)
 /// - `highlight` — `handle_document_highlight` (same-file symbol occurrence highlighting)
 pub struct Backend {
     pub(crate) name: String,
@@ -543,6 +543,7 @@ impl Backend {
 
     /// Create a `Backend` without an LSP client (for unit / integration tests).
     pub fn new_test() -> Self {
+        virtual_members::phpdoc::clear_mixin_cache();
         Self::defaults()
     }
 
@@ -551,6 +552,7 @@ impl Backend {
     /// This allows tests to inject minimal stub content (e.g. `UnitEnum`,
     /// `BackedEnum`) without depending on `composer install` having been run.
     pub fn new_test_with_stubs(stub_index: HashMap<&'static str, &'static str>) -> Self {
+        virtual_members::phpdoc::clear_mixin_cache();
         Self {
             stub_index,
             ..Self::defaults()
@@ -567,6 +569,7 @@ impl Backend {
         stub_function_index: HashMap<&'static str, &'static str>,
         stub_constant_index: HashMap<&'static str, &'static str>,
     ) -> Self {
+        virtual_members::phpdoc::clear_mixin_cache();
         Self {
             stub_index,
             stub_function_index,
@@ -581,6 +584,7 @@ impl Backend {
         workspace_root: PathBuf,
         psr4_mappings: Vec<composer::Psr4Mapping>,
     ) -> Self {
+        virtual_members::phpdoc::clear_mixin_cache();
         Self {
             workspace_root: Arc::new(RwLock::new(Some(workspace_root))),
             psr4_mappings: Arc::new(RwLock::new(psr4_mappings)),

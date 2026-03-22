@@ -211,6 +211,11 @@ pub(crate) fn with_diagnostic_subject_cache() -> DiagSubjectCacheGuard {
 ///
 /// Internally parses the subject string into a [`SubjectExpr`] and
 /// dispatches via `match` for exhaustive, type-safe routing.
+///
+/// When a [`DiagSubjectCacheGuard`] is active on the current thread,
+/// results are cached by `(subject_text, access_kind)` so that
+/// multiple diagnostic collectors sharing the same file avoid
+/// redundant resolution work.
 pub(crate) fn resolve_target_classes(
     subject: &str,
     access_kind: AccessKind,
