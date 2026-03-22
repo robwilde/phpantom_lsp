@@ -38,37 +38,37 @@ within the same scope at the cursor offset.
 
 ---
 
-#### B7. Overloaded built-in function signatures not representable in stubs
+#### B8. Stub parser does not handle `#[PhpStormStubsElementAvailable]` attributes
 
 | | |
 |---|---|
 | **Impact** | Low |
 | **Effort** | Low |
 
-Some PHP built-in functions have genuinely overloaded signatures where
-the valid argument counts depend on which "form" is being called. The
-phpstorm-stubs format cannot express this: it declares a single
-signature, so one form's required parameters become false requirements
-for the other form.
+The regex-based stub parser in `classmap_scanner.rs` does not strip
+`#[PhpStormStubsElementAvailable]` attributes from function signatures.
+When a stub uses this attribute to declare a parameter that only exists
+in certain PHP versions, the parser counts it as a separate required
+parameter alongside the variadic replacement, inflating the required
+argument count.
 
-Around 415 cases where parameters were simply missing their default
-values have been fixed upstream in phpstorm-stubs. The remaining cases
-are true overloads that the stub format cannot represent:
+For example, `array_push` is declared as:
 
-- `array_keys(array $array): array` vs
-  `array_keys(array $array, mixed $filter_value, bool $strict = false): array`
-- `mt_rand(): int` vs `mt_rand(int $min, int $max): int`
+```
+function array_push(
+    array &$array,
+    #[PhpStormStubsElementAvailable(from: '5.3', to: '7.2')] $values,
+    mixed ...$values
+): int {}
+```
 
-PHPStan solves this with a separate function signature map
-(`functionMap.php`) that overrides stub signatures with corrected
-metadata including multiple accepted argument count ranges. PHPantom
-needs a similar mechanism.
+The parser sees three parameters (`$array`, `$values`,
+`...$values`) and counts two as required, when the correct required
+count is one (`$array` only, since `...$values` is variadic).
 
-**Observed:** 10 diagnostics in `shared` (8 `array_keys`, 2 `mt_rand`).
-
-**Fix:** Maintain a small overload map (similar to PHPStan's
-`functionMap.php`) that declares alternative minimum argument counts
-for functions with true overloads. The argument count checker consults
-this map before flagging. The map only needs entries for functions
-where the stub's single signature cannot represent the valid call
-forms.
+This affects roughly 230 stub functions. The argument count checker
+currently works around the issue with an overload map derived from
+PHPStan's `functionMap.php` (see `overload_min_args()` in
+`argument_count.rs`). The proper fix is to make the stub parser
+ignore parameters annotated with `#[PhpStormStubsElementAvailable]`
+when a variadic parameter of the same name follows.
