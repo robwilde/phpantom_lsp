@@ -82,8 +82,32 @@ fn main() {
 
     let lock = read_stubs_lock(&manifest_dir);
 
-    if !map_path.exists() {
-        eprintln!("cargo:warning=Stubs not found, fetching from GitHub...");
+    // Check whether the stubs need to be (re-)fetched.  A `.commit`
+    // marker file inside the stubs directory records which commit was
+    // last downloaded.  When `stubs.lock` pins a different commit the
+    // stubs are stale and must be replaced.
+    let commit_marker = stubs_path.join(".commit");
+    let needs_fetch = if !map_path.exists() {
+        true
+    } else if let Ok(marker) = fs::read_to_string(&commit_marker) {
+        marker.trim() != lock.commit
+    } else {
+        // Stubs exist but no marker — written before this check was
+        // added.  Treat as stale so we re-fetch and create the marker.
+        true
+    };
+
+    if needs_fetch {
+        if map_path.exists() {
+            eprintln!(
+                "cargo:warning=Stubs are stale (expected commit {}), re-fetching...",
+                &lock.commit[..lock.commit.len().min(10)]
+            );
+            // Remove the old stubs so fetch_stubs writes a clean tree.
+            let _ = fs::remove_dir_all(&stubs_path);
+        } else {
+            eprintln!("cargo:warning=Stubs not found, fetching from GitHub...");
+        }
         if let Err(e) = fetch_stubs(&manifest_dir, &lock) {
             eprintln!("cargo:warning=Failed to fetch stubs from GitHub: {}", e);
             eprintln!("cargo:warning=Building without stubs (network may be unavailable).");
@@ -476,6 +500,10 @@ fn fetch_stubs(manifest_dir: &str, lock: &StubsLock) -> Result<(), Box<dyn std::
             std::io::copy(&mut entry, &mut file)?;
         }
     }
+
+    // Write a commit marker so subsequent builds can detect staleness.
+    let commit_marker = target_dir.join(".commit");
+    fs::write(&commit_marker, &lock.commit)?;
 
     eprintln!(
         "cargo:warning=Successfully downloaded phpstorm-stubs from {} @ {}",
