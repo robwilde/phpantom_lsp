@@ -298,6 +298,15 @@ pub(crate) struct SymbolMap {
     /// (e.g. different if/else branches) may resolve to different types
     /// and need independent entries.
     pub narrowing_blocks: Vec<(u32, u32)>,
+    /// Offsets of `assert($var instanceof ...)` statements, sorted.
+    ///
+    /// These act as sequential narrowing boundaries: accesses before and
+    /// after an assert-instanceof in the same flat statement list should
+    /// get different diagnostic cache entries because the assert changes
+    /// the variable's resolved type.  Unlike `narrowing_blocks` (which
+    /// model block-scoped if/else branches), these are point boundaries
+    /// in a linear statement sequence.
+    pub assert_narrowing_offsets: Vec<u32>,
     /// Template parameter definition sites from `@template` docblock tags,
     /// sorted by `name_offset`.  Used to resolve template parameter names
     /// (e.g. `TKey`, `TModel`) that appear in docblock types but are not
@@ -358,6 +367,25 @@ impl SymbolMap {
             }
         }
         best
+    }
+
+    /// Find the offset of the last `assert($var instanceof …)` statement
+    /// that precedes `offset`, or `0` if there is none.
+    ///
+    /// This is used as a cache discriminator: accesses before and after
+    /// an assert-instanceof in the same flat statement list must get
+    /// separate cache entries because the assert changes the variable's
+    /// resolved type.
+    pub fn find_preceding_assert_offset(&self, offset: u32) -> u32 {
+        // `assert_narrowing_offsets` is sorted, so binary search for
+        // the last element that is strictly less than `offset`.
+        match self
+            .assert_narrowing_offsets
+            .partition_point(|&o| o < offset)
+        {
+            0 => 0,
+            i => self.assert_narrowing_offsets[i - 1],
+        }
     }
 
     /// Find the `@template` definition for a template parameter name at

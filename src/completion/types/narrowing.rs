@@ -243,7 +243,47 @@ pub(in crate::completion) fn apply_instanceof_inclusion(
         }
     }
 
-    // Exact identity check, or no existing result is a subtype —
+    // When the narrowed class is a subtype of (i.e. more specific than)
+    // an existing result, replace with the narrowed type.  For example,
+    // results = [Animal] narrowed to Dog (Dog extends Animal) → [Dog].
+    if !exact {
+        let narrowed_is_more_specific = narrowed.iter().any(|n| {
+            results
+                .iter()
+                .any(|r| is_subtype_of(n, &r.fqn(), ctx.class_loader))
+        });
+
+        if !narrowed_is_more_specific && results.len() == 1 {
+            // Neither direction holds — the types are unrelated.
+            // This only makes sense as an intersection when the
+            // variable has a single definite type (not a union from
+            // conditional branches) and at least one side is an
+            // interface, because a concrete object can implement an
+            // interface without it appearing in the declared class
+            // hierarchy (e.g. mock objects, dynamic proxies).
+            //
+            // When `results` is a union (len > 1) the instanceof
+            // filters the union rather than intersecting, so we fall
+            // through to the replacement path below.
+            let any_interface = narrowed
+                .iter()
+                .chain(results.iter())
+                .any(|c| c.kind == crate::types::ClassLikeKind::Interface);
+
+            if any_interface {
+                // Keep both (intersection semantics) so that members
+                // from all types are available.
+                for cls in narrowed {
+                    if !results.iter().any(|c| c.fqn() == cls.fqn()) {
+                        results.push(cls);
+                    }
+                }
+                return;
+            }
+        }
+    }
+
+    // Exact identity check, or narrowed type is more specific —
     // replace with the narrowed type.
     results.clear();
     for cls in narrowed {

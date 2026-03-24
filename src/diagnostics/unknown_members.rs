@@ -130,6 +130,13 @@ struct SubjectCacheKey {
     /// first access caches a narrowed type and subsequent accesses in
     /// a different narrowing context reuse the wrong result.
     narrowing_offset: u32,
+    /// The offset of the most recent `assert($var instanceof …)`
+    /// statement preceding this access, or `0` if there is none.
+    /// Assert-instanceof statements act as sequential narrowing
+    /// boundaries: they change the variable's resolved type without
+    /// creating a block scope, so accesses before and after the
+    /// assert must get separate cache entries.
+    assert_offset: u32,
 }
 
 /// The outcome of resolving a subject for diagnostic purposes.
@@ -313,6 +320,7 @@ impl Backend {
             symbol_map.scopes.clone(),
             symbol_map.var_defs.clone(),
             symbol_map.narrowing_blocks.clone(),
+            symbol_map.assert_narrowing_offsets.clone(),
         );
 
         // ── Subject resolution cache for this diagnostic pass ───────────
@@ -405,12 +413,25 @@ impl Backend {
                     0
                 };
 
+            // For variable subjects, also check whether an
+            // `assert($var instanceof …)` precedes this access.
+            // Assert-instanceof does not create a block scope, so
+            // without this discriminator accesses before and after
+            // the assert would share the same (stale) cache entry.
+            let assert_offset =
+                if subject_text.starts_with('$') && !subject_text.starts_with("$this") {
+                    symbol_map.find_preceding_assert_offset(span.start)
+                } else {
+                    0
+                };
+
             let cache_key = SubjectCacheKey {
                 subject_text: subject_text.clone(),
                 access_kind,
                 scope: scope_key_for(current_class, fn_scope_start),
                 var_def_offset,
                 narrowing_offset,
+                assert_offset,
             };
 
             let outcome = subject_cache

@@ -235,6 +235,7 @@ pub async fn run(options: AnalyseOptions) -> i32 {
                                 sm.scopes.clone(),
                                 sm.var_defs.clone(),
                                 sm.narrowing_blocks.clone(),
+                                sm.assert_narrowing_offsets.clone(),
                             );
                         }
 

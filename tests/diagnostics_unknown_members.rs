@@ -1798,3 +1798,88 @@ class Consumer {
         diags
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// B14: Assert narrowing boundary prevents stale diagnostic cache reuse
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// When a variable is used in a member access *before* an
+/// `assert($var instanceof X)` and then used again *after* the assert,
+/// the diagnostic cache must not reuse the pre-assert resolution.
+/// Without the assert-offset discriminator in the cache key, the second
+/// access would reuse the cached pre-assert type and produce a false
+/// positive "property not found" diagnostic.
+///
+/// This reproduces the real-world Mockery pattern: `mock()` returns
+/// `MockInterface`, the test calls `->shouldReceive()` (valid on
+/// `MockInterface`), then `assert($x instanceof ConcreteClass)` narrows
+/// the type so that `->id` (a property on the concrete class) is valid.
+#[test]
+fn no_false_positive_after_assert_instanceof() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let text = r#"<?php
+interface MockInterface {
+    public function shouldReceive(string $name): self;
+}
+class MolliePayment {
+    public string $id = '';
+    public function canBeRefunded(): bool { return true; }
+}
+class TestCase {
+    protected function mock(string $class): MockInterface {}
+}
+class Test extends TestCase {
+    public function test(): void {
+        $x = $this->mock(MolliePayment::class);
+        $x->shouldReceive('canBeRefunded');
+        assert($x instanceof MolliePayment);
+        echo $x->id;
+    }
+}
+"#;
+    let diags = unknown_member_diagnostics(&backend, uri, text);
+    assert!(
+        !diags.iter().any(|d| d.message.contains("id")),
+        "No diagnostic expected for 'id' after assert($x instanceof MolliePayment), got: {:?}",
+        diags
+    );
+}
+
+/// Verify that the pre-assert access is still correctly diagnosed when
+/// the member does NOT exist on the pre-assert type.
+#[test]
+fn still_flags_unknown_member_before_assert_instanceof() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let text = r#"<?php
+interface MockInterface {
+    public function shouldReceive(string $name): self;
+}
+class MolliePayment {
+    public string $id = '';
+    public function canBeRefunded(): bool { return true; }
+}
+class TestCase {
+    protected function mock(string $class): MockInterface {}
+}
+class Test extends TestCase {
+    public function test(): void {
+        $x = $this->mock(MolliePayment::class);
+        echo $x->id;
+        assert($x instanceof MolliePayment);
+        echo $x->id;
+    }
+}
+"#;
+    let diags = unknown_member_diagnostics(&backend, uri, text);
+    // The first $x->id (before the assert) should be flagged because
+    // $x is MockInterface and MockInterface has no 'id' property.
+    let id_diags: Vec<_> = diags.iter().filter(|d| d.message.contains("id")).collect();
+    assert_eq!(
+        id_diags.len(),
+        1,
+        "Expected exactly one diagnostic for 'id' (the pre-assert access), got: {:?}",
+        id_diags
+    );
+}

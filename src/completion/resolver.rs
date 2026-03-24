@@ -176,7 +176,7 @@ impl<'a> VarResolutionCtx<'a> {
 ///
 /// Scope boundaries and variable definitions are stored alongside the
 /// cache and set by [`set_diagnostic_subject_cache_scopes`].
-type DiagSubjectCache = HashMap<(String, AccessKind, u32, u32, u32), Vec<Arc<ClassInfo>>>;
+type DiagSubjectCache = HashMap<(String, AccessKind, u32, u32, u32, u32), Vec<Arc<ClassInfo>>>;
 
 /// File-level data stored alongside the diagnostic subject cache so
 /// that [`resolve_target_classes`] can compute the enclosing scope and
@@ -193,6 +193,10 @@ struct DiagSubjectCacheFileData {
     /// a given cursor offset so that accesses in the same block share
     /// a cache entry while accesses in different branches do not.
     narrowing_blocks: Vec<(u32, u32)>,
+    /// Sorted offsets of `assert($var instanceof …)` statements.
+    /// Used as sequential narrowing boundaries so that accesses
+    /// before and after an assert get separate cache entries.
+    assert_narrowing_offsets: Vec<u32>,
 }
 
 type DiagSubjectCacheState = (DiagSubjectCache, DiagSubjectCacheFileData);
@@ -237,6 +241,7 @@ pub(crate) fn with_diagnostic_subject_cache() -> DiagSubjectCacheGuard {
                 scopes: Vec::new(),
                 var_defs: Vec::new(),
                 narrowing_blocks: Vec::new(),
+                assert_narrowing_offsets: Vec::new(),
             },
         ));
     });
@@ -268,6 +273,7 @@ pub(crate) fn set_diagnostic_subject_cache_scopes(
     scopes: Vec<(u32, u32)>,
     var_defs: Vec<crate::symbol_map::VarDefSite>,
     narrowing_blocks: Vec<(u32, u32)>,
+    assert_narrowing_offsets: Vec<u32>,
 ) {
     DIAG_SUBJECT_CACHE.with(|cell| {
         let mut borrow = cell.borrow_mut();
@@ -275,6 +281,7 @@ pub(crate) fn set_diagnostic_subject_cache_scopes(
             file_data.scopes = scopes;
             file_data.var_defs = var_defs;
             file_data.narrowing_blocks = narrowing_blocks;
+            file_data.assert_narrowing_offsets = assert_narrowing_offsets;
         }
     });
 }
@@ -322,6 +329,30 @@ fn diag_cache_narrowing_block(cursor_offset: u32) -> u32 {
                     }
                 }
                 best
+            }
+            None => 0,
+        }
+    })
+}
+
+/// Find the offset of the most recent `assert($var instanceof …)`
+/// statement preceding `cursor_offset`, or `0` if there is none.
+///
+/// Used as a cache discriminator so that accesses before and after an
+/// assert-instanceof in the same flat statement list get separate
+/// cache entries.
+fn diag_cache_assert_offset(cursor_offset: u32) -> u32 {
+    DIAG_SUBJECT_CACHE.with(|cell| {
+        let borrow = cell.borrow();
+        match borrow.as_ref() {
+            Some((_map, file_data)) => {
+                match file_data
+                    .assert_narrowing_offsets
+                    .partition_point(|&o| o < cursor_offset)
+                {
+                    0 => 0,
+                    i => file_data.assert_narrowing_offsets[i - 1],
+                }
             }
             None => 0,
         }
@@ -412,12 +443,18 @@ pub(crate) fn resolve_target_classes(
     } else {
         0
     };
+    let assert_offset = if subject.starts_with('$') && !subject.starts_with("$this") {
+        diag_cache_assert_offset(ctx.cursor_offset)
+    } else {
+        0
+    };
     let cache_key = (
         subject.to_string(),
         access_kind,
         scope_start,
         var_def_offset,
         narrowing_offset,
+        assert_offset,
     );
     let cached = DIAG_SUBJECT_CACHE.with(|cell| {
         let borrow = cell.borrow();

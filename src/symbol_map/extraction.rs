@@ -43,6 +43,9 @@ struct ExtractionCtx<'a> {
     /// are in the same narrowing context.  Accesses in the same block get
     /// the same instanceof narrowing applied and can share a cache entry.
     narrowing_blocks: Vec<(u32, u32)>,
+    /// Offsets of `assert($var instanceof ...)` expression statements.
+    /// Used as sequential narrowing boundaries in the diagnostic cache.
+    assert_narrowing_offsets: Vec<u32>,
     /// `@template` parameter definitions with their scoping ranges.
     template_defs: Vec<TemplateParamDef>,
     /// Call-site records for signature help and conditional return types.
@@ -66,6 +69,7 @@ pub(crate) fn extract_symbol_map(program: &Program<'_>, content: &str) -> Symbol
         scopes: Vec::new(),
         body_scopes: Vec::new(),
         narrowing_blocks: Vec::new(),
+        assert_narrowing_offsets: Vec::new(),
         template_defs: Vec::new(),
         call_sites: Vec::new(),
         trivias: program.trivia.as_slice(),
@@ -96,6 +100,9 @@ pub(crate) fn extract_symbol_map(program: &Program<'_>, content: &str) -> Symbol
     // Sort narrowing blocks by start offset.
     ctx.narrowing_blocks.sort_by_key(|s| s.0);
 
+    // Sort assert-narrowing offsets.
+    ctx.assert_narrowing_offsets.sort();
+
     // Sort template_defs by name_offset for binary search / reverse scan.
     ctx.template_defs.sort_by_key(|d| d.name_offset);
 
@@ -108,6 +115,7 @@ pub(crate) fn extract_symbol_map(program: &Program<'_>, content: &str) -> Symbol
         scopes: ctx.scopes,
         body_scopes: ctx.body_scopes,
         narrowing_blocks: ctx.narrowing_blocks,
+        assert_narrowing_offsets: ctx.assert_narrowing_offsets,
         template_defs: ctx.template_defs,
         call_sites: ctx.call_sites,
     }
@@ -146,6 +154,12 @@ fn extract_from_statement<'a>(
         }
         Statement::Expression(expr_stmt) => {
             extract_inline_docblock(expr_stmt, ctx);
+            // Detect `assert($var instanceof ...)` and record its offset
+            // as a sequential narrowing boundary for the diagnostic cache.
+            if is_assert_instanceof(expr_stmt.expression) {
+                ctx.assert_narrowing_offsets
+                    .push(expr_stmt.expression.span().start.offset);
+            }
             extract_from_expression(expr_stmt.expression, ctx, scope_start);
         }
         Statement::Return(ret) => {
@@ -2545,4 +2559,53 @@ fn format_first_class_arg(args: &TokenSeparatedSequence<'_, Argument<'_>>) -> St
         }
     }
     String::new()
+}
+
+/// Check whether `expr` is an `assert(… instanceof …)` call.
+///
+/// Returns `true` for patterns like:
+/// - `assert($var instanceof Foo)`
+/// - `assert($var instanceof Foo || $var instanceof Bar)`
+///
+/// This is intentionally loose — it does not check which variable is
+/// being narrowed.  The diagnostic cache uses the result only to know
+/// that *some* assert-instanceof boundary exists at this offset, which
+/// is enough to split cache entries before vs after the assert.
+fn is_assert_instanceof(expr: &Expression<'_>) -> bool {
+    let expr = match expr {
+        Expression::Parenthesized(inner) => inner.expression,
+        other => other,
+    };
+    if let Expression::Call(Call::Function(func_call)) = expr {
+        let func_name = match func_call.function {
+            Expression::Identifier(ident) => ident.value(),
+            _ => return false,
+        };
+        if func_name != "assert" {
+            return false;
+        }
+        if let Some(first_arg) = func_call.argument_list.arguments.iter().next() {
+            let arg_expr = match first_arg {
+                Argument::Positional(pos) => pos.value,
+                Argument::Named(named) => named.value,
+            };
+            return arg_contains_instanceof(arg_expr);
+        }
+    }
+    false
+}
+
+/// Recursively check whether an expression contains an `instanceof` operator.
+fn arg_contains_instanceof(expr: &Expression<'_>) -> bool {
+    match expr {
+        Expression::Parenthesized(inner) => arg_contains_instanceof(inner.expression),
+        Expression::UnaryPrefix(prefix) => arg_contains_instanceof(prefix.operand),
+        Expression::Binary(bin) => {
+            if bin.operator.is_instanceof() {
+                return true;
+            }
+            arg_contains_instanceof(bin.lhs) || arg_contains_instanceof(bin.rhs)
+        }
+        _ => false,
+    }
 }
