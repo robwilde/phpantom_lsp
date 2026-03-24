@@ -967,10 +967,9 @@ async fn test_completion_match_expression_inside_if_block() {
     }
 }
 
-/// When a variable holds a union type from a match expression, the completion
-/// detail should show all contributing class names for shared members (e.g.
-/// "Class: ElasticProductReviewIndexService | ElasticBrandIndexService") and
-/// only the originating class for branch-only members.
+/// When a variable holds a union type from a match expression, branch-only
+/// members should show the originating class in `label_details.description`.
+/// Intersection members should not have a class-name description.
 #[tokio::test]
 async fn test_completion_match_expression_detail_shows_merged_classes() {
     let backend = create_test_backend();
@@ -1031,30 +1030,40 @@ async fn test_completion_match_expression_detail_shows_merged_classes() {
 
     match result.unwrap() {
         CompletionResponse::Array(items) => {
-            // `index` is on both classes — detail should list both.
+            // `index` is on both classes — intersection member should
+            // show both class names in label_details.
             let index_item = items
                 .iter()
                 .find(|i| i.filter_text.as_deref() == Some("index"))
                 .expect("Should have an index completion item");
-            let index_detail = index_item.detail.as_deref().unwrap_or("");
+            let index_desc = index_item
+                .label_details
+                .as_ref()
+                .and_then(|ld| ld.description.as_deref())
+                .unwrap_or("");
             assert!(
-                index_detail.contains("ElasticProductReviewIndexService")
-                    && index_detail.contains("ElasticBrandIndexService"),
-                "Shared method 'index' detail should list both classes, got: {:?}",
-                index_detail
+                index_desc.contains("ElasticProductReviewIndexService")
+                    && index_desc.contains("ElasticBrandIndexService"),
+                "Shared method 'index' should show both class names, got: {:?}",
+                index_desc
             );
 
-            // `reindex` is only on ElasticProductReviewIndexService.
+            // `reindex` is only on ElasticProductReviewIndexService —
+            // branch-only member should show that class in label_details.
             let reindex_item = items
                 .iter()
                 .find(|i| i.filter_text.as_deref() == Some("reindex"))
                 .expect("Should have a reindex completion item");
-            let reindex_detail = reindex_item.detail.as_deref().unwrap_or("");
+            let reindex_desc = reindex_item
+                .label_details
+                .as_ref()
+                .and_then(|ld| ld.description.as_deref())
+                .unwrap_or("");
             assert!(
-                reindex_detail.contains("ElasticProductReviewIndexService")
-                    && !reindex_detail.contains("ElasticBrandIndexService"),
-                "Branch-only method 'reindex' detail should show only its class, got: {:?}",
-                reindex_detail
+                reindex_desc.contains("ElasticProductReviewIndexService")
+                    && !reindex_desc.contains("ElasticBrandIndexService"),
+                "Branch-only method 'reindex' should show only its class in label_details, got: {:?}",
+                reindex_desc
             );
 
             // `bulkDelete` is only on ElasticBrandIndexService.
@@ -1062,12 +1071,16 @@ async fn test_completion_match_expression_detail_shows_merged_classes() {
                 .iter()
                 .find(|i| i.filter_text.as_deref() == Some("bulkDelete"))
                 .expect("Should have a bulkDelete completion item");
-            let bulk_detail = bulk_item.detail.as_deref().unwrap_or("");
+            let bulk_desc = bulk_item
+                .label_details
+                .as_ref()
+                .and_then(|ld| ld.description.as_deref())
+                .unwrap_or("");
             assert!(
-                bulk_detail.contains("ElasticBrandIndexService")
-                    && !bulk_detail.contains("ElasticProductReviewIndexService"),
-                "Branch-only method 'bulkDelete' detail should show only its class, got: {:?}",
-                bulk_detail
+                bulk_desc.contains("ElasticBrandIndexService")
+                    && !bulk_desc.contains("ElasticProductReviewIndexService"),
+                "Branch-only method 'bulkDelete' should show only its class in label_details, got: {:?}",
+                bulk_desc
             );
         }
         _ => panic!("Expected CompletionResponse::Array"),

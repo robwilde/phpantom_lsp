@@ -1546,10 +1546,13 @@ class Mailer {
 
     let legacy = items.iter().find(|i| i.label.contains("sendLegacy"));
     assert!(legacy.is_some(), "sendLegacy should appear in completions");
-    assert_eq!(
-        legacy.unwrap().deprecated,
-        Some(true),
-        "sendLegacy should be marked deprecated in completion"
+    assert!(
+        legacy
+            .unwrap()
+            .tags
+            .as_ref()
+            .is_some_and(|t| t.contains(&CompletionItemTag::DEPRECATED)),
+        "sendLegacy should be tagged deprecated in completion"
     );
 
     let async_item = items.iter().find(|i| i.label.contains("sendAsync"));
@@ -1557,10 +1560,13 @@ class Mailer {
         async_item.is_some(),
         "sendAsync should appear in completions"
     );
-    assert_ne!(
-        async_item.unwrap().deprecated,
-        Some(true),
-        "sendAsync should NOT be marked deprecated"
+    assert!(
+        !async_item
+            .unwrap()
+            .tags
+            .as_ref()
+            .is_some_and(|t| t.contains(&CompletionItemTag::DEPRECATED)),
+        "sendAsync should NOT be tagged deprecated"
     );
 }
 

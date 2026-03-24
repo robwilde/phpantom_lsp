@@ -1,4 +1,7 @@
 use std::collections::HashMap;
+
+use crate::hover::shorten_type_string;
+
 /// Member completion item building.
 ///
 /// This module contains the logic for constructing LSP `CompletionItem`s from
@@ -18,6 +21,7 @@ use std::sync::Arc;
 
 use tower_lsp::lsp_types::*;
 
+use super::resolve::CompletionItemData;
 use crate::types::Visibility;
 use crate::types::*;
 
@@ -103,41 +107,48 @@ fn is_magic_method(name: &str) -> bool {
     MAGIC_METHODS.iter().any(|&m| m.eq_ignore_ascii_case(name))
 }
 
-/// Build the label showing the full method signature.
+/// Format a parameter list into a display string.
 ///
-/// Example: `regularCode(string $text, $frogs = false): string`
-pub(crate) fn build_method_label(method: &MethodInfo) -> String {
-    let params: Vec<String> = method
-        .parameters
+/// Example output: `$text, $frogs = ..., &$ref, ...$rest`
+///
+/// This is the shared core used by both method and function label
+/// builders so the formatting stays consistent everywhere.
+pub(crate) fn format_param_list(params: &[ParameterInfo]) -> String {
+    params
         .iter()
         .map(|p| {
-            let mut parts = Vec::new();
-            if let Some(ref th) = p.type_hint {
-                parts.push(th.clone());
-            }
-            if p.is_reference {
-                parts.push(format!("&{}", p.name));
+            let name = if p.is_reference {
+                format!("&{}", p.name)
             } else if p.is_variadic {
-                parts.push(format!("...{}", p.name));
+                format!("...{}", p.name)
             } else {
-                parts.push(p.name.clone());
-            }
-            let param_str = parts.join(" ");
+                p.name.clone()
+            };
             if !p.is_required && !p.is_variadic {
-                format!("{} = ...", param_str)
+                format!("{} = ...", name)
             } else {
-                param_str
+                name
             }
         })
-        .collect();
+        .collect::<Vec<_>>()
+        .join(", ")
+}
 
-    let ret = method
-        .return_type
-        .as_ref()
-        .map(|r| format!(": {}", r))
-        .unwrap_or_default();
+/// Build a label showing a callable name and its parameter names.
+///
+/// Works for both methods and standalone functions.
+///
+/// Example: `regularCode($text, $frogs = ...)`
+pub(crate) fn build_callable_label(name: &str, params: &[ParameterInfo]) -> String {
+    format!("{}({})", name, format_param_list(params))
+}
 
-    format!("{}({}){}", method.name, params.join(", "), ret)
+/// Build the label showing the method name and parameter names.
+///
+/// Thin wrapper around [`build_callable_label`] for backward
+/// compatibility with callers that pass a `&MethodInfo`.
+pub(crate) fn build_method_label(method: &MethodInfo) -> String {
+    build_callable_label(&method.name, &method.parameters)
 }
 
 /// Build completion items for a resolved class, filtered by access kind
@@ -168,6 +179,7 @@ pub(crate) fn build_completion_items(
     access_kind: AccessKind,
     current_class_name: Option<&str>,
     is_self_or_ancestor: bool,
+    uri: &str,
 ) -> Vec<CompletionItem> {
     // Determine whether we are inside the same class as the target.
     let same_class = current_class_name.is_some_and(|name| name == target_class.name);
@@ -221,18 +233,38 @@ pub(crate) fn build_completion_items(
         }
 
         let label = build_method_label(method);
+
+        // Show the return type inline after the label so the user sees
+        // e.g. `getUser($id): User` in the completion popup.
+        let return_type = method
+            .return_type
+            .as_deref()
+            .or(method.native_return_type.as_deref())
+            .map(shorten_type_string);
+
+        let data = serde_json::to_value(CompletionItemData {
+            class_name: target_class.name.clone(),
+            member_name: method.name.clone(),
+            kind: "method".to_string(),
+            uri: uri.to_string(),
+            extra_class_names: vec![],
+        })
+        .ok();
+        let class_description = Some(display_class_name(&target_class.name).to_string());
         items.push(CompletionItem {
             label,
+            label_details: Some(CompletionItemLabelDetails {
+                detail: None,
+                description: class_description,
+            }),
             kind: Some(CompletionItemKind::METHOD),
-            detail: Some(format!("Class: {}", display_class_name(&target_class.name))),
+            detail: return_type,
             insert_text: Some(build_callable_snippet(&method.name, &method.parameters)),
             insert_text_format: Some(InsertTextFormat::SNIPPET),
             filter_text: Some(method.name.clone()),
-            deprecated: if method.deprecation_message.is_some() {
-                Some(true)
-            } else {
-                None
-            },
+            tags: deprecation_tag(method.deprecation_message.is_some()),
+            commit_characters: Some(METHOD_COMMIT_CHARS.iter().map(|s| s.to_string()).collect()),
+            data,
             ..CompletionItem::default()
         });
     }
@@ -266,24 +298,29 @@ pub(crate) fn build_completion_items(
             property.name.clone()
         };
 
-        let display = display_class_name(&target_class.name);
-        let detail = if let Some(ref th) = property.type_hint {
-            format!("Class: {} — {}", display, th)
-        } else {
-            format!("Class: {}", display)
-        };
+        let detail = property.type_hint.as_deref().map(shorten_type_string);
 
+        let data = serde_json::to_value(CompletionItemData {
+            class_name: target_class.name.clone(),
+            member_name: property.name.clone(),
+            kind: "property".to_string(),
+            uri: uri.to_string(),
+            extra_class_names: vec![],
+        })
+        .ok();
+        let class_description = Some(display_class_name(&target_class.name).to_string());
         items.push(CompletionItem {
             label: display_name.clone(),
+            label_details: Some(CompletionItemLabelDetails {
+                detail: None,
+                description: class_description,
+            }),
             kind: Some(CompletionItemKind::PROPERTY),
-            detail: Some(detail),
+            detail,
             insert_text: Some(display_name.clone()),
             filter_text: Some(display_name),
-            deprecated: if property.deprecation_message.is_some() {
-                Some(true)
-            } else {
-                None
-            },
+            tags: deprecation_tag(property.deprecation_message.is_some()),
+            data,
             ..CompletionItem::default()
         });
     }
@@ -301,24 +338,32 @@ pub(crate) fn build_completion_items(
                 continue;
             }
 
-            let display = display_class_name(&target_class.name);
-            let detail = if let Some(ref th) = constant.type_hint {
-                format!("Class: {} — {}", display, th)
-            } else {
-                format!("Class: {}", display)
-            };
+            let detail = constant
+                .value
+                .clone()
+                .or_else(|| constant.type_hint.as_deref().map(shorten_type_string));
 
+            let data = serde_json::to_value(CompletionItemData {
+                class_name: target_class.name.clone(),
+                member_name: constant.name.clone(),
+                kind: "constant".to_string(),
+                uri: uri.to_string(),
+                extra_class_names: vec![],
+            })
+            .ok();
+            let class_description = Some(display_class_name(&target_class.name).to_string());
             items.push(CompletionItem {
                 label: constant.name.clone(),
+                label_details: Some(CompletionItemLabelDetails {
+                    detail: None,
+                    description: class_description,
+                }),
                 kind: Some(CompletionItemKind::CONSTANT),
-                detail: Some(detail),
+                detail,
                 insert_text: Some(constant.name.clone()),
                 filter_text: Some(constant.name.clone()),
-                deprecated: if constant.deprecation_message.is_some() {
-                    Some(true)
-                } else {
-                    None
-                },
+                tags: deprecation_tag(constant.deprecation_message.is_some()),
+                data,
                 ..CompletionItem::default()
             });
         }
@@ -337,14 +382,18 @@ pub(crate) fn build_completion_items(
         });
     }
 
-    // Sort all items alphabetically (case-insensitive) and assign
-    // sort_text so the editor preserves this ordering.
+    // Sort by member kind (constants → properties → methods) then
+    // alphabetically within each kind group.
     items.sort_by(|a, b| {
-        a.filter_text
-            .as_deref()
-            .unwrap_or(&a.label)
-            .to_lowercase()
-            .cmp(&b.filter_text.as_deref().unwrap_or(&b.label).to_lowercase())
+        let ka = kind_sort_tier(a.kind);
+        let kb = kind_sort_tier(b.kind);
+        ka.cmp(&kb).then_with(|| {
+            a.filter_text
+                .as_deref()
+                .unwrap_or(&a.label)
+                .to_lowercase()
+                .cmp(&b.filter_text.as_deref().unwrap_or(&b.label).to_lowercase())
+        })
     });
 
     for (i, item) in items.iter_mut().enumerate() {
@@ -352,6 +401,38 @@ pub(crate) fn build_completion_items(
     }
 
     items
+}
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+/// Characters that auto-accept a method completion item.
+///
+/// `(` is the natural next character after a method name and lets the
+/// user flow directly into typing arguments.
+const METHOD_COMMIT_CHARS: &[&str] = &["("];
+
+/// Return the sort tier for a `CompletionItemKind`.
+///
+/// Lower values sort first.  The order is:
+/// 0 — constants and keywords (`::class`)
+/// 1 — properties
+/// 2 — methods
+fn kind_sort_tier(kind: Option<CompletionItemKind>) -> u8 {
+    match kind {
+        Some(CompletionItemKind::CONSTANT) | Some(CompletionItemKind::KEYWORD) => 0,
+        Some(CompletionItemKind::PROPERTY) => 1,
+        Some(CompletionItemKind::METHOD) => 2,
+        _ => 3,
+    }
+}
+
+/// Build a `tags` vec with the `DEPRECATED` tag when the member is deprecated.
+pub(crate) fn deprecation_tag(is_deprecated: bool) -> Option<Vec<CompletionItemTag>> {
+    if is_deprecated {
+        Some(vec![CompletionItemTag::DEPRECATED])
+    } else {
+        None
+    }
 }
 
 // ─── Union-merge pipeline ───────────────────────────────────────────────────
@@ -416,6 +497,7 @@ pub(crate) fn build_union_completion_items(
     current_class: Option<&ClassInfo>,
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
     cache: &crate::virtual_members::ResolvedClassCache,
+    uri: &str,
 ) -> Vec<CompletionItem> {
     let current_class_name = current_class.map(|cc| cc.name.as_str());
     let num_candidates = candidates.len();
@@ -436,6 +518,7 @@ pub(crate) fn build_union_completion_items(
             effective_access,
             current_class_name,
             self_or_ancestor,
+            uri,
         );
 
         for item in items {
@@ -444,11 +527,11 @@ pub(crate) fn build_union_completion_items(
                 .find(|existing| existing.label == item.label)
             {
                 *occurrence_count.entry(existing.label.clone()).or_insert(1) += 1;
-                // Merge class names into the detail so the user sees
-                // which types provide this member (e.g.
-                // "User|AdminUser" for shared members vs "AdminUser"
-                // for branch-only members).
-                merge_detail_class_names(existing, &item);
+                // Merge the class name into `data.extra_class_names`
+                // so that `completionItem/resolve` can build hover
+                // content for all union branches, and so that the
+                // branch-only label can list contributing classes.
+                merge_data_class_names(existing, &item);
             } else {
                 occurrence_count.insert(item.label.clone(), 1);
                 all_items.push(item);
@@ -459,31 +542,42 @@ pub(crate) fn build_union_completion_items(
     merge_union_completion_items(all_items, occurrence_count, num_candidates)
 }
 
-/// Merge class names from a new item's `detail` into an existing item's
-/// `detail`.
-///
-/// Both items are expected to have a `detail` of the form
-/// `"Class: Foo"` or `"Class: Foo \u{2014} type"`.  The class name from
-/// `new_item` is appended with `|` if not already present.
-fn merge_detail_class_names(existing: &mut CompletionItem, new_item: &CompletionItem) {
-    let em_dash = " \u{2014} ";
-    let get_cls = |d: &str| -> Option<String> {
-        d.strip_prefix("Class: ")
-            .map(|r| r.split(em_dash).next().unwrap_or(r).to_string())
+/// Merge the class name from a new item's `data` into the existing item's
+/// `data.extra_class_names` so that `completionItem/resolve` can iterate
+/// all union branches when building hover documentation.
+fn merge_data_class_names(existing: &mut CompletionItem, new_item: &CompletionItem) {
+    let (Some(existing_data), Some(new_data)) = (&existing.data, &new_item.data) else {
+        return;
     };
-
-    if let (Some(existing_detail), Some(new_detail)) = (&mut existing.detail, &new_item.detail)
-        && let (Some(ec), Some(nc)) = (get_cls(existing_detail), get_cls(new_detail))
-        && !ec.split('|').any(|p| p == nc)
-    {
-        let merged = format!("{ec}|{nc}");
-        if let Some(pos) = existing_detail.find(em_dash) {
-            let suffix = existing_detail[pos..].to_string();
-            *existing_detail = format!("Class: {merged}{suffix}");
-        } else {
-            *existing_detail = format!("Class: {merged}");
-        }
+    let (Ok(mut ed), Ok(nd)) = (
+        serde_json::from_value::<CompletionItemData>(existing_data.clone()),
+        serde_json::from_value::<CompletionItemData>(new_data.clone()),
+    ) else {
+        return;
+    };
+    // Skip if the class name is already recorded.
+    if ed.class_name == nd.class_name || ed.extra_class_names.contains(&nd.class_name) {
+        return;
     }
+    ed.extra_class_names.push(nd.class_name.clone());
+    if let Ok(v) = serde_json::to_value(&ed) {
+        existing.data = Some(v);
+    }
+}
+
+/// Extract the class name(s) from a `CompletionItem`'s `data` field.
+///
+/// Returns a pipe-separated string of all class names (primary +
+/// extras), e.g. `"Lamp|Faucet"`.  Returns `None` when the data
+/// field is absent or cannot be deserialized.
+fn class_names_from_data(item: &CompletionItem) -> Option<String> {
+    let data_value = item.data.as_ref()?;
+    let data: CompletionItemData = serde_json::from_value(data_value.clone()).ok()?;
+    let mut names = vec![display_class_name(&data.class_name).to_string()];
+    for extra in &data.extra_class_names {
+        names.push(display_class_name(extra).to_string());
+    }
+    Some(names.join("|"))
 }
 
 /// Partition and sort completion items by union membership.
@@ -511,11 +605,14 @@ pub(crate) fn merge_union_completion_items(
         return items;
     }
 
-    let sort_key = |item: &CompletionItem| -> String {
-        item.filter_text
-            .as_deref()
-            .unwrap_or(&item.label)
-            .to_lowercase()
+    let sort_key = |item: &CompletionItem| -> (u8, String) {
+        (
+            kind_sort_tier(item.kind),
+            item.filter_text
+                .as_deref()
+                .unwrap_or(&item.label)
+                .to_lowercase(),
+        )
     };
 
     let mut intersection: Vec<CompletionItem> = Vec::new();
@@ -539,23 +636,34 @@ pub(crate) fn merge_union_completion_items(
 
     for (i, mut item) in intersection.into_iter().enumerate() {
         item.sort_text = Some(format!("0_{:05}", i));
+        // Update description to show all contributing class names
+        // (the initial description only has the first candidate).
+        if let Some(class_names) = class_names_from_data(&item) {
+            if let Some(ref mut ld) = item.label_details {
+                ld.description = Some(class_names);
+            } else {
+                item.label_details = Some(CompletionItemLabelDetails {
+                    detail: None,
+                    description: Some(class_names),
+                });
+            }
+        }
         result.push(item);
     }
 
-    let em_dash = " \u{2014} ";
     for (i, mut item) in branch_only.into_iter().enumerate() {
         item.sort_text = Some(format!("1_{:05}", i));
         // Add label_details showing the originating class(es) so the
         // user can tell at a glance which branch provides this member.
-        if let Some(ref detail) = item.detail {
-            let class_names = detail
-                .strip_prefix("Class: ")
-                .map(|r| r.split(em_dash).next().unwrap_or(r))
-                .unwrap_or("");
-            if !class_names.is_empty() {
+        // Merge into existing label_details (which may already have a
+        // return-type `detail` set by `build_completion_items`).
+        if let Some(class_names) = class_names_from_data(&item) {
+            if let Some(ref mut ld) = item.label_details {
+                ld.description = Some(class_names);
+            } else {
                 item.label_details = Some(CompletionItemLabelDetails {
                     detail: None,
-                    description: Some(class_names.to_string()),
+                    description: Some(class_names),
                 });
             }
         }
@@ -570,71 +678,59 @@ mod tests {
     use super::*;
     use crate::types::ClassInfo;
 
-    /// Helper to build a minimal `CompletionItem` with a label, detail, and
+    /// Helper to build a minimal `CompletionItem` with a label and
     /// filter_text — the fields that the merge logic inspects.
-    fn item(label: &str, detail: &str) -> CompletionItem {
+    fn item(label: &str, class_name: &str) -> CompletionItem {
+        let data = serde_json::to_value(CompletionItemData {
+            class_name: class_name.to_string(),
+            member_name: label.to_string(),
+            kind: "method".to_string(),
+            uri: String::new(),
+            extra_class_names: vec![],
+        })
+        .ok();
         CompletionItem {
             label: label.to_string(),
-            detail: Some(detail.to_string()),
             filter_text: Some(label.to_string()),
+            data,
             ..CompletionItem::default()
         }
     }
 
-    // ── merge_detail_class_names ────────────────────────────────────────
+    // ── class_names_from_data ───────────────────────────────────────────
 
     #[test]
-    fn merge_detail_appends_new_class_name() {
-        let mut existing = item("foo", "Class: User");
-        let new = item("foo", "Class: AdminUser");
-        merge_detail_class_names(&mut existing, &new);
-        assert_eq!(existing.detail.as_deref(), Some("Class: User|AdminUser"));
+    fn class_names_from_data_single_class() {
+        let i = item("foo", "User");
+        assert_eq!(class_names_from_data(&i).as_deref(), Some("User"));
     }
 
     #[test]
-    fn merge_detail_preserves_type_suffix() {
-        let mut existing = item("name", "Class: User \u{2014} string");
-        let new = item("name", "Class: AdminUser \u{2014} string");
-        merge_detail_class_names(&mut existing, &new);
-        assert_eq!(
-            existing.detail.as_deref(),
-            Some("Class: User|AdminUser \u{2014} string")
-        );
+    fn class_names_from_data_with_extras() {
+        let mut i = item("foo", "User");
+        // Simulate merge_data_class_names having added an extra class.
+        if let Some(ref data_value) = i.data {
+            let mut d: CompletionItemData = serde_json::from_value(data_value.clone()).unwrap();
+            d.extra_class_names.push("AdminUser".to_string());
+            i.data = serde_json::to_value(&d).ok();
+        }
+        assert_eq!(class_names_from_data(&i).as_deref(), Some("User|AdminUser"));
     }
 
     #[test]
-    fn merge_detail_does_not_duplicate_same_class() {
-        let mut existing = item("foo", "Class: User");
-        let new = item("foo", "Class: User");
-        merge_detail_class_names(&mut existing, &new);
-        assert_eq!(existing.detail.as_deref(), Some("Class: User"));
-    }
-
-    #[test]
-    fn merge_detail_handles_three_classes() {
-        let mut existing = item("foo", "Class: A");
-        merge_detail_class_names(&mut existing, &item("foo", "Class: B"));
-        merge_detail_class_names(&mut existing, &item("foo", "Class: C"));
-        assert_eq!(existing.detail.as_deref(), Some("Class: A|B|C"));
-    }
-
-    #[test]
-    fn merge_detail_no_op_when_details_missing() {
-        let mut existing = CompletionItem {
+    fn class_names_from_data_none_without_data() {
+        let i = CompletionItem {
             label: "foo".to_string(),
-            detail: None,
             ..CompletionItem::default()
         };
-        let new = item("foo", "Class: User");
-        merge_detail_class_names(&mut existing, &new);
-        assert_eq!(existing.detail, None);
+        assert!(class_names_from_data(&i).is_none());
     }
 
     // ── merge_union_completion_items ─────────────────────────────────────
 
     #[test]
     fn single_candidate_returns_items_unchanged() {
-        let items = vec![item("foo", "Class: A"), item("bar", "Class: A")];
+        let items = vec![item("foo", "A"), item("bar", "A")];
         let mut counts = std::collections::HashMap::new();
         counts.insert("foo".to_string(), 1);
         counts.insert("bar".to_string(), 1);
@@ -651,9 +747,9 @@ mod tests {
         // Two candidates: both have "shared", only one has "unique_a",
         // only one has "unique_b".
         let items = vec![
-            item("shared", "Class: A|B"),
-            item("unique_a", "Class: A"),
-            item("unique_b", "Class: B"),
+            item("shared", "A"),
+            item("unique_a", "A"),
+            item("unique_b", "B"),
         ];
         let mut counts = std::collections::HashMap::new();
         counts.insert("shared".to_string(), 2);
@@ -674,7 +770,7 @@ mod tests {
 
     #[test]
     fn branch_only_items_get_label_details() {
-        let items = vec![item("only_a", "Class: A")];
+        let items = vec![item("only_a", "A")];
         let mut counts = std::collections::HashMap::new();
         counts.insert("only_a".to_string(), 1);
 
@@ -688,23 +784,23 @@ mod tests {
     }
 
     #[test]
-    fn intersection_items_do_not_get_label_details() {
-        let items = vec![item("shared", "Class: A|B")];
+    fn intersection_items_get_class_description() {
+        let items = vec![item("shared", "A")];
         let mut counts = std::collections::HashMap::new();
         counts.insert("shared".to_string(), 2);
 
         let result = merge_union_completion_items(items, counts, 2);
         assert_eq!(result.len(), 1);
-        assert!(result[0].label_details.is_none());
+        let ld = result[0]
+            .label_details
+            .as_ref()
+            .expect("should have label_details");
+        assert_eq!(ld.description.as_deref(), Some("A"));
     }
 
     #[test]
     fn branch_only_items_sorted_alphabetically() {
-        let items = vec![
-            item("zebra", "Class: A"),
-            item("alpha", "Class: A"),
-            item("middle", "Class: A"),
-        ];
+        let items = vec![item("zebra", "A"), item("alpha", "A"), item("middle", "A")];
         let mut counts = std::collections::HashMap::new();
         counts.insert("zebra".to_string(), 1);
         counts.insert("alpha".to_string(), 1);
@@ -806,5 +902,129 @@ mod tests {
         };
         let loader = |_: &str| -> Option<Arc<ClassInfo>> { None };
         assert!(is_ancestor_of(Some(&child), &parent_target, &loader));
+    }
+
+    // ── kind_sort_tier ──────────────────────────────────────────────────
+
+    #[test]
+    fn kind_sort_tier_constants_before_properties_before_methods() {
+        let constant = kind_sort_tier(Some(CompletionItemKind::CONSTANT));
+        let keyword = kind_sort_tier(Some(CompletionItemKind::KEYWORD));
+        let property = kind_sort_tier(Some(CompletionItemKind::PROPERTY));
+        let method = kind_sort_tier(Some(CompletionItemKind::METHOD));
+
+        assert_eq!(
+            constant, keyword,
+            "constants and keywords share the same tier"
+        );
+        assert!(
+            constant < property,
+            "constants should sort before properties"
+        );
+        assert!(property < method, "properties should sort before methods");
+    }
+
+    #[test]
+    fn kind_sort_tier_none_sorts_last() {
+        let method = kind_sort_tier(Some(CompletionItemKind::METHOD));
+        let none = kind_sort_tier(None);
+        assert!(method < none, "None kind should sort after methods");
+    }
+
+    // ── kind-based sorting in merge pipeline ────────────────────────────
+
+    fn item_with_kind(label: &str, class_name: &str, kind: CompletionItemKind) -> CompletionItem {
+        let data = serde_json::to_value(CompletionItemData {
+            class_name: class_name.to_string(),
+            member_name: label.to_string(),
+            kind: "method".to_string(),
+            uri: String::new(),
+            extra_class_names: vec![],
+        })
+        .ok();
+        CompletionItem {
+            label: label.to_string(),
+            filter_text: Some(label.to_string()),
+            kind: Some(kind),
+            data,
+            ..CompletionItem::default()
+        }
+    }
+
+    #[test]
+    fn merge_sorts_by_kind_then_alphabetically() {
+        let items = vec![
+            item_with_kind("alpha", "A", CompletionItemKind::METHOD),
+            item_with_kind("NAME", "A", CompletionItemKind::CONSTANT),
+            item_with_kind("color", "A", CompletionItemKind::PROPERTY),
+        ];
+        let mut counts = std::collections::HashMap::new();
+        counts.insert("alpha".to_string(), 2);
+        counts.insert("NAME".to_string(), 2);
+        counts.insert("color".to_string(), 2);
+
+        let result = merge_union_completion_items(items, counts, 2);
+        assert_eq!(result.len(), 3);
+        // constant → property → method
+        assert_eq!(result[0].label, "NAME");
+        assert_eq!(result[1].label, "color");
+        assert_eq!(result[2].label, "alpha");
+    }
+
+    #[test]
+    fn merge_branch_only_sorted_by_kind_then_alphabetically() {
+        let items = vec![
+            item_with_kind("zebra", "A", CompletionItemKind::METHOD),
+            item_with_kind("STATUS", "A", CompletionItemKind::CONSTANT),
+            item_with_kind("active", "A", CompletionItemKind::PROPERTY),
+            item_with_kind("beta", "A", CompletionItemKind::METHOD),
+        ];
+        let mut counts = std::collections::HashMap::new();
+        counts.insert("zebra".to_string(), 1);
+        counts.insert("STATUS".to_string(), 1);
+        counts.insert("active".to_string(), 1);
+        counts.insert("beta".to_string(), 1);
+
+        let result = merge_union_completion_items(items, counts, 2);
+        assert_eq!(result.len(), 4);
+        // All branch-only, sorted: constant → property → methods alphabetically
+        assert_eq!(result[0].label, "STATUS");
+        assert_eq!(result[1].label, "active");
+        assert_eq!(result[2].label, "beta");
+        assert_eq!(result[3].label, "zebra");
+    }
+
+    #[test]
+    fn intersection_kind_sorts_before_branch_only_same_kind() {
+        // An intersection method should sort before a branch-only constant.
+        let items = vec![
+            item_with_kind("shared", "A", CompletionItemKind::METHOD),
+            item_with_kind("ONLY_A", "A", CompletionItemKind::CONSTANT),
+        ];
+        let mut counts = std::collections::HashMap::new();
+        counts.insert("shared".to_string(), 2);
+        counts.insert("ONLY_A".to_string(), 1);
+
+        let result = merge_union_completion_items(items, counts, 2);
+        assert_eq!(result.len(), 2);
+        // Intersection tier ("0_") always before branch-only ("1_").
+        assert!(result[0].sort_text.as_deref().unwrap().starts_with("0_"));
+        assert!(result[1].sort_text.as_deref().unwrap().starts_with("1_"));
+        assert_eq!(result[0].label, "shared");
+        assert_eq!(result[1].label, "ONLY_A");
+    }
+
+    // ── deprecation_tag ─────────────────────────────────────────────────
+
+    #[test]
+    fn deprecation_tag_returns_tag_when_deprecated() {
+        let tags = deprecation_tag(true);
+        assert!(tags.is_some());
+        assert!(tags.unwrap().contains(&CompletionItemTag::DEPRECATED));
+    }
+
+    #[test]
+    fn deprecation_tag_returns_none_when_not_deprecated() {
+        assert!(deprecation_tag(false).is_none());
     }
 }

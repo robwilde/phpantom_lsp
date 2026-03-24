@@ -211,6 +211,195 @@ class Consumer {
 }
 
 #[test]
+fn hover_union_member_access_shows_all_branches() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class Lamp {
+    public function dim(): void {}
+    public function turnOff(): void {}
+}
+
+class Faucet {
+    public function drip(): void {}
+    public function turnOff(): void {}
+}
+
+class Consumer {
+    public function run(): void {
+        if (rand(0, 1)) {
+            $ambiguous = new Lamp();
+        } else {
+            $ambiguous = new Faucet();
+        }
+        $ambiguous->turnOff();
+    }
+}
+"#;
+
+    // Hover on `turnOff` in `$ambiguous->turnOff()` (line 18)
+    let hover = hover_at(&backend, uri, content, 18, 22).expect("expected hover on turnOff");
+    let text = hover_text(&hover);
+
+    // Both classes should appear since turnOff is independently declared
+    // on each class (no common interface).
+    assert!(
+        text.contains("Lamp") && text.contains("Faucet"),
+        "hover on union member should show both Lamp and Faucet, got: {}",
+        text
+    );
+
+    // The two branches should be separated by a horizontal rule.
+    assert!(
+        text.contains("---"),
+        "union member hover should use a horizontal rule separator, got: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_union_member_access_deduplicates_via_common_interface() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+interface Switchable {
+    public function turnOff(): void;
+}
+
+class Lamp implements Switchable {
+    public function turnOff(): void {}
+    public function dim(): void {}
+}
+
+class Faucet implements Switchable {
+    public function turnOff(): void {}
+    public function drip(): void {}
+}
+
+class Consumer {
+    public function run(): void {
+        if (rand(0, 1)) {
+            $ambiguous = new Lamp();
+        } else {
+            $ambiguous = new Faucet();
+        }
+        $ambiguous->turnOff();
+    }
+}
+"#;
+
+    // Hover on `turnOff` in `$ambiguous->turnOff()` (line 22)
+    let hover = hover_at(&backend, uri, content, 22, 22).expect("expected hover on turnOff");
+    let text = hover_text(&hover);
+
+    // Both Lamp and Faucet declare turnOff themselves (overriding the
+    // interface), so both declaring classes should appear.
+    assert!(
+        text.contains("Lamp") && text.contains("Faucet"),
+        "hover should show both Lamp and Faucet (each declares turnOff), got: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_union_member_access_shows_declaring_class_not_access_class() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class BaseDevice {
+    public function turnOff(): void {}
+}
+
+class Lamp extends BaseDevice {
+    public function dim(): void {}
+}
+
+class Faucet extends BaseDevice {
+    public function drip(): void {}
+}
+
+class Consumer {
+    public function run(): void {
+        if (rand(0, 1)) {
+            $ambiguous = new Lamp();
+        } else {
+            $ambiguous = new Faucet();
+        }
+        $ambiguous->turnOff();
+    }
+}
+"#;
+
+    // Hover on `turnOff` in `$ambiguous->turnOff()` (line 20)
+    let hover = hover_at(&backend, uri, content, 20, 22).expect("expected hover on turnOff");
+    let text = hover_text(&hover);
+
+    // turnOff is declared on BaseDevice, inherited by both Lamp and
+    // Faucet.  The hover should show BaseDevice (the declaring class)
+    // and should NOT be duplicated since both branches resolve to the
+    // same declaring class.
+    assert!(
+        text.contains("BaseDevice"),
+        "hover should show declaring class BaseDevice, got: {}",
+        text
+    );
+    assert!(
+        !text.contains("---"),
+        "should not have separator when both branches resolve to same declaring class, got: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_union_branch_only_member_shows_single_class() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class Lamp {
+    public function dim(): void {}
+    public function turnOff(): void {}
+}
+
+class Faucet {
+    public function drip(): void {}
+    public function turnOff(): void {}
+}
+
+class Consumer {
+    public function run(): void {
+        if (rand(0, 1)) {
+            $ambiguous = new Lamp();
+        } else {
+            $ambiguous = new Faucet();
+        }
+        $ambiguous->dim();
+    }
+}
+"#;
+
+    // Hover on `dim` in `$ambiguous->dim()` (line 18) — only Lamp has dim()
+    let hover = hover_at(&backend, uri, content, 18, 22).expect("expected hover on dim");
+    let text = hover_text(&hover);
+
+    assert!(
+        text.contains("Lamp"),
+        "hover should show Lamp for branch-only member dim, got: {}",
+        text
+    );
+    assert!(
+        !text.contains("Faucet"),
+        "hover should NOT show Faucet for dim (only on Lamp), got: {}",
+        text
+    );
+    // No separator needed for a single-branch member.
+    assert!(
+        !text.contains("---"),
+        "single-branch member should not have separator, got: {}",
+        text
+    );
+}
+
+#[test]
 fn hover_suppressed_on_parameter_definition_site() {
     let backend = create_test_backend();
     let uri = "file:///test.php";
@@ -1137,6 +1326,53 @@ class UserRepo extends BaseRepo {
     assert!(
         text.contains(": array"),
         "should show return type: {}",
+        text
+    );
+    // The code block should show the declaring class (BaseRepo),
+    // not the class the method was accessed on (UserRepo).
+    assert!(
+        text.contains("BaseRepo"),
+        "should show declaring class BaseRepo, got: {}",
+        text
+    );
+    assert!(
+        !text.contains("class UserRepo"),
+        "should NOT show UserRepo as the owner class, got: {}",
+        text
+    );
+}
+
+/// Hovering over an inherited static method should show the declaring
+/// class in the code block, not the subclass it was called on.
+#[test]
+fn hover_inherited_static_method_shows_declaring_class() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+abstract class Model {
+    /** @deprecated */
+    public static function find(int $id): ?static { return null; }
+}
+class User extends Model {
+    public function toArray(): array { return []; }
+}
+function demo(): void {
+    User::find(1);
+}
+"#;
+
+    // Hover on `find` (line 9, col 11)
+    let hover = hover_at(&backend, uri, content, 9, 11).expect("expected hover");
+    let text = hover_text(&hover);
+    assert!(text.contains("find"), "should show method name: {}", text);
+    assert!(
+        text.contains("class Model"),
+        "should show declaring class Model, not User, got: {}",
+        text
+    );
+    assert!(
+        !text.contains("class User"),
+        "should NOT show User as the owner class, got: {}",
         text
     );
 }
@@ -4152,6 +4388,47 @@ echo LEGACY_CONST;
     assert!(
         !text.contains('='),
         "hover should not show '=' when value is unknown, got: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_stub_constant_shows_value() {
+    let backend = create_test_backend_with_function_stubs();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+echo PHP_INT_MAX;
+"#;
+
+    backend.update_ast(uri, content);
+    let hover = hover_at(&backend, uri, content, 1, 7).expect("expected hover on PHP_INT_MAX");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("PHP_INT_MAX"),
+        "hover should show the constant name, got: {}",
+        text
+    );
+    assert!(
+        text.contains('='),
+        "hover should show a value for the stub constant, got: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_stub_constant_php_eol_shows_value() {
+    let backend = create_test_backend_with_function_stubs();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+echo PHP_EOL;
+"#;
+
+    backend.update_ast(uri, content);
+    let hover = hover_at(&backend, uri, content, 1, 7).expect("expected hover on PHP_EOL");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("PHP_EOL"),
+        "hover should show the constant name, got: {}",
         text
     );
 }

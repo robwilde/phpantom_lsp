@@ -505,13 +505,15 @@ impl Backend {
     /// 5. **Stub** entries that do *not* end with `Exception`.
     pub(crate) fn build_catch_class_name_completions(
         &self,
-        file_use_map: &HashMap<String, String>,
-        file_namespace: &Option<String>,
+        ctx: &crate::types::FileContext,
         prefix: &str,
         content: &str,
         is_new: bool,
         position: Position,
+        uri: &str,
     ) -> (Vec<CompletionItem>, bool) {
+        let file_use_map = &ctx.use_map;
+        let file_namespace = &ctx.namespace;
         let has_leading_backslash = prefix.starts_with('\\');
         let normalized = prefix.strip_prefix('\\').unwrap_or(prefix);
         let prefix_lower = normalized.to_lowercase();
@@ -566,6 +568,7 @@ impl Backend {
             affinity_table,
             quality_prefix,
             prefix_has_namespace,
+            uri,
         };
 
         // Build the set of every FQN currently in the ast_map so that

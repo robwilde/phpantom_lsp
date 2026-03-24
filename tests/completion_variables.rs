@@ -15929,10 +15929,15 @@ async fn test_completion_union_branch_only_has_label_details() {
                 .find(|i| i.filter_text.as_deref() == Some("park"))
                 .unwrap();
 
-            // Intersection members should NOT have label_details
-            assert!(
-                drive.label_details.is_none(),
-                "Intersection member 'drive' should not have label_details, got: {:?}",
+            // Intersection members should have all class names pipe-separated
+            let drive_desc = drive
+                .label_details
+                .as_ref()
+                .and_then(|ld| ld.description.as_deref());
+            assert_eq!(
+                drive_desc,
+                Some("Truck|Sedan"),
+                "Intersection member 'drive' should show 'Truck|Sedan' in label_details, got: {:?}",
                 drive.label_details
             );
 
@@ -16033,14 +16038,26 @@ async fn test_completion_single_class_no_union_sort_adjustment() {
                 update.sort_text
             );
 
-            // No label_details should be set
-            assert!(
-                render.label_details.is_none(),
-                "Single-class completion should not have label_details"
+            // Single-class completions should have the class name in label_details description.
+            let render_desc = render
+                .label_details
+                .as_ref()
+                .and_then(|ld| ld.description.as_deref());
+            assert_eq!(
+                render_desc,
+                Some("Widget"),
+                "Single-class completion should have 'Widget' in label_details description, got: {:?}",
+                render.label_details
             );
-            assert!(
-                update.label_details.is_none(),
-                "Single-class completion should not have label_details"
+            let update_desc = update
+                .label_details
+                .as_ref()
+                .and_then(|ld| ld.description.as_deref());
+            assert_eq!(
+                update_desc,
+                Some("Widget"),
+                "Single-class completion should have 'Widget' in label_details description, got: {:?}",
+                update.label_details
             );
         }
         _ => panic!("Expected CompletionResponse::Array"),
@@ -16154,10 +16171,16 @@ async fn test_completion_union_three_types_sort() {
                 "'shared' should sort before 'onlyA'"
             );
 
-            // No label_details on intersection member
-            assert!(
-                shared.label_details.is_none(),
-                "'shared' should not have label_details"
+            // Intersection members should have all class names pipe-separated
+            let shared_desc = shared
+                .label_details
+                .as_ref()
+                .and_then(|ld| ld.description.as_deref());
+            assert_eq!(
+                shared_desc,
+                Some("A|B|C"),
+                "'shared' label_details should show 'A|B|C', got: {:?}",
+                shared.label_details
             );
 
             // label_details on branch-only members
@@ -16279,10 +16302,16 @@ async fn test_completion_union_sort_properties() {
                 "'color' should sort before 'side'"
             );
 
-            // label_details on branch-only properties
-            assert!(
-                color.label_details.is_none(),
-                "'color' should not have label_details"
+            // All completion items now have label_details description
+            let color_desc = color
+                .label_details
+                .as_ref()
+                .and_then(|ld| ld.description.as_deref());
+            assert_eq!(
+                color_desc,
+                Some("Circle|Square"),
+                "'color' label_details should show 'Circle|Square', got: {:?}",
+                color.label_details
             );
             assert!(
                 radius

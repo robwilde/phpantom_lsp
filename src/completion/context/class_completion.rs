@@ -782,6 +782,9 @@ pub(in crate::completion) struct ClassItemCtx<'a> {
     /// `filter_text` so the editor's fuzzy scorer matches against class
     /// names rather than full namespace paths.
     pub(in crate::completion) prefix_has_namespace: bool,
+    /// The file URI where the completion was triggered, stored in the
+    /// `data` field for `completionItem/resolve`.
+    pub(in crate::completion) uri: &'a str,
 }
 
 /// Parameters for [`Backend::build_class_name_completions`].
@@ -801,6 +804,9 @@ pub(crate) struct ClassCompletionParams<'a> {
     /// bogus source-1 entries) but still wants affinity from the real
     /// imports.
     pub(crate) affinity_table_override: Option<HashMap<String, u32>>,
+    /// The file URI where the completion was triggered, used for
+    /// `completionItem/resolve` data.
+    pub(crate) uri: &'a str,
 }
 
 /// Per-item editing fields produced by `class_edit_texts` and
@@ -931,6 +937,14 @@ impl ClassItemCtx<'_> {
                 }),
             )
         };
+        let data = serde_json::to_value(crate::completion::resolve::CompletionItemData {
+            class_name: String::new(),
+            member_name: fqn.to_string(),
+            kind: "class".to_string(),
+            uri: self.uri.to_string(),
+            extra_class_names: vec![],
+        })
+        .ok();
         CompletionItem {
             label,
             label_details,
@@ -940,7 +954,11 @@ impl ClassItemCtx<'_> {
             insert_text_format,
             filter_text: Some(filter_text),
             sort_text: Some(sort_text),
-            deprecated: if is_deprecated { Some(true) } else { None },
+            tags: if is_deprecated {
+                Some(vec![CompletionItemTag::DEPRECATED])
+            } else {
+                None
+            },
             text_edit: self.fqn_replace_range.map(|range| {
                 CompletionTextEdit::Edit(TextEdit {
                     range,
@@ -950,6 +968,7 @@ impl ClassItemCtx<'_> {
             additional_text_edits: texts.use_import.as_ref().and_then(|import_fqn| {
                 build_use_edit(import_fqn, &self.use_block, self.file_namespace)
             }),
+            data,
             ..CompletionItem::default()
         }
     }
@@ -1101,6 +1120,7 @@ impl Backend {
             context,
             position,
             affinity_table_override,
+            uri,
         } = params;
         let is_new = context.is_new();
         let is_use_import = matches!(context, ClassNameContext::UseImport);
@@ -1190,6 +1210,7 @@ impl Backend {
             affinity_table,
             quality_prefix,
             prefix_has_namespace,
+            uri,
         };
 
         // ── 1. Use-imported classes (highest priority) ──────────────

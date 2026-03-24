@@ -146,10 +146,10 @@ async fn test_completion_property_without_type_hint() {
             assert_eq!(property_items.len(), 1);
             assert_eq!(property_items[0].label, "stuff");
 
-            let detail = property_items[0].detail.as_deref().unwrap();
-            assert_eq!(
-                detail, "Class: Bag",
-                "Untyped property detail should just show class name"
+            assert!(
+                property_items[0].detail.is_none(),
+                "Untyped property should have no detail, got: {:?}",
+                property_items[0].detail
             );
         }
         _ => panic!("Expected CompletionResponse::Array"),
@@ -270,16 +270,19 @@ async fn test_completion_constant_detail_with_type_hint() {
             assert_eq!(constants.len(), 2, "Should have 2 constants");
 
             let label_const = constants.iter().find(|c| c.label == "LABEL").unwrap();
-            assert!(
-                label_const.detail.as_ref().unwrap().contains("string"),
-                "LABEL detail should mention type hint 'string', got: {}",
-                label_const.detail.as_ref().unwrap()
+            assert_eq!(
+                label_const.detail.as_deref(),
+                Some("'hello'"),
+                "LABEL detail should show the value, got: {:?}",
+                label_const.detail
             );
 
             let count_const = constants.iter().find(|c| c.label == "COUNT").unwrap();
-            assert!(
-                !count_const.detail.as_ref().unwrap().contains("—"),
-                "COUNT detail should not have type hint separator"
+            assert_eq!(
+                count_const.detail.as_deref(),
+                Some("5"),
+                "COUNT detail should show the value, got: {:?}",
+                count_const.detail
             );
         }
         _ => panic!("Expected CompletionResponse::Array"),

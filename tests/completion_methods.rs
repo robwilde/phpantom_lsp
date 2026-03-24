@@ -587,16 +587,35 @@ async fn test_completion_method_detail_shows_signature() {
 
             // Label should show the full signature
             assert_eq!(
-                update.label, "updateText(string $text, $frogs = ...): void",
-                "Label should be the full method signature"
+                update.label, "updateText($text, $frogs = ...)",
+                "Label should show method name and parameter names"
             );
 
-            // Detail should show the class name
-            let detail = update.detail.as_deref().unwrap();
-            assert!(
-                detail.contains("Editor"),
-                "Detail '{}' should reference class Editor",
-                detail
+            // Detail shows the return type.
+            assert_eq!(
+                update.detail.as_deref(),
+                Some("void"),
+                "Method detail should show the return type"
+            );
+            // label_details.detail is None (detail field handles the
+            // return type display).
+            assert_eq!(
+                update
+                    .label_details
+                    .as_ref()
+                    .and_then(|ld| ld.detail.as_deref()),
+                None,
+                "label_details.detail should be None"
+            );
+            // label_details.description shows the owning class name
+            // (visible in VS Code, ignored by Zed).
+            assert_eq!(
+                update
+                    .label_details
+                    .as_ref()
+                    .and_then(|ld| ld.description.as_deref()),
+                Some("Editor"),
+                "label_details.description should show the class name"
             );
 
             // insert_text should be a snippet with the required param
@@ -609,4 +628,206 @@ async fn test_completion_method_detail_shows_signature() {
         }
         _ => panic!("Expected CompletionResponse::Array"),
     }
+}
+
+#[tokio::test]
+async fn test_completion_resolve_union_member_shows_all_branches() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///union_resolve.php").unwrap();
+    let text = r#"<?php
+class Lamp {
+    public function turnOff(): void {}
+    public function dim(): void {}
+}
+
+class Faucet {
+    public function turnOff(): void {}
+    public function drip(): void {}
+}
+
+class Consumer {
+    public function run(): void {
+        if (rand(0, 1)) {
+            $ambiguous = new Lamp();
+        } else {
+            $ambiguous = new Faucet();
+        }
+        $ambiguous->
+    }
+}
+"#
+    .to_string();
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text,
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // Cursor right after `$ambiguous->` on line 18
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 18,
+                character: 20,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    let items = match result.unwrap() {
+        CompletionResponse::Array(items) => items,
+        CompletionResponse::List(list) => list.items,
+    };
+
+    // Find the turnOff item (present on both branches).
+    let turn_off = items
+        .iter()
+        .find(|i| i.filter_text.as_deref() == Some("turnOff"))
+        .expect("Should have turnOff in completions");
+
+    // Resolve the item to get documentation.
+    let resolved = backend.completion_resolve(turn_off.clone()).await.unwrap();
+    let doc = match resolved.documentation {
+        Some(Documentation::MarkupContent(mc)) => mc.value,
+        other => panic!("Expected MarkupContent documentation, got: {:?}", other),
+    };
+
+    // The resolved documentation should show both classes.
+    assert!(
+        doc.contains("Lamp") && doc.contains("Faucet"),
+        "resolved documentation should show both Lamp and Faucet, got: {}",
+        doc
+    );
+
+    // The two branches should be separated by a horizontal rule.
+    assert!(
+        doc.contains("---"),
+        "resolved documentation should use a horizontal rule separator, got: {}",
+        doc
+    );
+
+    // Now resolve dim() — only on Lamp, should show a single class.
+    let dim = items
+        .iter()
+        .find(|i| i.filter_text.as_deref() == Some("dim"))
+        .expect("Should have dim in completions");
+
+    let resolved_dim = backend.completion_resolve(dim.clone()).await.unwrap();
+    let dim_doc = match resolved_dim.documentation {
+        Some(Documentation::MarkupContent(mc)) => mc.value,
+        other => panic!("Expected MarkupContent documentation, got: {:?}", other),
+    };
+
+    assert!(
+        dim_doc.contains("Lamp"),
+        "dim documentation should show Lamp, got: {}",
+        dim_doc
+    );
+    assert!(
+        !dim_doc.contains("Faucet"),
+        "dim documentation should NOT show Faucet, got: {}",
+        dim_doc
+    );
+    assert!(
+        !dim_doc.contains("---"),
+        "single-branch member should not have separator, got: {}",
+        dim_doc
+    );
+}
+
+#[tokio::test]
+async fn test_completion_resolve_union_deduplicates_common_ancestor() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///union_dedup.php").unwrap();
+    let text = r#"<?php
+class BaseDevice {
+    public function turnOff(): void {}
+}
+
+class Lamp extends BaseDevice {
+    public function dim(): void {}
+}
+
+class Faucet extends BaseDevice {
+    public function drip(): void {}
+}
+
+class Consumer {
+    public function run(): void {
+        if (rand(0, 1)) {
+            $ambiguous = new Lamp();
+        } else {
+            $ambiguous = new Faucet();
+        }
+        $ambiguous->
+    }
+}
+"#
+    .to_string();
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text,
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // Cursor right after `$ambiguous->` on line 20
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 20,
+                character: 20,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    let items = match result.unwrap() {
+        CompletionResponse::Array(items) => items,
+        CompletionResponse::List(list) => list.items,
+    };
+
+    let turn_off = items
+        .iter()
+        .find(|i| i.filter_text.as_deref() == Some("turnOff"))
+        .expect("Should have turnOff in completions");
+
+    let resolved = backend.completion_resolve(turn_off.clone()).await.unwrap();
+    let doc = match resolved.documentation {
+        Some(Documentation::MarkupContent(mc)) => mc.value,
+        other => panic!("Expected MarkupContent documentation, got: {:?}", other),
+    };
+
+    // Both Lamp and Faucet inherit turnOff from BaseDevice.  The
+    // resolved hover should show BaseDevice (the declaring class)
+    // and should NOT be duplicated.
+    assert!(
+        doc.contains("BaseDevice"),
+        "documentation should show declaring class BaseDevice, got: {}",
+        doc
+    );
+    assert!(
+        !doc.contains("---"),
+        "should not have separator when both branches resolve to same declaring class, got: {}",
+        doc
+    );
 }

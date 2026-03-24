@@ -427,11 +427,14 @@ async fn test_inline_namespaced_function_detail_shows_namespace() {
         .find(|i| i.kind == Some(CompletionItemKind::FUNCTION) && i.label.contains("enum_value"));
     assert!(item.is_some(), "Should find enum_value");
 
-    let detail = item.unwrap().detail.as_deref().unwrap();
-    assert!(
-        detail.contains("Illuminate\\Support"),
-        "Detail should show the namespace. Got: {}",
-        detail
+    let item = item.unwrap();
+
+    // detail now shows return type
+    assert_eq!(
+        item.detail.as_deref(),
+        Some("mixed"),
+        "Detail should show return type. Got: {:?}",
+        item.detail
     );
 }
 
@@ -452,10 +455,14 @@ async fn test_inline_global_function_detail_is_plain() {
     });
     assert!(item.is_some(), "Should find my_global_func");
 
+    let item = item.unwrap();
+
+    // detail now shows return type
     assert_eq!(
-        item.unwrap().detail.as_deref(),
-        Some("function"),
-        "Global function detail should be 'function'"
+        item.detail.as_deref(),
+        Some("string"),
+        "Global function detail should show return type. Got: {:?}",
+        item.detail
     );
 }
 
@@ -500,22 +507,6 @@ async fn test_different_namespaces_same_short_name_both_appear() {
             .iter()
             .map(|i| (&i.label, &i.detail))
             .collect::<Vec<_>>()
-    );
-
-    // Verify they have different details (showing different namespaces).
-    let details: Vec<_> = matching
-        .iter()
-        .filter_map(|i| i.detail.as_deref())
-        .collect();
-    assert!(
-        details.iter().any(|d| d.contains("Illuminate")),
-        "One detail should mention Illuminate. Details: {:?}",
-        details
-    );
-    assert!(
-        details.iter().any(|d| d.contains("Symfony")),
-        "One detail should mention Symfony. Details: {:?}",
-        details
     );
 }
 
@@ -696,12 +687,11 @@ async fn test_psr4_namespaced_function_completion() {
 
     let item = item.unwrap();
 
-    // Detail should show the namespace.
-    assert!(
-        item.detail
-            .as_deref()
-            .is_some_and(|d| d.contains("App\\Helpers")),
-        "Detail should show App\\Helpers namespace. Detail: {:?}",
+    // detail now shows return type.
+    assert_eq!(
+        item.detail.as_deref(),
+        Some("string"),
+        "Detail should show return type. Got: {:?}",
         item.detail
     );
 
@@ -895,11 +885,13 @@ async fn test_use_function_namespaced_detail_shows_signature() {
         .find(|i| i.kind == Some(CompletionItemKind::FUNCTION) && i.label.contains("Illuminate"));
     assert!(item.is_some(), "Should find the function");
 
-    let detail = item.unwrap().detail.as_deref().unwrap();
-    assert!(
-        detail.contains("enum_value(") && detail.contains("$value"),
-        "Detail should show the full signature for namespaced use-function items. Got: {}",
-        detail
+    let item = item.unwrap();
+
+    // In use-import context, detail is None (build_use_import_item does not set it).
+    assert_eq!(
+        item.detail, None,
+        "Use-import items should have no detail (no return type shown). Got: {:?}",
+        item.detail
     );
 }
 
@@ -936,10 +928,12 @@ async fn test_user_function_shadows_stub_same_fqn() {
             .map(|i| (&i.label, &i.detail))
             .collect::<Vec<_>>()
     );
+    // detail now shows return type.
     assert_eq!(
         matching[0].detail.as_deref(),
-        Some("function"),
-        "Should be the user-defined version (detail = 'function', not 'PHP function')"
+        Some("string"),
+        "Should show return type in detail. Got: {:?}",
+        matching[0].detail
     );
 }
 
@@ -989,10 +983,10 @@ async fn test_deprecated_namespaced_function() {
         .iter()
         .find(|i| i.kind == Some(CompletionItemKind::FUNCTION) && i.label.contains("old_helper"));
     assert!(item.is_some(), "Should find old_helper");
-    assert_eq!(
-        item.unwrap().deprecated,
-        Some(true),
-        "Deprecated flag should be set"
+    let tags = item.unwrap().tags.as_deref().unwrap_or(&[]);
+    assert!(
+        tags.contains(&CompletionItemTag::DEPRECATED),
+        "Tags should contain DEPRECATED"
     );
 }
 

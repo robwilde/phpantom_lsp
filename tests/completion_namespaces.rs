@@ -143,7 +143,7 @@ async fn test_completion_namespaced_class_with_properties_and_methods() {
                 .unwrap();
             assert_eq!(get_name.insert_text.as_deref(), Some("getName()$0"));
             assert_eq!(get_name.insert_text_format, Some(InsertTextFormat::SNIPPET));
-            assert_eq!(get_name.label, "getName(): string");
+            assert_eq!(get_name.label, "getName()");
 
             let set_price = method_items
                 .iter()
@@ -157,7 +157,7 @@ async fn test_completion_namespaced_class_with_properties_and_methods() {
                 set_price.insert_text_format,
                 Some(InsertTextFormat::SNIPPET)
             );
-            assert_eq!(set_price.label, "setPrice(float $price): void");
+            assert_eq!(set_price.label, "setPrice($price)");
 
             // Check property labels
             let prop_labels: Vec<&str> = property_items.iter().map(|i| i.label.as_str()).collect();

@@ -7,52 +7,135 @@ use std::collections::HashSet;
 use tower_lsp::lsp_types::*;
 
 use crate::Backend;
-use crate::types::*;
 use crate::util::short_name;
 
-use crate::completion::builder::{analyze_use_block, build_callable_snippet};
+use crate::completion::builder::{
+    analyze_use_block, build_callable_label, build_callable_snippet, deprecation_tag,
+};
+use crate::completion::resolve::CompletionItemData;
 use crate::completion::use_edit::build_use_function_edit;
 
-impl Backend {
-    // ─── Function name completion ───────────────────────────────────
+/// Builder for function `CompletionItem`s with the standard layout.
+///
+/// This is the single code path for all function completion items so
+/// that the detail / label_details style stays consistent:
+///
+/// - `label`: function name with parameter list (when signature is known)
+/// - `detail`: return type (when known), using short class names
+struct FunctionItemBuilder {
+    label: String,
+    insert_text: String,
+    filter_text: String,
+    sort_text: String,
+    /// The FQN used to look up the function during `completionItem/resolve`.
+    fqn: String,
+    /// The file URI where the completion was triggered.
+    uri: String,
+    return_type: Option<String>,
+    insert_text_format: Option<InsertTextFormat>,
+    is_deprecated: bool,
+    additional_text_edits: Option<Vec<TextEdit>>,
+}
 
-    /// Build a label showing the full function signature.
-    ///
-    /// Example: `array_map(callable|null $callback, array $array, array ...$arrays): array`
-    pub(crate) fn build_function_label(func: &FunctionInfo) -> String {
-        let params: Vec<String> = func
-            .parameters
-            .iter()
-            .map(|p| {
-                let mut parts = Vec::new();
-                if let Some(ref th) = p.type_hint {
-                    parts.push(th.clone());
-                }
-                if p.is_reference {
-                    parts.push(format!("&{}", p.name));
-                } else if p.is_variadic {
-                    parts.push(format!("...{}", p.name));
-                } else {
-                    parts.push(p.name.clone());
-                }
-                let param_str = parts.join(" ");
-                if !p.is_required && !p.is_variadic {
-                    format!("{} = ...", param_str)
-                } else {
-                    param_str
-                }
-            })
-            .collect();
-
-        let ret = func
-            .return_type
-            .as_ref()
-            .map(|r| format!(": {}", r))
-            .unwrap_or_default();
-
-        format!("{}({}){}", func.name, params.join(", "), ret)
+impl FunctionItemBuilder {
+    fn new(
+        label: String,
+        insert_text: String,
+        filter_text: String,
+        sort_text: String,
+        fqn: String,
+        uri: String,
+    ) -> Self {
+        Self {
+            label,
+            insert_text,
+            filter_text,
+            sort_text,
+            fqn,
+            uri,
+            return_type: None,
+            insert_text_format: None,
+            is_deprecated: false,
+            additional_text_edits: None,
+        }
     }
 
+    fn return_type(mut self, rt: Option<String>) -> Self {
+        self.return_type = rt;
+        self
+    }
+
+    fn snippet(mut self) -> Self {
+        self.insert_text_format = Some(InsertTextFormat::SNIPPET);
+        self
+    }
+
+    fn deprecated(mut self, is_deprecated: bool) -> Self {
+        self.is_deprecated = is_deprecated;
+        self
+    }
+
+    fn additional_edits(mut self, edits: Option<Vec<TextEdit>>) -> Self {
+        self.additional_text_edits = edits;
+        self
+    }
+
+    fn build(self) -> CompletionItem {
+        let detail = self.return_type;
+        let data = serde_json::to_value(CompletionItemData {
+            class_name: String::new(),
+            member_name: self.fqn,
+            kind: "function".to_string(),
+            uri: self.uri,
+            extra_class_names: vec![],
+        })
+        .ok();
+        CompletionItem {
+            label: self.label,
+            kind: Some(CompletionItemKind::FUNCTION),
+            detail,
+            insert_text: Some(self.insert_text),
+            insert_text_format: self.insert_text_format,
+            filter_text: Some(self.filter_text),
+            sort_text: Some(self.sort_text),
+            tags: deprecation_tag(self.is_deprecated),
+            additional_text_edits: self.additional_text_edits,
+            data,
+            ..CompletionItem::default()
+        }
+    }
+}
+
+/// Build a minimal function item for use-import context where only
+/// the FQN matters and no signature information is shown.
+fn build_use_import_item(
+    label: String,
+    fqn: &str,
+    sort_prefix: &str,
+    is_deprecated: bool,
+    uri: &str,
+) -> CompletionItem {
+    let data = serde_json::to_value(CompletionItemData {
+        class_name: String::new(),
+        member_name: fqn.to_string(),
+        kind: "function".to_string(),
+        uri: uri.to_string(),
+        extra_class_names: vec![],
+    })
+    .ok();
+    CompletionItem {
+        label,
+        kind: Some(CompletionItemKind::FUNCTION),
+        insert_text: Some(fqn.to_string()),
+        filter_text: Some(fqn.to_string()),
+        sort_text: Some(format!("{}_{}", sort_prefix, fqn.to_lowercase())),
+        tags: deprecation_tag(is_deprecated),
+        data,
+        ..CompletionItem::default()
+    }
+}
+
+impl Backend {
     /// Build completion items for standalone functions from all known sources.
     ///
     /// Sources (in priority order):
@@ -89,6 +172,7 @@ impl Backend {
         for_use_import: bool,
         content: Option<&str>,
         file_namespace: &Option<String>,
+        uri: &str,
     ) -> (Vec<CompletionItem>, bool) {
         let prefix_lower = prefix.strip_prefix('\\').unwrap_or(prefix).to_lowercase();
         let mut seen: HashSet<String> = HashSet::new();
@@ -117,43 +201,24 @@ impl Backend {
 
                 let is_namespaced = info.namespace.is_some();
                 let fqn = key.clone();
+                let is_deprecated = info.deprecation_message.is_some();
+
+                let return_type = info
+                    .return_type
+                    .as_deref()
+                    .or(info.native_return_type.as_deref())
+                    .map(crate::hover::shorten_type_string);
 
                 if for_use_import {
-                    // `use function` context: insert the FQN so the
-                    // resulting statement reads `use function FQN;`.
                     let label = if is_namespaced {
                         fqn.clone()
                     } else {
-                        Self::build_function_label(info)
+                        build_callable_label(&info.name, &info.parameters)
                     };
-                    let detail = if is_namespaced {
-                        Some(Self::build_function_label(info))
-                    } else {
-                        Some("function".to_string())
-                    };
-                    items.push(CompletionItem {
-                        label,
-                        kind: Some(CompletionItemKind::FUNCTION),
-                        detail,
-                        insert_text: Some(fqn.clone()),
-                        filter_text: Some(fqn.clone()),
-                        sort_text: Some(format!("4_{}", fqn.to_lowercase())),
-                        deprecated: if info.deprecation_message.is_some() {
-                            Some(true)
-                        } else {
-                            None
-                        },
-                        ..CompletionItem::default()
-                    });
+                    items.push(build_use_import_item(label, &fqn, "4", is_deprecated, uri));
                 } else {
-                    // Inline context: insert the short name (with snippet
-                    // placeholders) and auto-import the FQN.
-                    let label = Self::build_function_label(info);
-                    let detail = if let Some(ref ns) = info.namespace {
-                        format!("function ({})", ns)
-                    } else {
-                        "function".to_string()
-                    };
+                    let label = build_callable_label(&info.name, &info.parameters);
+
                     // No import needed when the function lives in the
                     // same namespace as the current file.
                     let same_ns = file_namespace
@@ -167,22 +232,22 @@ impl Backend {
                     } else {
                         None
                     };
-                    items.push(CompletionItem {
-                        label,
-                        kind: Some(CompletionItemKind::FUNCTION),
-                        detail: Some(detail),
-                        insert_text: Some(build_callable_snippet(&info.name, &info.parameters)),
-                        insert_text_format: Some(InsertTextFormat::SNIPPET),
-                        filter_text: Some(info.name.clone()),
-                        sort_text: Some(format!("4_{}", info.name.to_lowercase())),
-                        deprecated: if info.deprecation_message.is_some() {
-                            Some(true)
-                        } else {
-                            None
-                        },
-                        additional_text_edits,
-                        ..CompletionItem::default()
-                    });
+
+                    items.push(
+                        FunctionItemBuilder::new(
+                            label,
+                            build_callable_snippet(&info.name, &info.parameters),
+                            info.name.clone(),
+                            format!("4_{}", info.name.to_lowercase()),
+                            fqn.clone(),
+                            uri.to_string(),
+                        )
+                        .return_type(return_type)
+                        .snippet()
+                        .deprecated(is_deprecated)
+                        .additional_edits(additional_text_edits)
+                        .build(),
+                    );
                 }
             }
         }
@@ -213,22 +278,8 @@ impl Backend {
                 };
 
                 if for_use_import {
-                    items.push(CompletionItem {
-                        label: fqn.clone(),
-                        kind: Some(CompletionItemKind::FUNCTION),
-                        detail: Some("function".to_string()),
-                        insert_text: Some(fqn.clone()),
-                        filter_text: Some(fqn.clone()),
-                        sort_text: Some(format!("4_{}", fqn.to_lowercase())),
-                        ..CompletionItem::default()
-                    });
+                    items.push(build_use_import_item(fqn.clone(), fqn, "4", false, uri));
                 } else {
-                    let detail = if is_namespaced {
-                        let ns = &fqn[..fqn.rfind('\\').unwrap()];
-                        format!("function ({})", ns)
-                    } else {
-                        "function".to_string()
-                    };
                     let additional_text_edits = if is_namespaced {
                         use_block
                             .as_ref()
@@ -236,17 +287,20 @@ impl Backend {
                     } else {
                         None
                     };
-                    items.push(CompletionItem {
-                        label: sn.to_string(),
-                        kind: Some(CompletionItemKind::FUNCTION),
-                        detail: Some(detail),
-                        insert_text: Some(format!("{sn}()$0")),
-                        insert_text_format: Some(InsertTextFormat::SNIPPET),
-                        filter_text: Some(sn.to_string()),
-                        sort_text: Some(format!("4_{}", sn.to_lowercase())),
-                        additional_text_edits,
-                        ..CompletionItem::default()
-                    });
+
+                    items.push(
+                        FunctionItemBuilder::new(
+                            sn.to_string(),
+                            format!("{sn}()$0"),
+                            sn.to_string(),
+                            format!("4_{}", sn.to_lowercase()),
+                            fqn.clone(),
+                            uri.to_string(),
+                        )
+                        .snippet()
+                        .additional_edits(additional_text_edits)
+                        .build(),
+                    );
                 }
             }
         }
@@ -268,22 +322,14 @@ impl Backend {
             };
 
             if for_use_import {
-                items.push(CompletionItem {
-                    label: name.to_string(),
-                    kind: Some(CompletionItemKind::FUNCTION),
-                    detail: Some("PHP function".to_string()),
-                    insert_text: Some(name.to_string()),
-                    filter_text: Some(name.to_string()),
-                    sort_text: Some(format!("5_{}", name.to_lowercase())),
-                    ..CompletionItem::default()
-                });
+                items.push(build_use_import_item(
+                    name.to_string(),
+                    name,
+                    "5",
+                    false,
+                    uri,
+                ));
             } else {
-                let detail = if is_namespaced {
-                    let ns = &name[..name.rfind('\\').unwrap()];
-                    format!("PHP function ({})", ns)
-                } else {
-                    "PHP function".to_string()
-                };
                 let additional_text_edits = if is_namespaced {
                     use_block
                         .as_ref()
@@ -291,17 +337,20 @@ impl Backend {
                 } else {
                     None
                 };
-                items.push(CompletionItem {
-                    label: sn.to_string(),
-                    kind: Some(CompletionItemKind::FUNCTION),
-                    detail: Some(detail),
-                    insert_text: Some(format!("{sn}()$0")),
-                    insert_text_format: Some(InsertTextFormat::SNIPPET),
-                    filter_text: Some(sn.to_string()),
-                    sort_text: Some(format!("5_{}", sn.to_lowercase())),
-                    additional_text_edits,
-                    ..CompletionItem::default()
-                });
+
+                items.push(
+                    FunctionItemBuilder::new(
+                        sn.to_string(),
+                        format!("{sn}()$0"),
+                        sn.to_string(),
+                        format!("5_{}", sn.to_lowercase()),
+                        name.to_string(),
+                        uri.to_string(),
+                    )
+                    .snippet()
+                    .additional_edits(additional_text_edits)
+                    .build(),
+                );
             }
         }
 

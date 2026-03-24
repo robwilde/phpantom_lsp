@@ -173,15 +173,136 @@ fn build_origin_lines(
 ///
 /// This is separate from `MemberKind` in the definition module because
 /// origin checking only needs the three broad categories.
-enum MemberKindForOrigin {
+pub(crate) enum MemberKindForOrigin {
     Method,
     Property,
     Constant,
 }
 
+/// Find the class that originally declares a member.
+///
+/// When a member is inherited (not declared on `owner` itself), this
+/// walks up the parent chain and checks traits and mixins to find the
+/// class that actually declares the member.  Returns a fully-resolved
+/// `ClassInfo` for the declaring class, or falls back to `owner` when
+/// the declaring class cannot be determined.
+///
+/// This is used by hover and completion-resolve so that the code block
+/// shows `class Model { public static function find(...) }` rather than
+/// `class User { ... }` when `find()` is inherited from `Model`.
+pub(crate) fn find_declaring_class(
+    owner: &ClassInfo,
+    member_name: &str,
+    member_kind: &MemberKindForOrigin,
+    class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
+) -> Arc<ClassInfo> {
+    // If the member is declared directly on the owner, no need to search.
+    if raw_class_has_member(owner, member_name, member_kind, class_loader) {
+        return Arc::new(owner.clone());
+    }
+
+    // Check traits used by the owner.
+    for trait_name in &owner.used_traits {
+        if let Some(trait_class) = class_loader(trait_name) {
+            let has = match member_kind {
+                MemberKindForOrigin::Method => trait_class
+                    .methods
+                    .iter()
+                    .any(|m| m.name.eq_ignore_ascii_case(member_name)),
+                MemberKindForOrigin::Property => {
+                    trait_class.properties.iter().any(|p| p.name == member_name)
+                }
+                MemberKindForOrigin::Constant => {
+                    trait_class.constants.iter().any(|c| c.name == member_name)
+                }
+            };
+            if has {
+                return trait_class;
+            }
+        }
+    }
+
+    // Walk the parent chain.
+    let mut ancestor_name = owner.parent_class.clone();
+    let mut depth = 0u32;
+    while let Some(ref name) = ancestor_name {
+        depth += 1;
+        if depth > 20 {
+            break;
+        }
+        if let Some(ancestor) = class_loader(name) {
+            // Check traits on the ancestor first.
+            for trait_name in &ancestor.used_traits {
+                if let Some(trait_class) = class_loader(trait_name) {
+                    let has = match member_kind {
+                        MemberKindForOrigin::Method => trait_class
+                            .methods
+                            .iter()
+                            .any(|m| m.name.eq_ignore_ascii_case(member_name)),
+                        MemberKindForOrigin::Property => {
+                            trait_class.properties.iter().any(|p| p.name == member_name)
+                        }
+                        MemberKindForOrigin::Constant => {
+                            trait_class.constants.iter().any(|c| c.name == member_name)
+                        }
+                    };
+                    if has {
+                        return trait_class;
+                    }
+                }
+            }
+
+            // Check the ancestor class itself.
+            let has = match member_kind {
+                MemberKindForOrigin::Method => ancestor
+                    .methods
+                    .iter()
+                    .any(|m| m.name.eq_ignore_ascii_case(member_name)),
+                MemberKindForOrigin::Property => {
+                    ancestor.properties.iter().any(|p| p.name == member_name)
+                }
+                MemberKindForOrigin::Constant => {
+                    ancestor.constants.iter().any(|c| c.name == member_name)
+                }
+            };
+            if has {
+                return ancestor;
+            }
+            ancestor_name = ancestor.parent_class.clone();
+        } else {
+            break;
+        }
+    }
+
+    // Check @mixin classes.
+    for mixin_name in &owner.mixins {
+        if let Some(mixin_class) = class_loader(mixin_name) {
+            let has = match member_kind {
+                MemberKindForOrigin::Method => mixin_class
+                    .methods
+                    .iter()
+                    .any(|m| m.name.eq_ignore_ascii_case(member_name)),
+                MemberKindForOrigin::Property => {
+                    mixin_class.properties.iter().any(|p| p.name == member_name)
+                }
+                MemberKindForOrigin::Constant => {
+                    mixin_class.constants.iter().any(|c| c.name == member_name)
+                }
+            };
+            if has {
+                return mixin_class;
+            }
+        }
+    }
+
+    // Fallback: couldn't find the declaring class, use the owner.
+    Arc::new(owner.clone())
+}
+
 // Re-export `pub(crate)` items so external callers keep using `crate::hover::`.
 pub(crate) use formatting::{
-    extract_docblock_description, extract_var_description, types_equivalent,
+    extract_docblock_description, extract_var_description, hover_for_function, shorten_type_string,
+    types_equivalent,
 };
 
 /// Result of searching for a member on a [`ClassInfo`] for hover purposes.
@@ -202,7 +323,7 @@ impl Backend {
     /// (class names, `Class::member()`, `Class::$prop`) to a `file://`
     /// URI with a line fragment so that the hover popup renders them as
     /// clickable links.  URLs and unresolvable symbols get `None`.
-    fn resolve_see_refs(
+    pub(crate) fn resolve_see_refs(
         &self,
         see_refs: &[String],
         uri: &str,
@@ -437,6 +558,13 @@ impl Backend {
                     &rctx,
                 );
 
+                // Collect hover results from all union candidates,
+                // deduplicating by declaring class so that a member
+                // inherited from the same interface/parent is shown
+                // only once.
+                let mut hover_markdowns: Vec<String> = Vec::new();
+                let mut seen_declaring_classes: Vec<String> = Vec::new();
+
                 for target_class in &candidates {
                     // `resolve_target_classes` already returns fully-resolved
                     // classes (via `type_hint_to_classes` which calls
@@ -467,26 +595,73 @@ impl Backend {
                         (result, merged)
                     };
 
-                    match member_result {
+                    let hover = match member_result {
                         Some(HoverMemberHit::Method(ref method)) => {
-                            return Some(self.hover_for_method(
-                                method,
+                            let declaring = find_declaring_class(
                                 &owner,
+                                member_name,
+                                &MemberKindForOrigin::Method,
                                 &class_loader,
-                                uri,
-                                content,
-                            ));
+                            );
+                            Some((
+                                declaring.name.clone(),
+                                self.hover_for_method(
+                                    method,
+                                    &declaring,
+                                    &class_loader,
+                                    uri,
+                                    content,
+                                ),
+                            ))
                         }
-                        Some(HoverMemberHit::Property(prop)) => {
-                            return Some(self.hover_for_property(&prop, &owner, &class_loader));
+                        Some(HoverMemberHit::Property(ref prop)) => {
+                            let declaring = find_declaring_class(
+                                &owner,
+                                &prop.name,
+                                &MemberKindForOrigin::Property,
+                                &class_loader,
+                            );
+                            Some((
+                                declaring.name.clone(),
+                                self.hover_for_property(prop, &declaring, &class_loader),
+                            ))
                         }
-                        Some(HoverMemberHit::Constant(constant)) => {
-                            return Some(self.hover_for_constant(&constant, &owner, &class_loader));
+                        Some(HoverMemberHit::Constant(ref constant)) => {
+                            let declaring = find_declaring_class(
+                                &owner,
+                                &constant.name,
+                                &MemberKindForOrigin::Constant,
+                                &class_loader,
+                            );
+                            Some((
+                                declaring.name.clone(),
+                                self.hover_for_constant(constant, &declaring, &class_loader),
+                            ))
                         }
-                        None => {}
+                        None => None,
+                    };
+
+                    if let Some((declaring_name, h)) = hover {
+                        // Deduplicate: if we already have a hover from this
+                        // declaring class, skip it (e.g. both Lamp and Faucet
+                        // implement Switchable::turnOff — show once).
+                        if seen_declaring_classes.contains(&declaring_name) {
+                            continue;
+                        }
+                        seen_declaring_classes.push(declaring_name);
+                        if let HoverContents::Markup(mc) = h.contents {
+                            hover_markdowns.push(mc.value);
+                        }
                     }
                 }
-                None
+
+                if hover_markdowns.is_empty() {
+                    None
+                } else if hover_markdowns.len() == 1 {
+                    Some(make_hover(hover_markdowns.into_iter().next().unwrap()))
+                } else {
+                    Some(make_hover(hover_markdowns.join("\n\n---\n\n")))
+                }
             }
 
             SymbolKind::ClassReference { name, is_fqn: _ } => {
@@ -587,68 +762,7 @@ impl Backend {
             }
 
             SymbolKind::ConstantReference { name } => {
-                // Look up the constant from global_defines or stubs.
-                // If not found, check the autoload constant index
-                // (populated by the `find_symbols` byte-level scan for
-                // both non-Composer and Composer projects) and lazily
-                // parse the defining file via `update_ast`.  As a last
-                // resort, try lazily parsing known autoload files for
-                // constants the byte-level scanner missed (e.g. inside
-                // `if (!defined(...))` guards).
-                //
-                // We track existence separately from the value: a
-                // constant may exist with an unknown value (e.g.
-                // `define('X', $dynamic)`), which still deserves a
-                // hover.  But a completely unknown name gets `None`.
-                let lookup = self
-                    .global_defines
-                    .read()
-                    .get(name.as_str())
-                    .map(|info| info.value.clone());
-
-                let lookup = lookup.or_else(|| {
-                    let path = self
-                        .autoload_constant_index
-                        .read()
-                        .get(name.as_str())
-                        .cloned();
-                    if let Some(path) = path
-                        && let Ok(content) = std::fs::read_to_string(&path)
-                    {
-                        let file_uri = crate::util::path_to_uri(&path);
-                        self.update_ast(&file_uri, &content);
-                        return self
-                            .global_defines
-                            .read()
-                            .get(name.as_str())
-                            .map(|info| info.value.clone());
-                    }
-                    None
-                });
-
-                let lookup = lookup.or_else(|| {
-                    // Last-resort: lazily parse known autoload files
-                    // for constants missed by the byte-level scanner.
-                    let paths = self.autoload_file_paths.read().clone();
-                    for path in &paths {
-                        let uri = crate::util::path_to_uri(path);
-                        if self.ast_map.read().contains_key(&uri) {
-                            continue;
-                        }
-                        if let Ok(content) = std::fs::read_to_string(path) {
-                            self.update_ast(&uri, &content);
-                            if let Some(entry) = self
-                                .global_defines
-                                .read()
-                                .get(name.as_str())
-                                .map(|info| info.value.clone())
-                            {
-                                return Some(entry);
-                            }
-                        }
-                    }
-                    None
-                });
+                let lookup = self.lookup_global_constant(name);
 
                 // `lookup` is `Some(Some(val))` when the constant
                 // exists with a known value, `Some(None)` when it
@@ -664,6 +778,83 @@ impl Backend {
                 }
             }
         }
+    }
+
+    /// Look up a global constant by name, returning its value if found.
+    ///
+    /// Searches in order:
+    /// 1. `global_defines` — constants already parsed from user files.
+    /// 2. `autoload_constant_index` — lazily parses the defining file.
+    /// 3. `autoload_file_paths` — last-resort lazy parse of known
+    ///    autoload files for constants the byte-level scanner missed.
+    /// 4. `stub_constant_index` — built-in PHP constants from stubs.
+    ///    Extracts the value by scanning the stub source for the
+    ///    constant definition.
+    ///
+    /// Returns `Some(Some(val))` when the constant exists with a known
+    /// value, `Some(None)` when it exists but the value is unknown, and
+    /// `None` when the constant was not found at all.
+    pub(crate) fn lookup_global_constant(&self, name: &str) -> Option<Option<String>> {
+        // Phase 1: already-parsed constants.
+        let lookup = self
+            .global_defines
+            .read()
+            .get(name)
+            .map(|info| info.value.clone());
+        if lookup.is_some() {
+            return lookup;
+        }
+
+        // Phase 2: autoload constant index — lazily parse the file.
+        let path = self.autoload_constant_index.read().get(name).cloned();
+        if let Some(path) = path
+            && let Ok(content) = std::fs::read_to_string(&path)
+        {
+            let file_uri = crate::util::path_to_uri(&path);
+            self.update_ast(&file_uri, &content);
+            let lookup = self
+                .global_defines
+                .read()
+                .get(name)
+                .map(|info| info.value.clone());
+            if lookup.is_some() {
+                return lookup;
+            }
+        }
+
+        // Phase 3: lazily parse known autoload files for constants
+        // the byte-level scanner missed (e.g. inside
+        // `if (!defined(...))` guards).
+        {
+            let paths = self.autoload_file_paths.read().clone();
+            for path in &paths {
+                let uri = crate::util::path_to_uri(path);
+                if self.ast_map.read().contains_key(&uri) {
+                    continue;
+                }
+                if let Ok(content) = std::fs::read_to_string(path) {
+                    self.update_ast(&uri, &content);
+                    let lookup = self
+                        .global_defines
+                        .read()
+                        .get(name)
+                        .map(|info| info.value.clone());
+                    if lookup.is_some() {
+                        return lookup;
+                    }
+                }
+            }
+        }
+
+        // Phase 4: built-in PHP constants from embedded stubs.
+        // The stub source is the raw PHP file; scan it for a matching
+        // `define('NAME', value)` or `const NAME = value;` line.
+        if let Some(&stub_source) = self.stub_constant_index.get(name) {
+            let value = extract_constant_value_from_source(name, stub_source);
+            return Some(value);
+        }
+
+        None
     }
 
     /// Produce hover information for a variable.
@@ -861,7 +1052,7 @@ impl Backend {
     }
 
     /// Build hover content for a method.
-    fn hover_for_method(
+    pub(crate) fn hover_for_method(
         &self,
         method: &MethodInfo,
         owner: &ClassInfo,
@@ -959,7 +1150,7 @@ impl Backend {
     }
 
     /// Build hover content for a property.
-    fn hover_for_property(
+    pub(crate) fn hover_for_property(
         &self,
         property: &PropertyInfo,
         owner: &ClassInfo,
@@ -1033,7 +1224,7 @@ impl Backend {
     }
 
     /// Build hover content for a class constant.
-    fn hover_for_constant(
+    pub(crate) fn hover_for_constant(
         &self,
         constant: &ConstantInfo,
         owner: &ClassInfo,
@@ -1099,7 +1290,7 @@ impl Backend {
     }
 
     /// Build hover content for a class/interface/trait/enum.
-    fn hover_for_class_info(&self, cls: &ClassInfo, uri: &str, content: &str) -> Hover {
+    pub(crate) fn hover_for_class_info(&self, cls: &ClassInfo, uri: &str, content: &str) -> Hover {
         let kind_str = match cls.kind {
             ClassLikeKind::Class => {
                 if cls.is_abstract {
@@ -1532,6 +1723,80 @@ fn build_trait_summary_body(cls: &ClassInfo) -> String {
     }
 
     body
+}
+
+/// Extract the value of a constant from PHP source text.
+///
+/// Scans for patterns like:
+/// - `define('NAME', value)` or `define("NAME", value)`
+/// - `const NAME = value;`
+///
+/// Returns `Some(value_string)` when found, `None` when the constant
+/// definition could not be located or the value could not be extracted.
+pub(crate) fn extract_constant_value_from_source(name: &str, source: &str) -> Option<String> {
+    // Try `define('NAME', value)` pattern.
+    for quote in &["'", "\""] {
+        let needle = format!("define({quote}{name}{quote}");
+        if let Some(pos) = source.find(&needle) {
+            // Find the comma after the name, then extract until closing paren.
+            let after = &source[pos + needle.len()..];
+            if let Some(comma) = after.find(',') {
+                let value_start = &after[comma + 1..];
+                // Find the closing `)` — handle nested parens for simple cases.
+                let trimmed = value_start.trim_start();
+                if let Some(end) = find_balanced_close_paren(trimmed) {
+                    let val = trimmed[..end].trim();
+                    if !val.is_empty() {
+                        return Some(val.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    // Try `const NAME = value;` pattern.
+    let const_needle = format!("const {name}");
+    for (i, _) in source.match_indices(&const_needle) {
+        let after = &source[i + const_needle.len()..];
+        let trimmed = after.trim_start();
+        if let Some(rest) = trimmed.strip_prefix('=') {
+            let value_part = rest.trim_start();
+            if let Some(semi) = value_part.find(';') {
+                let val = value_part[..semi].trim();
+                if !val.is_empty() {
+                    return Some(val.to_string());
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Find the position of the closing `)` that matches an implicit
+/// opening paren, handling one level of nesting and string literals.
+pub(crate) fn find_balanced_close_paren(s: &str) -> Option<usize> {
+    let mut depth = 0u32;
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut prev = b'\0';
+
+    for (i, &b) in s.as_bytes().iter().enumerate() {
+        match b {
+            b'\'' if !in_double && prev != b'\\' => in_single = !in_single,
+            b'"' if !in_single && prev != b'\\' => in_double = !in_double,
+            b'(' if !in_single && !in_double => depth += 1,
+            b')' if !in_single && !in_double => {
+                if depth == 0 {
+                    return Some(i);
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+        prev = b;
+    }
+    None
 }
 
 #[cfg(test)]

@@ -337,7 +337,10 @@ mod tests {
             span(10, 11),
         );
         let msg = format_parse_error(&err);
-        assert_eq!(msg, "Syntax error: unexpected token `-`, expected a variable");
+        assert_eq!(
+            msg,
+            "Syntax error: unexpected token `-`, expected a variable"
+        );
     }
 
     #[test]
@@ -370,11 +373,7 @@ mod tests {
 
     #[test]
     fn unexpected_token_no_expected() {
-        let err = ParseError::UnexpectedToken(
-            Box::new([]),
-            TokenKind::At,
-            span(0, 1),
-        );
+        let err = ParseError::UnexpectedToken(Box::new([]), TokenKind::At, span(0, 1));
         let msg = format_parse_error(&err);
         assert_eq!(msg, "Syntax error: unexpected token `@`");
     }
@@ -382,11 +381,8 @@ mod tests {
     #[test]
     fn unexpected_eof_with_expected() {
         let file_id = FileId::new("test.php");
-        let err = ParseError::UnexpectedEndOfFile(
-            Box::new([TokenKind::Semicolon]),
-            file_id,
-            pos(100),
-        );
+        let err =
+            ParseError::UnexpectedEndOfFile(Box::new([TokenKind::Semicolon]), file_id, pos(100));
         let msg = format_parse_error(&err);
         assert_eq!(msg, "Syntax error: unexpected end of file, expected `;`");
     }
@@ -433,8 +429,7 @@ mod tests {
     #[test]
     fn syntax_error_unrecognized_char() {
         let file_id = FileId::new("test.php");
-        let err =
-            ParseError::SyntaxError(SyntaxError::UnrecognizedToken(file_id, b'@', pos(10)));
+        let err = ParseError::SyntaxError(SyntaxError::UnrecognizedToken(file_id, b'@', pos(10)));
         let msg = format_parse_error(&err);
         assert_eq!(msg, "Syntax error: unrecognized character `@`");
     }

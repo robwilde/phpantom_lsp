@@ -593,7 +593,7 @@ async fn test_completion_user_defined_constant() {
     );
 }
 
-/// Stub constants should have `detail` set to "PHP constant".
+/// Stub constants should have their value extracted from the stub source.
 #[tokio::test]
 async fn test_completion_stub_constant_detail() {
     let backend = create_test_backend_with_function_stubs();
@@ -605,19 +605,19 @@ async fn test_completion_stub_constant_detail() {
 
     let php_eol = items.iter().find(|i| i.label == "PHP_EOL");
     assert!(php_eol.is_some(), "Should find PHP_EOL in completions");
-    assert_eq!(
-        php_eol.unwrap().detail.as_deref(),
-        Some("PHP constant"),
-        "Stub constants should have 'PHP constant' as detail"
+    let php_eol = php_eol.unwrap();
+    assert!(
+        php_eol.detail.is_some(),
+        "Stub constants should show their value extracted from stub source"
     );
     assert_eq!(
-        php_eol.unwrap().kind,
+        php_eol.kind,
         Some(CompletionItemKind::CONSTANT),
         "Constants should use CONSTANT kind"
     );
 }
 
-/// User-defined constants should have `detail` set to "define constant".
+/// User-defined constants should have `detail` set to the constant's value.
 #[tokio::test]
 async fn test_completion_user_constant_detail() {
     let backend = create_test_backend_with_function_stubs();
@@ -629,10 +629,11 @@ async fn test_completion_user_constant_detail() {
 
     let custom = items.iter().find(|i| i.label == "CUSTOM_FLAG");
     assert!(custom.is_some(), "Should find CUSTOM_FLAG in completions");
+    let custom = custom.unwrap();
     assert_eq!(
-        custom.unwrap().detail.as_deref(),
-        Some("define constant"),
-        "User-defined constants should have 'define constant' as detail"
+        custom.detail.as_deref(),
+        Some("true"),
+        "User-defined constants should show their value as detail"
     );
 }
 
@@ -791,10 +792,11 @@ async fn test_completion_stub_function_detail() {
         json_decode.is_some(),
         "Should find json_decode in completions"
     );
+    let json_decode = json_decode.unwrap();
     assert_eq!(
-        json_decode.unwrap().detail.as_deref(),
-        Some("PHP function"),
-        "Stub functions should have 'PHP function' as detail"
+        json_decode.detail.as_deref(),
+        None,
+        "Stub functions without a parsed return type should have no detail"
     );
 }
 
@@ -868,15 +870,16 @@ async fn test_completion_user_defined_function() {
         function_items.iter().map(|i| &i.label).collect::<Vec<_>>()
     );
 
-    // User-defined functions should have "function" as detail
+    // User-defined functions should show the return type as detail
+    let helper_item = helper.unwrap();
     assert_eq!(
-        helper.unwrap().detail.as_deref(),
-        Some("function"),
-        "User-defined functions should have 'function' as detail"
+        helper_item.detail.as_deref(),
+        Some("string"),
+        "User-defined functions should show return type as detail"
     );
 
     // The label should contain the full signature
-    let label = &helper.unwrap().label;
+    let label = &helper_item.label;
     assert!(
         label.contains("my_helper_func("),
         "Label should contain function name with parens. Got: {}",
@@ -911,14 +914,9 @@ async fn test_completion_user_function_label_signature() {
     assert!(calc.is_some(), "Should find calculate_total in completions");
 
     let label = &calc.unwrap().label;
-    assert!(
-        label.contains("float $price"),
-        "Label should include typed parameters. Got: {}",
-        label
-    );
-    assert!(
-        label.contains(": float"),
-        "Label should include return type. Got: {}",
+    assert_eq!(
+        label, "calculate_total($price, $qty, $tax = ...)",
+        "Label should show function name and parameter names. Got: {}",
         label
     );
 }
@@ -1094,11 +1092,11 @@ async fn test_completion_user_function_shadows_stub() {
             .collect::<Vec<_>>()
     );
 
-    // The user-defined version should win (detail = "function", not "PHP function")
+    // The user-defined version should win: detail shows return type, description shows "function"
     assert_eq!(
         str_contains_items[0].detail.as_deref(),
-        Some("function"),
-        "User-defined function should take precedence over stub"
+        Some("bool"),
+        "User-defined function should show return type as detail"
     );
 }
 

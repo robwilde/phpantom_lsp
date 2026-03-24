@@ -342,10 +342,11 @@ async fn test_completion_superglobal_detail() {
         Some("PHP superglobal"),
         "Superglobals should have 'PHP superglobal' as detail"
     );
-    assert_eq!(
-        post.deprecated,
-        Some(true),
-        "Superglobals should be marked deprecated (grayed out)"
+    assert!(
+        post.tags
+            .as_ref()
+            .is_some_and(|t| t.contains(&CompletionItemTag::DEPRECATED)),
+        "Superglobals should be tagged deprecated (grayed out)"
     );
 }
 
@@ -421,17 +422,21 @@ async fn test_completion_superglobals_sort_after_variables() {
     let get_sg = get_sg.unwrap();
 
     // User-defined variables should NOT be deprecated
-    assert_ne!(
-        my_var.deprecated,
-        Some(true),
-        "User-defined variables should not be marked deprecated"
+    assert!(
+        !my_var
+            .tags
+            .as_ref()
+            .is_some_and(|t| t.contains(&CompletionItemTag::DEPRECATED)),
+        "User-defined variables should not be tagged deprecated"
     );
 
     // Superglobals should be deprecated (grayed out)
-    assert_eq!(
-        get_sg.deprecated,
-        Some(true),
-        "Superglobals should be marked deprecated (grayed out)"
+    assert!(
+        get_sg
+            .tags
+            .as_ref()
+            .is_some_and(|t| t.contains(&CompletionItemTag::DEPRECATED)),
+        "Superglobals should be tagged deprecated (grayed out)"
     );
 
     // sort_text of user variable should come before superglobal

@@ -1409,7 +1409,9 @@ async fn test_completion_anonymous_class_detail_shows_friendly_name() {
     assert!(result.is_some(), "Should return completion results");
     match result.unwrap() {
         CompletionResponse::Array(items) => {
-            // Check a method item's detail
+            // Check a method item — detail is now None (no class prefix),
+            // and the raw `__anonymous@` name must not leak into any
+            // user-visible field.
             let method_item = items
                 .iter()
                 .find(|i| {
@@ -1417,19 +1419,27 @@ async fn test_completion_anonymous_class_detail_shows_friendly_name() {
                         && i.filter_text.as_deref() == Some("greet")
                 })
                 .expect("Should find 'greet' method");
-            let detail = method_item.detail.as_deref().unwrap();
             assert!(
-                detail.contains("anonymous class"),
-                "Method detail should say 'anonymous class', got: {:?}",
-                detail
+                !method_item
+                    .detail
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("__anonymous@"),
+                "Method detail should NOT contain raw synthetic name, got: {:?}",
+                method_item.detail
             );
             assert!(
-                !detail.contains("__anonymous@"),
-                "Method detail should NOT contain raw synthetic name, got: {:?}",
-                detail
+                !method_item
+                    .label_details
+                    .as_ref()
+                    .and_then(|ld| ld.description.as_deref())
+                    .unwrap_or("")
+                    .contains("__anonymous@"),
+                "Method label_details should NOT contain raw synthetic name, got: {:?}",
+                method_item.label_details
             );
 
-            // Check a property item's detail
+            // Check a property item — detail shows the type hint, not the class.
             let prop_item = items
                 .iter()
                 .find(|i| {
@@ -1437,16 +1447,19 @@ async fn test_completion_anonymous_class_detail_shows_friendly_name() {
                         && i.filter_text.as_deref() == Some("name")
                 })
                 .expect("Should find 'name' property");
-            let prop_detail = prop_item.detail.as_deref().unwrap();
-            assert!(
-                prop_detail.contains("anonymous class"),
-                "Property detail should say 'anonymous class', got: {:?}",
-                prop_detail
+            assert_eq!(
+                prop_item.detail.as_deref(),
+                Some("string"),
+                "Typed property detail should show the type hint"
             );
             assert!(
-                !prop_detail.contains("__anonymous@"),
+                !prop_item
+                    .detail
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("__anonymous@"),
                 "Property detail should NOT contain raw synthetic name, got: {:?}",
-                prop_detail
+                prop_item.detail
             );
         }
         _ => panic!("Expected CompletionResponse::Array"),

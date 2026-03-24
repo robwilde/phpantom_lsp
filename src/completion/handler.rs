@@ -44,12 +44,6 @@ use crate::symbol_map::SymbolKind;
 use crate::types::{CompletionTarget, FileContext};
 use crate::util::{find_class_at_offset, position_to_byte_offset, position_to_offset};
 
-/// Filter out completion items for classes defined in the current file.
-///
-/// When writing a `use` statement it makes no sense to import a class
-/// from the file you are already in.  The `detail` field of each item
-/// carries the FQN, which is matched against the FQNs of classes in the
-/// file's `ctx.classes` (from the ast_map).
 /// Check whether a `(` immediately follows the cursor position (past any
 /// partial identifier the user has already typed).
 ///
@@ -105,6 +99,12 @@ fn strip_snippet_parens(items: Vec<CompletionItem>) -> Vec<CompletionItem> {
         .collect()
 }
 
+/// Filter out completion items for classes defined in the current file.
+///
+/// When writing a `use` statement it makes no sense to import a class
+/// from the file you are already in.  The `detail` field of each item
+/// carries the FQN, which is matched against the FQNs of classes in the
+/// file's `ctx.classes` (from the ast_map).
 fn filter_current_file_classes(
     items: Vec<CompletionItem>,
     ctx: &FileContext,
@@ -282,7 +282,7 @@ impl Backend {
             // ── Docblock type / variable completion ─────────────────
             // Always short-circuits when inside a docblock.
             if crate::completion::comment_position::is_inside_docblock(&content, position) {
-                return Ok(self.complete_docblock_type_or_variable(&content, position, &ctx));
+                return Ok(self.complete_docblock_type_or_variable(&content, position, &ctx, &uri));
             }
 
             // ── Type hint completion in definitions ─────────────────
@@ -290,7 +290,7 @@ impl Backend {
             if let Some(th_ctx) = crate::completion::type_hint_completion::detect_type_hint_context(
                 &content, position,
             ) {
-                return Ok(self.complete_type_hint(&content, &th_ctx, &ctx, position));
+                return Ok(self.complete_type_hint(&content, &th_ctx, &ctx, position, &uri));
             }
 
             // ── Named argument completion ───────────────────────────
@@ -364,12 +364,12 @@ impl Backend {
             }
 
             // ── Smart catch clause completion ───────────────────────
-            if let Some(response) = self.try_catch_completion(&content, position, &ctx) {
+            if let Some(response) = self.try_catch_completion(&content, position, &ctx, &uri) {
                 return Ok(Some(response));
             }
 
             // ── `throw new` completion ──────────────────────────────
-            if let Some(response) = self.try_throw_new_completion(&content, position, &ctx) {
+            if let Some(response) = self.try_throw_new_completion(&content, position, &ctx, &uri) {
                 return Ok(Some(response));
             }
 
@@ -461,6 +461,7 @@ impl Backend {
         content: &str,
         position: Position,
         ctx: &FileContext,
+        uri: &str,
     ) -> Option<CompletionResponse> {
         use crate::completion::phpdoc::{
             DocblockTypingContext, detect_docblock_typing_position, extract_symbol_info,
@@ -473,12 +474,7 @@ impl Backend {
                 // classes appear at the top.
                 if tag == "throws" {
                     let (class_items, class_incomplete) = self.build_catch_class_name_completions(
-                        &ctx.use_map,
-                        &ctx.namespace,
-                        &partial,
-                        content,
-                        false,
-                        position,
+                        ctx, &partial, content, false, position, uri,
                     );
                     return if class_items.is_empty() {
                         None
@@ -517,6 +513,7 @@ impl Backend {
                         context: ClassNameContext::TypeHint,
                         position,
                         affinity_table_override: None,
+                        uri,
                     });
                 items.extend(class_items);
 
@@ -602,6 +599,7 @@ impl Backend {
         th_ctx: &crate::completion::type_hint_completion::TypeHintContext,
         ctx: &FileContext,
         position: Position,
+        uri: &str,
     ) -> Option<CompletionResponse> {
         let partial_lower = th_ctx.partial.to_lowercase();
         let space_prefix = if th_ctx.needs_space_prefix { " " } else { "" };
@@ -630,6 +628,7 @@ impl Backend {
                 context: ClassNameContext::TypeHint,
                 position,
                 affinity_table_override: None,
+                uri,
             });
 
         // When a leading space is needed (return type after `:` with no
@@ -935,6 +934,7 @@ impl Backend {
                     current_class,
                     &class_loader,
                     &self.resolved_class_cache,
+                    uri,
                 )
             },
         );
@@ -995,6 +995,7 @@ impl Backend {
         content: &str,
         position: Position,
         ctx: &FileContext,
+        uri: &str,
     ) -> Option<CompletionResponse> {
         let catch_ctx =
             crate::completion::catch_completion::detect_catch_context(content, position)?;
@@ -1026,14 +1027,8 @@ impl Backend {
         } else {
             catch_ctx.partial.clone()
         };
-        let (class_items, class_incomplete) = self.build_catch_class_name_completions(
-            &ctx.use_map,
-            &ctx.namespace,
-            &partial,
-            content,
-            false,
-            position,
-        );
+        let (class_items, class_incomplete) =
+            self.build_catch_class_name_completions(ctx, &partial, content, false, position, uri);
         let mut all_items = items; // Throwable item (if matched)
         for ci in class_items {
             if !all_items.iter().any(|existing| existing.label == ci.label) {
@@ -1068,19 +1063,14 @@ impl Backend {
         content: &str,
         position: Position,
         ctx: &FileContext,
+        uri: &str,
     ) -> Option<CompletionResponse> {
         let partial = Self::extract_partial_class_name(content, position)?;
         if !Self::is_throw_new_context(content, position) {
             return None;
         }
-        let (class_items, class_incomplete) = self.build_catch_class_name_completions(
-            &ctx.use_map,
-            &ctx.namespace,
-            &partial,
-            content,
-            true,
-            position,
-        );
+        let (class_items, class_incomplete) =
+            self.build_catch_class_name_completions(ctx, &partial, content, true, position, uri);
         if class_items.is_empty() {
             None
         } else {
@@ -1162,8 +1152,13 @@ impl Backend {
 
         // ── `use function` → only functions ─────────────────────────
         if matches!(class_ctx, ClassNameContext::UseFunction) {
-            let (function_items, func_incomplete) =
-                self.build_function_completions(&partial, true, Some(content), &ctx.namespace);
+            let (function_items, func_incomplete) = self.build_function_completions(
+                &partial,
+                true,
+                Some(content),
+                &ctx.namespace,
+                current_uri,
+            );
             // Filter out functions defined in the current file.
             let function_items = filter_current_file_functions(function_items, current_uri, self);
             let items = append_semicolon_to_insert_text(function_items);
@@ -1175,7 +1170,8 @@ impl Backend {
 
         // ── `use const` → only constants ────────────────────────────
         if matches!(class_ctx, ClassNameContext::UseConst) {
-            let (constant_items, const_incomplete) = self.build_constant_completions(&partial);
+            let (constant_items, const_incomplete) =
+                self.build_constant_completions(&partial, current_uri);
             // Filter out constants defined in the current file.
             let constant_items = filter_current_file_constants(constant_items, current_uri, self);
             let items = append_semicolon_to_insert_text(constant_items);
@@ -1222,6 +1218,7 @@ impl Backend {
                 context: class_ctx,
                 position,
                 affinity_table_override: affinity_override,
+                uri: current_uri,
             });
 
         // ── `use` (class import) → classes + keyword hints ──────────
@@ -1296,9 +1293,15 @@ impl Backend {
             }));
         }
 
-        let (constant_items, const_incomplete) = self.build_constant_completions(&partial);
-        let (function_items, func_incomplete) =
-            self.build_function_completions(&partial, false, Some(content), &ctx.namespace);
+        let (constant_items, const_incomplete) =
+            self.build_constant_completions(&partial, current_uri);
+        let (function_items, func_incomplete) = self.build_function_completions(
+            &partial,
+            false,
+            Some(content),
+            &ctx.namespace,
+            current_uri,
+        );
 
         if class_items.is_empty() && constant_items.is_empty() && function_items.is_empty() {
             return None;

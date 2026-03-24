@@ -325,7 +325,7 @@ pub(super) fn build_class_member_block_with_var(
 }
 
 /// Build hover content for a standalone function.
-pub(super) fn hover_for_function(
+pub(crate) fn hover_for_function(
     func: &FunctionInfo,
     resolved_see: Option<&[ResolvedSeeRef]>,
 ) -> Hover {
@@ -391,7 +391,7 @@ pub(super) fn hover_for_function(
 ///
 /// When `location_uri` is `Some`, the symbol name is rendered as a
 /// clickable link that opens the target file at the definition site.
-pub(super) struct ResolvedSeeRef {
+pub(crate) struct ResolvedSeeRef {
     /// The raw text after `@see` (e.g. `"UnsetDemo"`,
     /// `"MyClass::method() Use this instead"`,
     /// `"https://example.com/docs"`).
@@ -549,7 +549,20 @@ pub(crate) fn extract_docblock_description(docblock: Option<&str>) -> Option<Str
     if lines.is_empty() {
         None
     } else {
-        Some(lines.join("\n"))
+        let result = lines.join("\n");
+        let result = result
+            .replace("<b>", "**")
+            .replace("</b>", "**")
+            .replace("<i>", "*")
+            .replace("</i>", "*")
+            .replace("<code>", "`")
+            .replace("</code>", "`")
+            .replace("<br />", "\n")
+            .replace("<br/>", "\n")
+            .replace("<br>", "\n")
+            .replace("<p>", "\n\n")
+            .replace("</p>", "");
+        Some(result)
     }
 }
 
@@ -562,7 +575,7 @@ pub(crate) fn extract_docblock_description(docblock: Option<&str>) -> Option<Str
 ///   - `"App\\Models\\User"` → `"User"`
 ///   - `"list<App\\Models\\User>"` → `"list<User>"`
 ///   - `"App\\Foo|App\\Bar|null"` → `"Foo|Bar|null"`
-pub(super) fn shorten_type_string(ty: &str) -> String {
+pub(crate) fn shorten_type_string(ty: &str) -> String {
     let mut result = String::with_capacity(ty.len());
     let mut segment_start = 0;
     let bytes = ty.as_bytes();

@@ -9,10 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Hover on union member access.** Hovering over a method, property, or constant on a union type (e.g. `$ambiguous->turnOff()` where `$ambiguous` is `Lamp|Faucet`) now shows hover information from all branches that declare the member, separated by a horizontal rule. Previously only the first matching branch was shown. When both branches inherit the member from the same declaring class, the hover is deduplicated to a single entry.
+- **Hover on inherited members.** Hovering over an inherited method, property, or constant now shows the declaring class in the code block (e.g. `class Model { public static function find(...) }`) instead of the class it was accessed on. Previously `User::find()` would incorrectly show `class User` even though `find()` is declared on `Model`.
 - **Double parentheses when renaming calls.** Completing a function, constructor, or static method name when parentheses already follow the cursor (e.g. `array_m|()`, `new Gadge|()`, `throw new Excepti|()`) no longer inserts a second pair of parentheses. Previously only `->` and `::` method calls were handled.
+
+### Changed
+
+- **Completion labels.** Method and function completion items now show only parameter names in the label (e.g. `setName($name)`) with the return type displayed inline (e.g. `: User`). Properties and constants show just the type hint. The previous `Class: ClassName` detail line has been removed; class context is available in the documentation panel when the item is highlighted.
+- **Completion sort order.** Member completion items are now sorted by kind (constants, then properties, then methods) before alphabetical order within each group. Union-type completions apply the same kind-based ordering within both the intersection and branch-only tiers.
+- **Deprecation tags.** Completion items use the modern `tags: [DEPRECATED]` field instead of the legacy `deprecated` boolean. Both convey the same strikethrough rendering in editors.
 
 ### Added
 
+- **Completion item documentation.** Selecting a completion item in the popup now shows rich documentation including the full typed signature, description, deprecation notice, and parameter details. Previously only the class name was shown.
+- **Method commit characters.** Typing `(` while a method completion is highlighted auto-accepts it and begins the argument list.
 - **PHPStan diagnostics.** PHPStan errors appear inline as you edit. Auto-detects `vendor/bin/phpstan` or `$PATH`. Runs in the background without blocking native diagnostics. Configurable via `[phpstan]` in `.phpantom.toml` (`command`, `memory-limit`, `timeout`). "Ignore PHPStan error" and "Remove unnecessary @phpstan-ignore" code actions manage inline ignore comments.
 - **Formatting.** Built-in PHP formatting (PER-CS 2.0 style). Formatting works out of the box without any external tools. Projects that depend on php-cs-fixer or PHP_CodeSniffer in their `composer.json` `require-dev` automatically use those tools instead (both can run in sequence). Per-tool command overrides and disable switches in `[formatting]` in `.phpantom.toml`.
 - **Semantic Tokens.** Type-aware syntax highlighting that goes beyond what a TextMate grammar can achieve. Classes, interfaces, enums, traits, methods, properties, parameters, variables, functions, constants, and template parameters all get distinct token types. Modifiers convey declaration sites, static access, readonly, deprecated, and abstract status.

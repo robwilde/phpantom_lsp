@@ -182,7 +182,7 @@ impl Backend {
                 })),
                 filter_text: Some(name.to_string()),
                 sort_text: Some(format!("z_{}", name.to_lowercase())),
-                deprecated: Some(true),
+                tags: Some(vec![CompletionItemTag::DEPRECATED]),
                 ..CompletionItem::default()
             });
         }
