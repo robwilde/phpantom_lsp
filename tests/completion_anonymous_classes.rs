@@ -1452,3 +1452,89 @@ async fn test_completion_anonymous_class_detail_shows_friendly_name() {
         _ => panic!("Expected CompletionResponse::Array"),
     }
 }
+
+// ─── Closure param type hint inside anonymous class method ──────────────────
+
+/// When a closure with an explicitly typed parameter is passed as an argument
+/// to a static method call inside an anonymous class method, the closure
+/// parameter's type hint should resolve correctly.  This is the pattern used
+/// by Laravel migrations: `return new class extends Migration { ... }`.
+#[tokio::test]
+async fn test_closure_param_type_hint_in_anonymous_class_static_call() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///anon_closure_param.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Blueprint {\n",
+        "    public function enum(string $column): static { return $this; }\n",
+        "    public function after(string $column): static { return $this; }\n",
+        "    public function default(mixed $value): static { return $this; }\n",
+        "    public function dropColumn(string $column): void {}\n",
+        "}\n",
+        "class Migration {\n",
+        "    public function up(): void {}\n",
+        "    public function down(): void {}\n",
+        "}\n",
+        "class Schema {\n",
+        "    public static function table(string $table, \\Closure $callback): void {}\n",
+        "}\n",
+        "return new class extends Migration {\n",
+        "    public function up(): void {\n",
+        "        Schema::table('orders', function (Blueprint $table): void {\n",
+        "            $table->\n",
+        "        });\n",
+        "    }\n",
+        "};\n",
+    );
+
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: uri.clone(),
+                language_id: "php".to_string(),
+                version: 1,
+                text: text.to_string(),
+            },
+        })
+        .await;
+
+    // Cursor right after `$table->` on line 17
+    let result = backend
+        .completion(CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position {
+                    line: 17,
+                    character: 20,
+                },
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+            context: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(
+        result.is_some(),
+        "Completion should resolve $table via closure parameter type hint in anonymous class"
+    );
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+            assert!(
+                labels.iter().any(|l| l.starts_with("enum")),
+                "Should include enum method from Blueprint, got: {:?}",
+                labels
+            );
+            assert!(
+                labels.iter().any(|l| l.starts_with("dropColumn")),
+                "Should include dropColumn method from Blueprint, got: {:?}",
+                labels
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
