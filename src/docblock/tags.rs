@@ -23,7 +23,7 @@ use mago_syntax::ast::*;
 
 use crate::types::{AssertionKind, PhpVersion, TypeAssertion};
 
-use super::parser::{collapse_newlines, parse_docblock_for_tags, DocblockInfo};
+use super::parser::{DocblockInfo, collapse_newlines, parse_docblock_for_tags};
 use super::types::{
     base_class_name, clean_type, is_scalar, normalize_nullable, split_type_token, strip_nullable,
 };
@@ -389,7 +389,9 @@ pub fn extract_var_type_with_name(docblock: &str) -> Option<(String, Option<Stri
 }
 
 /// Like [`extract_var_type_with_name`], but operates on a pre-parsed [`DocblockInfo`].
-pub fn extract_var_type_with_name_from_info(info: &DocblockInfo) -> Option<(String, Option<String>)> {
+pub fn extract_var_type_with_name_from_info(
+    info: &DocblockInfo,
+) -> Option<(String, Option<String>)> {
     for tag in info.tags_by_kinds(&[TagKind::PhpstanVar, TagKind::Var]) {
         let desc = tag.description.trim();
         if desc.is_empty() {
@@ -1508,8 +1510,6 @@ fn extract_type_via_mago_from_info(info: &DocblockInfo, kinds: &[TagKind]) -> Op
 
     None
 }
-
-
 
 /// Check whether a type string has unclosed `<…>` or `{…}` brackets.
 fn has_unclosed_brackets(s: &str) -> bool {

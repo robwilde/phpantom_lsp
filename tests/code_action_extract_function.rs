@@ -166,23 +166,207 @@ function foo() {
 fn not_offered_when_return_without_trailing_return() {
     let backend = create_test_backend();
     let uri = "file:///test.php";
+    // This selection has a return that returns null AND also modifies
+    // $data which is used after the selection — the combination of
+    // mixed null returns plus return values makes it unsafe.
     let content = "\
 <?php
 function foo($x) {
-    if ($x > 0) {
-        return 'positive';
-    }
-    echo 'done';
+    if ($x < 0) return null;
+    if ($x > 100) return 'overflow';
+    $data = process($x);
+    echo $data;
 }
 ";
-    // Select if + echo — the selection contains a return but does NOT
-    // end with one, so the call site wouldn't be `return extracted(…)`
-    // and the early return would only exit the extracted function.
-    let actions = get_code_actions(&backend, uri, content, 2, 4, 5, 17);
+    // Select if + if + $data assignment — the return values include
+    // null and a non-null value (can't use null sentinel), AND $data
+    // is read after the selection (has_return_values = true).
+    let actions = get_code_actions(&backend, uri, content, 2, 4, 4, 25);
     let action = find_extract_action(&actions);
     assert!(
         action.is_none(),
-        "should not offer extract when return present but selection doesn't end with return"
+        "should not offer extract when guard returns include null mixed with other values"
+    );
+}
+
+// ── Guard clause extraction strategies ──────────────────────────────────────
+
+#[test]
+fn void_guard_extraction_produces_bool_pattern() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = "\
+<?php
+class Validator {
+    public function handle($request): void
+    {
+        if (!$request) return;
+        if (!$this->authorize()) return;
+        $this->process($request);
+        $this->log($request);
+    }
+}
+";
+    // Select the two guard lines (lines 4-5).
+    let actions = get_code_actions(&backend, uri, content, 4, 8, 5, 40);
+    let action = find_extract_action(&actions).expect("should offer extract for void guards");
+    let result = apply_edit(content, action.edit.as_ref().unwrap());
+
+    // Call site should be: if (!$this->extracted($request)) return;
+    assert!(
+        result.contains("if (!$this->extracted($request)) return;"),
+        "call site should use bool-flag pattern:\n{result}"
+    );
+    // Extracted method should return bool.
+    assert!(
+        result.contains("): bool"),
+        "extracted method should have bool return type:\n{result}"
+    );
+    // Body should have return false (rewritten from bare return).
+    assert!(
+        result.contains("return false;"),
+        "guard returns should be rewritten to return false:\n{result}"
+    );
+    // Fall-through should be return true.
+    assert!(
+        result.contains("return true;"),
+        "fall-through should be return true:\n{result}"
+    );
+}
+
+#[test]
+fn uniform_false_guard_extraction() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = "\
+<?php
+class Validator {
+    public function validate($dog, $cat): bool
+    {
+        if (!$dog) return false;
+        if (!$cat) return false;
+        return $this->check($dog, $cat);
+    }
+}
+";
+    // Select just the two guard lines (lines 4-5).
+    let actions = get_code_actions(&backend, uri, content, 4, 8, 5, 32);
+    let action =
+        find_extract_action(&actions).expect("should offer extract for uniform false guards");
+    let result = apply_edit(content, action.edit.as_ref().unwrap());
+
+    // Call site should use the bool-flag pattern with false.
+    // Parameter order depends on the scope classifier (first-use order).
+    let has_bool_guard_call = result.contains("if (!$this->extracted($dog, $cat)) return false;")
+        || result.contains("if (!$this->extracted($cat, $dog)) return false;");
+    assert!(
+        has_bool_guard_call,
+        "call site should use bool-flag pattern with false:\n{result}"
+    );
+    // Extracted method should return bool.
+    assert!(
+        result.contains("): bool"),
+        "extracted method should have bool return type:\n{result}"
+    );
+    // The body already has `return false;` which stays as-is (boolean values
+    // don't need rewriting), plus a `return true;` fall-through.
+    assert!(
+        result.contains("return true;"),
+        "fall-through should be return true:\n{result}"
+    );
+}
+
+#[test]
+fn uniform_null_guard_extraction_rewrites_returns() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = "\
+<?php
+class Lookup {
+    public function find(int $id): ?User
+    {
+        if ($id <= 0) return null;
+        if (!$this->hasAccess()) return null;
+        return $this->repo->findById($id);
+    }
+}
+";
+    // Select the two null-guard lines (lines 4-5).
+    // Line 4: "        if ($id <= 0) return null;"  len=33
+    // Line 5: "        if (!$this->hasAccess()) return null;"  len=45
+    let actions = get_code_actions(&backend, uri, content, 4, 8, 5, 45);
+    let action =
+        find_extract_action(&actions).expect("should offer extract for uniform null guards");
+    let result = apply_edit(content, action.edit.as_ref().unwrap());
+
+    // Call site should be: if (!$this->extracted($id)) return null;
+    assert!(
+        result.contains("if (!$this->extracted($id)) return null;"),
+        "call site should use bool-flag pattern with null:\n{result}"
+    );
+    // Extracted method should return bool.
+    assert!(
+        result.contains("): bool"),
+        "extracted method should have bool return type:\n{result}"
+    );
+    // Body should have `return null;` rewritten to `return false;`.
+    assert!(
+        result.contains("return false;"),
+        "null guards should be rewritten to return false:\n{result}"
+    );
+    // Should NOT contain return null in the extracted method body.
+    // The `return null;` should only appear at the call site.
+    let extracted_method_start = result.find("private function extracted").unwrap();
+    let extracted_body = &result[extracted_method_start..];
+    assert!(
+        !extracted_body.contains("return null;"),
+        "extracted method should not contain return null:\n{result}"
+    );
+}
+
+#[test]
+fn sentinel_null_extraction_for_different_values() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = "\
+<?php
+function classify(int $code): string
+{
+    if ($code < 0) return 'negative';
+    if ($code === 0) return 'zero';
+    if ($code > 1000) return 'overflow';
+    return computeStatus($code);
+}
+";
+    // Select the three guard lines (lines 3-5).
+    // Line 3: "    if ($code < 0) return 'negative';"  len=38
+    // Line 4: "    if ($code === 0) return 'zero';"  len=34
+    // Line 5: "    if ($code > 1000) return 'overflow';"  len=41
+    let actions = get_code_actions(&backend, uri, content, 3, 4, 5, 41);
+    let action = find_extract_action(&actions)
+        .expect("should offer extract for different non-null return values");
+    let result = apply_edit(content, action.edit.as_ref().unwrap());
+
+    // Call site should use the sentinel-null pattern:
+    //   $__early = extracted($code);
+    //   if ($__early !== null) return $__early;
+    assert!(
+        result.contains("$__early = extracted($code);"),
+        "call site should assign to $__early:\n{result}"
+    );
+    assert!(
+        result.contains("if ($__early !== null) return $__early;"),
+        "call site should check sentinel:\n{result}"
+    );
+    // Extracted function should have nullable return type.
+    assert!(
+        result.contains("): ?string"),
+        "extracted function should have ?string return type:\n{result}"
+    );
+    // Extracted function should end with return null (sentinel).
+    assert!(
+        result.contains("return null;"),
+        "extracted function should have return null as sentinel:\n{result}"
     );
 }
 

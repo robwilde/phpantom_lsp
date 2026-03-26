@@ -314,4 +314,3 @@ fn split_params(s: &str) -> Vec<&str> {
     parts.push(&s[start..]);
     parts
 }
-

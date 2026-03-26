@@ -45,7 +45,7 @@ pub(crate) mod type_strings;
 // working without modification.
 
 // Parsed docblock representation
-pub use parser::{parse_docblock_for_tags, DocblockInfo};
+pub use parser::{DocblockInfo, parse_docblock_for_tags};
 
 // Core tags
 pub(crate) use tags::is_compatible_refinement;

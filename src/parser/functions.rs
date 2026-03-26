@@ -159,15 +159,18 @@ impl Backend {
                         func_template_bindings,
                         throws,
                     ) = if let Some(ctx) = doc_ctx {
-                        let doc_type = info.as_ref().and_then(docblock::extract_return_type_from_info);
+                        let doc_type = info
+                            .as_ref()
+                            .and_then(docblock::extract_return_type_from_info);
 
                         let effective = docblock::resolve_effective_type(
                             native_return_type.as_deref(),
                             doc_type.as_deref(),
                         );
 
-                        let conditional =
-                            info.as_ref().and_then(docblock::extract_conditional_return_type_from_info);
+                        let conditional = info
+                            .as_ref()
+                            .and_then(docblock::extract_conditional_return_type_from_info);
 
                         // Extract function-level @template params and their
                         // @param bindings for generic type substitution at
@@ -179,7 +182,10 @@ impl Backend {
                         let tpl_bindings = if !tpl_params.is_empty() {
                             info.as_ref()
                                 .map(|i| {
-                                    docblock::extract_template_param_bindings_from_info(i, &tpl_params)
+                                    docblock::extract_template_param_bindings_from_info(
+                                        i,
+                                        &tpl_params,
+                                    )
                                 })
                                 .unwrap_or_default()
                         } else {
@@ -209,7 +215,8 @@ impl Backend {
                             .unwrap_or_default();
 
                         let depr_info = merge_deprecation_info(
-                            info.as_ref().and_then(docblock::extract_deprecation_message_from_info),
+                            info.as_ref()
+                                .and_then(docblock::extract_deprecation_message_from_info),
                             &func.attribute_lists,
                             Some(ctx),
                         );
@@ -219,7 +226,9 @@ impl Backend {
                         let desc = docblock_text
                             .and_then(|doc| crate::hover::extract_docblock_description(Some(doc)));
 
-                        let ret_desc = info.as_ref().and_then(docblock::extract_return_description_from_info);
+                        let ret_desc = info
+                            .as_ref()
+                            .and_then(docblock::extract_return_description_from_info);
 
                         let link_urls = info
                             .as_ref()
@@ -308,7 +317,8 @@ impl Backend {
                         // native parameter.  These document parameters
                         // accessed via `func_get_args()` or similar
                         // mechanisms and should appear in hover/signature.
-                        for (tag_name, tag_type) in docblock::extract_all_param_tags_from_info(info) {
+                        for (tag_name, tag_type) in docblock::extract_all_param_tags_from_info(info)
+                        {
                             if !parameters.iter().any(|p| p.name == tag_name) {
                                 let description =
                                     docblock::extract_param_description_from_info(info, &tag_name);

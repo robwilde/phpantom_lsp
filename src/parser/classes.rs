@@ -1640,8 +1640,7 @@ impl Backend {
                             doc_type.as_deref(),
                         );
 
-                        let conditional =
-                            docblock::extract_conditional_return_type_from_info(info);
+                        let conditional = docblock::extract_conditional_return_type_from_info(info);
 
                         // Extract method-level @template params, their bounds,
                         // and @param bindings for generic type substitution.
@@ -1852,8 +1851,7 @@ impl Backend {
                         // native parameter.  These document parameters
                         // accessed via `func_get_args()` or similar
                         // mechanisms and should appear in hover/signature.
-                        for (tag_name, tag_type) in
-                            docblock::extract_all_param_tags_from_info(info)
+                        for (tag_name, tag_type) in docblock::extract_all_param_tags_from_info(info)
                         {
                             if !parameters.iter().any(|p| p.name == tag_name) {
                                 let description =
@@ -1980,8 +1978,9 @@ impl Backend {
                             docblock::get_docblock_text_for_node(ctx.trivias, ctx.content, member)
                     {
                         let info = docblock::parse_docblock_for_tags(doc_text);
-                        let docblock_msg =
-                            info.as_ref().and_then(docblock::extract_deprecation_message_from_info);
+                        let docblock_msg = info
+                            .as_ref()
+                            .and_then(docblock::extract_deprecation_message_from_info);
                         let see_refs = info
                             .as_ref()
                             .map(docblock::extract_see_references_from_info)

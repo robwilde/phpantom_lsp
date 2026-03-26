@@ -544,10 +544,8 @@ struct ExtractionInfo {
     member_indent: String,
     /// Indentation of the body inside the new function/method.
     body_indent: String,
-    /// When `true`, the last statement in the selection is a `return`.
-    /// The body already contains the `return`, so no extra return is
-    /// appended, and the call site wraps the call in `return`.
-    has_trailing_return: bool,
+    /// How return statements in the selection are handled.
+    return_strategy: ReturnStrategy,
     /// Return type hint for the trailing return (resolved from the
     /// enclosing function's return type or the return expression).
     trailing_return_type: String,
@@ -600,8 +598,28 @@ fn build_extracted_definition(info: &ExtractionInfo) -> String {
         }
     }
 
+    // Rewrite guard returns in the body if needed.
+    let body_text = match &info.return_strategy {
+        ReturnStrategy::VoidGuards => {
+            // Bare `return;` → `return false;` (false = early exit).
+            rewrite_guard_returns(&info.body, None)
+        }
+        ReturnStrategy::UniformGuards(value) => {
+            let lower = value.to_lowercase();
+            if lower == "false" || lower == "true" {
+                // Already boolean — the body's returns are correct as-is.
+                info.body.clone()
+            } else {
+                // Non-boolean uniform value (e.g. `null`, `0`, `'error'`):
+                // rewrite `return <value>;` → `return false;`.
+                rewrite_guard_returns(&info.body, Some(value))
+            }
+        }
+        _ => info.body.clone(),
+    };
+
     // Re-indent the body to match the new function's body indentation.
-    let body_lines = info.body.lines().collect::<Vec<_>>();
+    let body_lines = body_text.lines().collect::<Vec<_>>();
     let min_indent = body_lines
         .iter()
         .filter(|l| !l.trim().is_empty())
@@ -621,20 +639,58 @@ fn build_extracted_definition(info: &ExtractionInfo) -> String {
         }
     }
 
-    // Add return statement for return values.
-    // When the body already ends with `return`, we don't append another.
-    if !info.has_trailing_return {
-        if info.returns.len() == 1 {
+    // Add return/sentinel after the body based on the strategy.
+    match &info.return_strategy {
+        ReturnStrategy::TrailingReturn => {
+            // Body already ends with `return` — nothing to add.
+        }
+        ReturnStrategy::VoidGuards => {
+            // All guards are bare `return;`.  Add `return true;` as the
+            // fall-through (meaning "no early exit, keep going").
+            out.push_str(&info.body_indent);
+            out.push_str("return true;\n");
+        }
+        ReturnStrategy::UniformGuards(value) => {
+            // All guards return the same value.  The extracted function
+            // uses bool: guards become `return false;` (exit), and
+            // fall-through is `return true;` (continue).
+            // But the body already has the original returns — we need
+            // to add the sentinel.  The body's returns stay as-is and
+            // get rewritten below by `rewrite_guard_returns_to_bool`.
+            // Here we just add the fall-through sentinel.
+            let lower = value.to_lowercase();
+            let sentinel = if lower == "false" {
+                "true"
+            } else if lower == "true" {
+                "false"
+            } else {
+                // Non-boolean uniform value: use `true` = continue.
+                "true"
+            };
             out.push_str(&info.body_indent);
             out.push_str("return ");
-            out.push_str(&info.returns[0].0);
+            out.push_str(sentinel);
             out.push_str(";\n");
-        } else if info.returns.len() > 1 {
+        }
+        ReturnStrategy::SentinelNull => {
+            // Different non-null values — null = "no early exit".
             out.push_str(&info.body_indent);
-            out.push_str("return [");
-            let names: Vec<&str> = info.returns.iter().map(|(n, _)| n.as_str()).collect();
-            out.push_str(&names.join(", "));
-            out.push_str("];\n");
+            out.push_str("return null;\n");
+        }
+        ReturnStrategy::None | ReturnStrategy::Unsafe => {
+            // Normal extraction: add return for captured variables.
+            if info.returns.len() == 1 {
+                out.push_str(&info.body_indent);
+                out.push_str("return ");
+                out.push_str(&info.returns[0].0);
+                out.push_str(";\n");
+            } else if info.returns.len() > 1 {
+                out.push_str(&info.body_indent);
+                out.push_str("return [");
+                let names: Vec<&str> = info.returns.iter().map(|(n, _)| n.as_str()).collect();
+                out.push_str(&names.join(", "));
+                out.push_str("];\n");
+            }
         }
     }
 
@@ -642,6 +698,101 @@ fn build_extracted_definition(info: &ExtractionInfo) -> String {
     out.push_str("}\n");
 
     out
+}
+
+/// Rewrite guard-clause return statements in the body text.
+///
+/// For `VoidGuards` (`uniform_value` is `None`): bare `return;` becomes
+/// `return false;`.
+///
+/// For `UniformGuards` with a non-boolean value (`uniform_value` is
+/// `Some`): `return <value>;` becomes `return false;`.
+///
+/// This operates on source text rather than AST to keep things simple.
+/// It matches `return` followed by optional whitespace and either `;`
+/// (void) or the uniform value and `;`.
+fn rewrite_guard_returns(body: &str, uniform_value: Option<&str>) -> String {
+    match uniform_value {
+        None => {
+            // VoidGuards: rewrite bare `return;` to `return false;`.
+            // We need to be careful not to match `return $x;` etc.
+            // Strategy: find `return` followed by optional whitespace
+            // then `;`, with no expression in between.
+            let mut result = String::with_capacity(body.len());
+            let mut remaining = body;
+            while let Some(pos) = remaining.find("return") {
+                // Check that this is a keyword boundary (not part of
+                // `$returnValue` etc.).
+                let before_ok = pos == 0
+                    || !remaining.as_bytes()[pos - 1].is_ascii_alphanumeric()
+                        && remaining.as_bytes()[pos - 1] != b'_'
+                        && remaining.as_bytes()[pos - 1] != b'$';
+                if !before_ok {
+                    result.push_str(&remaining[..pos + 6]);
+                    remaining = &remaining[pos + 6..];
+                    continue;
+                }
+                let after = &remaining[pos + 6..];
+                let trimmed = after.trim_start();
+                if trimmed.starts_with(';') {
+                    // Bare `return;` → `return false;`
+                    result.push_str(&remaining[..pos]);
+                    result.push_str("return false");
+                    // Skip past `return` + whitespace, keep the `;`.
+                    let ws_len = after.len() - trimmed.len();
+                    remaining = &remaining[pos + 6 + ws_len..];
+                } else {
+                    result.push_str(&remaining[..pos + 6]);
+                    remaining = &remaining[pos + 6..];
+                }
+            }
+            result.push_str(remaining);
+            result
+        }
+        Some(value) => {
+            // UniformGuards with non-boolean value: rewrite
+            // `return <value>;` to `return false;`.
+            let mut result = String::with_capacity(body.len());
+            let mut remaining = body;
+            while let Some(pos) = remaining.find("return") {
+                let before_ok = pos == 0
+                    || !remaining.as_bytes()[pos - 1].is_ascii_alphanumeric()
+                        && remaining.as_bytes()[pos - 1] != b'_'
+                        && remaining.as_bytes()[pos - 1] != b'$';
+                if !before_ok {
+                    result.push_str(&remaining[..pos + 6]);
+                    remaining = &remaining[pos + 6..];
+                    continue;
+                }
+                let after = &remaining[pos + 6..];
+                let trimmed = after.trim_start();
+                // Check if the return expression matches the uniform
+                // value (case-insensitive for keywords like `null`).
+                let value_trimmed = value.trim();
+                if trimmed.len() >= value_trimmed.len() {
+                    let candidate = &trimmed[..value_trimmed.len()];
+                    let after_value = trimmed[value_trimmed.len()..].trim_start();
+                    if candidate.eq_ignore_ascii_case(value_trimmed) && after_value.starts_with(';')
+                    {
+                        // `return <value>;` → `return false;`
+                        result.push_str(&remaining[..pos]);
+                        result.push_str("return false");
+                        // Skip past `return <ws> <value> <ws>`, keep `;`.
+                        let consumed = (trimmed.as_ptr() as usize - after.as_ptr() as usize)
+                            + value_trimmed.len()
+                            + (after_value.as_ptr() as usize
+                                - trimmed[value_trimmed.len()..].as_ptr() as usize);
+                        remaining = &remaining[pos + 6 + consumed..];
+                        continue;
+                    }
+                }
+                result.push_str(&remaining[..pos + 6]);
+                remaining = &remaining[pos + 6..];
+            }
+            result.push_str(remaining);
+            result
+        }
+    }
 }
 
 /// Build the parameter list string for the function signature.
@@ -661,29 +812,46 @@ fn build_param_list(params: &[(String, String)]) -> String {
 
 /// Build the return type annotation string.
 fn build_return_type(info: &ExtractionInfo) -> String {
-    // When the body ends with `return expr;`, the extracted function's
-    // return type is the trailing return type (resolved from the
-    // enclosing function's signature), not derived from variable types.
-    if info.has_trailing_return {
-        let t = clean_type_for_signature(&info.trailing_return_type);
-        if !t.is_empty() {
-            return t;
+    match &info.return_strategy {
+        ReturnStrategy::TrailingReturn => {
+            // Use the enclosing function's return type.
+            let t = clean_type_for_signature(&info.trailing_return_type);
+            if !t.is_empty() {
+                return t;
+            }
+            String::new()
         }
-        return String::new();
-    }
-
-    if info.returns.is_empty() {
-        return "void".to_string();
-    }
-    if info.returns.len() == 1 {
-        let type_hint = &info.returns[0].1;
-        if type_hint.is_empty() {
-            return String::new();
+        ReturnStrategy::VoidGuards | ReturnStrategy::UniformGuards(_) => {
+            // Guard strategies use bool: true = continue, false = exit.
+            "bool".to_string()
         }
-        return type_hint.clone();
+        ReturnStrategy::SentinelNull => {
+            // Sentinel-null: the return type is nullable.  Try to
+            // derive it from the trailing_return_type if available,
+            // otherwise leave untyped.
+            let t = clean_type_for_signature(&info.trailing_return_type);
+            if !t.is_empty() && !t.starts_with('?') && t != "null" && t != "mixed" {
+                return format!("?{}", t);
+            }
+            // Can't determine a useful nullable type.
+            String::new()
+        }
+        ReturnStrategy::None | ReturnStrategy::Unsafe => {
+            // Normal extraction — derive from return variables.
+            if info.returns.is_empty() {
+                return "void".to_string();
+            }
+            if info.returns.len() == 1 {
+                let type_hint = &info.returns[0].1;
+                if type_hint.is_empty() {
+                    return String::new();
+                }
+                return type_hint.clone();
+            }
+            // Multiple return values → return as array.
+            "array".to_string()
+        }
     }
-    // Multiple return values → return as array.
-    "array".to_string()
 }
 
 /// Build the call-site text that replaces the selected statements.
@@ -707,34 +875,71 @@ fn build_call_site(info: &ExtractionInfo, call_indent: &str) -> String {
         }
     };
 
-    if info.has_trailing_return {
-        // The body ends with `return expr;` — the call site passes
-        // the return value through.
-        out.push_str(call_indent);
-        out.push_str("return ");
-        out.push_str(&call_expr);
-        out.push_str(";\n");
-    } else if info.returns.is_empty() {
-        // No return values — just call the function.
-        out.push_str(call_indent);
-        out.push_str(&call_expr);
-        out.push_str(";\n");
-    } else if info.returns.len() == 1 {
-        // Single return value — assign it.
-        out.push_str(call_indent);
-        out.push_str(&info.returns[0].0);
-        out.push_str(" = ");
-        out.push_str(&call_expr);
-        out.push_str(";\n");
-    } else {
-        // Multiple return values — destructure from array.
-        let vars: Vec<&str> = info.returns.iter().map(|(n, _)| n.as_str()).collect();
-        out.push_str(call_indent);
-        out.push('[');
-        out.push_str(&vars.join(", "));
-        out.push_str("] = ");
-        out.push_str(&call_expr);
-        out.push_str(";\n");
+    match &info.return_strategy {
+        ReturnStrategy::TrailingReturn => {
+            // The body ends with `return expr;` — the call site passes
+            // the return value through.
+            out.push_str(call_indent);
+            out.push_str("return ");
+            out.push_str(&call_expr);
+            out.push_str(";\n");
+        }
+        ReturnStrategy::VoidGuards => {
+            // Extracted function returns bool (true = continue).
+            // Call site: `if (!extracted(…)) return;`
+            out.push_str(call_indent);
+            out.push_str("if (!");
+            out.push_str(&call_expr);
+            out.push_str(") return;\n");
+        }
+        ReturnStrategy::UniformGuards(value) => {
+            // Extracted function returns bool (true = continue).
+            // Call site: `if (!extracted(…)) return <value>;`
+            out.push_str(call_indent);
+            out.push_str("if (!");
+            out.push_str(&call_expr);
+            out.push_str(") return ");
+            out.push_str(value);
+            out.push_str(";\n");
+        }
+        ReturnStrategy::SentinelNull => {
+            // Extracted function returns null on fall-through, or the
+            // actual value on early exit.
+            // Call site:
+            //   $__early = extracted(…);
+            //   if ($__early !== null) return $__early;
+            out.push_str(call_indent);
+            out.push_str("$__early = ");
+            out.push_str(&call_expr);
+            out.push_str(";\n");
+            out.push_str(call_indent);
+            out.push_str("if ($__early !== null) return $__early;\n");
+        }
+        ReturnStrategy::None | ReturnStrategy::Unsafe => {
+            // Normal extraction.
+            if info.returns.is_empty() {
+                // No return values — just call the function.
+                out.push_str(call_indent);
+                out.push_str(&call_expr);
+                out.push_str(";\n");
+            } else if info.returns.len() == 1 {
+                // Single return value — assign it.
+                out.push_str(call_indent);
+                out.push_str(&info.returns[0].0);
+                out.push_str(" = ");
+                out.push_str(&call_expr);
+                out.push_str(";\n");
+            } else {
+                // Multiple return values — destructure from array.
+                let vars: Vec<&str> = info.returns.iter().map(|(n, _)| n.as_str()).collect();
+                out.push_str(call_indent);
+                out.push('[');
+                out.push_str(&vars.join(", "));
+                out.push_str("] = ");
+                out.push_str(&call_expr);
+                out.push_str(";\n");
+            }
+        }
     }
 
     out
@@ -742,20 +947,29 @@ fn build_call_site(info: &ExtractionInfo, call_indent: &str) -> String {
 
 // ─── Return statement analysis ──────────────────────────────────────────────
 
-/// Analyse `return` statements within the selected range.
+/// Analyse `return` statements within the selected range and determine
+/// the extraction strategy.
 ///
-/// Returns `(has_unsafe_return, has_trailing_return)`:
-/// - `has_unsafe_return` — the selection contains a `return` but does
-///   NOT end with one.  Extracting would change control flow because
-///   the call site wouldn't be `return extracted(…)`, so an early
-///   return inside the extracted function would exit only that function
-///   instead of the caller.
-/// - `has_trailing_return` — the last selected statement is a `return`.
-///   When this is true, the call site becomes `return extracted(…)`,
-///   which means *every* return path inside the extracted function
-///   (including guard-clause returns, nested returns in `if`/`switch`,
-///   etc.) correctly propagates back to the caller.
-fn analyse_returns(content: &str, start: usize, end: usize) -> (bool, bool) {
+/// The returned `ReturnStrategy` tells the code generator how to handle
+/// early returns in the extracted code:
+/// - `None` — no returns in the selection.
+/// - `TrailingReturn` — last statement is `return`, call site uses
+///   `return extracted(…)`.
+/// - `VoidGuards` / `UniformGuards` / `SentinelNull` — guard-clause
+///   patterns that can be safely extracted with special call sites.
+/// - `Unsafe` — cannot safely extract.
+///
+/// `has_return_values` should be `true` when the selection modifies
+/// variables that are read after it (the scope classifier's
+/// `return_values` is non-empty).  Guard strategies are rejected in
+/// that case because we'd need to return both the sentinel and the
+/// modified variables.
+fn analyse_returns(
+    content: &str,
+    start: usize,
+    end: usize,
+    has_return_values: bool,
+) -> ReturnStrategy {
     let arena = Bump::new();
     let file_id = mago_database::file::FileId::new("extract_fn_ret");
     let program = mago_syntax::parser::parse_file_content(&arena, file_id, content);
@@ -775,7 +989,7 @@ fn analyse_returns(content: &str, start: usize, end: usize) -> (bool, bool) {
         .collect();
 
     if selected.is_empty() {
-        return (false, false);
+        return ReturnStrategy::None;
     }
 
     // Check whether the last selected statement is a `return`.
@@ -785,13 +999,20 @@ fn analyse_returns(content: &str, start: usize, end: usize) -> (bool, bool) {
     // (at any nesting level).
     let any_return = selected.iter().any(|s| selection_stmt_contains_return(s));
 
-    // Returns are only unsafe when the selection contains returns but
-    // does NOT end with one.  When the selection ends with `return`,
-    // the call site is `return extracted(…)`, so every return path
-    // inside the extracted function propagates correctly.
-    let has_unsafe_return = any_return && !has_trailing_return;
+    if !any_return {
+        return ReturnStrategy::None;
+    }
 
-    (has_unsafe_return, has_trailing_return)
+    // When the selection ends with `return`, the call site is
+    // `return extracted(…)`, so every return path inside the
+    // extracted function propagates correctly.
+    if has_trailing_return {
+        return ReturnStrategy::TrailingReturn;
+    }
+
+    // The selection contains returns but does NOT end with one.
+    // Try to find a guard-clause strategy.
+    classify_guard_returns(content, &selected, has_return_values)
 }
 
 /// Check whether a statement is or contains a `return` at any depth.
@@ -884,6 +1105,232 @@ fn selection_stmt_contains_return(stmt: &Statement<'_>) -> bool {
     }
 }
 
+// ─── Return strategy ────────────────────────────────────────────────────────
+
+/// How to handle return statements in the extracted code.
+///
+/// When the selection contains `return` statements that are NOT the last
+/// statement, naive extraction would break control flow.  This enum
+/// describes the strategy for preserving the caller's early-exit
+/// semantics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ReturnStrategy {
+    /// No return statements in the selection.
+    None,
+    /// The last selected statement is a `return` — the call site becomes
+    /// `return extracted(…)` and every return path propagates correctly.
+    TrailingReturn,
+    /// All returns are bare `return;` (void guards).  The extracted
+    /// function returns `bool` (true = continue, false = exit early)
+    /// and the call site is `if (!extracted(…)) return;`.
+    VoidGuards,
+    /// All returns return the same non-null literal value.  The
+    /// extracted function returns `bool` and the call site is
+    /// `if (!extracted(…)) return <value>;`.
+    ///
+    /// The string is the source text of the common return value.
+    UniformGuards(String),
+    /// Returns have different non-null values — use `null` as a
+    /// sentinel for "no early exit."  The extracted function returns
+    /// `?<type>` and the call site is:
+    /// ```php
+    /// $__early = extracted(…);
+    /// if ($__early !== null) return $__early;
+    /// ```
+    SentinelNull,
+    /// Cannot safely extract (e.g. returns null, or modified variables
+    /// are used after the selection).
+    Unsafe,
+}
+
+/// Collect the source text of every `return` expression in the selected
+/// statements.
+///
+/// Bare `return;` is represented as `None`.  `return expr;` yields
+/// `Some("expr")` with the expression's source text.
+fn collect_return_expressions<'a>(
+    content: &'a str,
+    stmts: &[&Statement<'_>],
+) -> Vec<Option<&'a str>> {
+    let mut out = Vec::new();
+    for stmt in stmts {
+        collect_returns_from_stmt(content, stmt, &mut out);
+    }
+    out
+}
+
+/// Recursively collect return expressions from a single statement.
+fn collect_returns_from_stmt<'a>(
+    content: &'a str,
+    stmt: &Statement<'_>,
+    out: &mut Vec<Option<&'a str>>,
+) {
+    match stmt {
+        Statement::Return(ret) => {
+            let expr_text = ret.value.as_ref().map(|expr| {
+                let s = expr.span().start.offset as usize;
+                let e = expr.span().end.offset as usize;
+                content[s..e].trim()
+            });
+            out.push(expr_text);
+        }
+        Statement::If(if_stmt) => match &if_stmt.body {
+            IfBody::Statement(body) => {
+                collect_returns_from_stmt(content, body.statement, out);
+                for c in &body.else_if_clauses {
+                    collect_returns_from_stmt(content, c.statement, out);
+                }
+                if let Some(c) = &body.else_clause {
+                    collect_returns_from_stmt(content, c.statement, out);
+                }
+            }
+            IfBody::ColonDelimited(body) => {
+                for s in &body.statements {
+                    collect_returns_from_stmt(content, s, out);
+                }
+                for c in &body.else_if_clauses {
+                    for s in &c.statements {
+                        collect_returns_from_stmt(content, s, out);
+                    }
+                }
+                if let Some(c) = &body.else_clause {
+                    for s in &c.statements {
+                        collect_returns_from_stmt(content, s, out);
+                    }
+                }
+            }
+        },
+        Statement::Foreach(f) => match &f.body {
+            ForeachBody::Statement(s) => collect_returns_from_stmt(content, s, out),
+            ForeachBody::ColonDelimited(b) => {
+                for s in &b.statements {
+                    collect_returns_from_stmt(content, s, out);
+                }
+            }
+        },
+        Statement::While(w) => match &w.body {
+            WhileBody::Statement(s) => collect_returns_from_stmt(content, s, out),
+            WhileBody::ColonDelimited(b) => {
+                for s in &b.statements {
+                    collect_returns_from_stmt(content, s, out);
+                }
+            }
+        },
+        Statement::DoWhile(dw) => collect_returns_from_stmt(content, dw.statement, out),
+        Statement::For(f) => match &f.body {
+            ForBody::Statement(s) => collect_returns_from_stmt(content, s, out),
+            ForBody::ColonDelimited(b) => {
+                for s in &b.statements {
+                    collect_returns_from_stmt(content, s, out);
+                }
+            }
+        },
+        Statement::Switch(sw) => {
+            for c in sw.body.cases().iter() {
+                let stmts = match c {
+                    SwitchCase::Expression(e) => &e.statements,
+                    SwitchCase::Default(d) => &d.statements,
+                };
+                for s in stmts.iter() {
+                    collect_returns_from_stmt(content, s, out);
+                }
+            }
+        }
+        Statement::Try(t) => {
+            for s in &t.block.statements {
+                collect_returns_from_stmt(content, s, out);
+            }
+            for c in &t.catch_clauses {
+                for s in &c.block.statements {
+                    collect_returns_from_stmt(content, s, out);
+                }
+            }
+            if let Some(f) = &t.finally_clause {
+                for s in &f.block.statements {
+                    collect_returns_from_stmt(content, s, out);
+                }
+            }
+        }
+        Statement::Block(b) => {
+            for s in &b.statements {
+                collect_returns_from_stmt(content, s, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Classify the return strategy for a selection that contains return
+/// statements but does NOT end with one.
+///
+/// This is called only when `has_unsafe_return` would have been `true`
+/// under the old logic.  It inspects the actual return expressions to
+/// decide whether a safe extraction pattern exists.
+fn classify_guard_returns(
+    content: &str,
+    stmts: &[&Statement<'_>],
+    has_return_values: bool,
+) -> ReturnStrategy {
+    // If the selection modifies variables that are used after it,
+    // we can't use guard extraction — we'd need to return both the
+    // "did I exit?" flag and the modified variables.
+    if has_return_values {
+        return ReturnStrategy::Unsafe;
+    }
+
+    let return_exprs = collect_return_expressions(content, stmts);
+    if return_exprs.is_empty() {
+        return ReturnStrategy::Unsafe;
+    }
+
+    // Case 1: All returns are bare `return;` (void guards).
+    if return_exprs.iter().all(|e| e.is_none()) {
+        return ReturnStrategy::VoidGuards;
+    }
+
+    // If any return is bare but others aren't, we have a mix of void
+    // and valued returns — can't handle this.
+    if return_exprs.iter().any(|e| e.is_none()) {
+        return ReturnStrategy::Unsafe;
+    }
+
+    // All returns have values.  Check if any returns null.
+    let values: Vec<&str> = return_exprs.iter().map(|e| e.unwrap()).collect();
+    let any_returns_null = values.iter().any(|v| {
+        let lower = v.trim().to_lowercase();
+        lower == "null"
+    });
+
+    // Case 2: All return the same value.
+    let all_same = values.windows(2).all(|w| w[0].trim() == w[1].trim());
+    if all_same {
+        let value = values[0].trim().to_string();
+        // If the uniform value is `true` or `false`, we can use the
+        // inverse as the sentinel — the cleanest possible output.
+        let lower = value.to_lowercase();
+        if lower == "false" || lower == "true" {
+            return ReturnStrategy::UniformGuards(value);
+        }
+        // If the uniform value is `null`, we can't use null as sentinel,
+        // but we can still use bool: the extracted function returns bool,
+        // and the call site does `if (!extracted()) return null;`.
+        if lower == "null" {
+            return ReturnStrategy::UniformGuards(value);
+        }
+        // For other uniform values, if it's not null, bool flag works.
+        return ReturnStrategy::UniformGuards(value);
+    }
+
+    // Case 3: Different values, none are null — use null sentinel.
+    if !any_returns_null {
+        return ReturnStrategy::SentinelNull;
+    }
+
+    // Different values including null — can't use null as sentinel
+    // and can't use bool flag either.
+    ReturnStrategy::Unsafe
+}
+
 /// Resolve the return type of the enclosing function/method at `offset`.
 ///
 /// Extracts the native return type hint from the function signature.
@@ -903,7 +1350,7 @@ fn resolve_enclosing_return_type(content: &str, offset: u32) -> String {
                     .map(|h| {
                         let s = h.span().start.offset as usize;
                         let e = h.span().end.offset as usize;
-                        content[s..e].trim().to_string()
+                        strip_return_type_colon(content[s..e].trim())
                     })
                     .unwrap_or_default();
             }
@@ -915,11 +1362,21 @@ fn resolve_enclosing_return_type(content: &str, offset: u32) -> String {
             .map(|h| {
                 let s = h.span().start.offset as usize;
                 let e = h.span().end.offset as usize;
-                content[s..e].trim().to_string()
+                strip_return_type_colon(content[s..e].trim())
             })
             .unwrap_or_default(),
         _ => String::new(),
     }
+}
+
+/// Strip the leading `: ` from a return type hint span.
+///
+/// The mago AST's `return_type_hint` span includes the colon and
+/// whitespace prefix (e.g. `": string"`).  This helper strips that
+/// prefix to yield just the type name.
+fn strip_return_type_colon(raw: &str) -> String {
+    let stripped = raw.strip_prefix(':').unwrap_or(raw).trim_start();
+    stripped.to_string()
 }
 
 // ─── Main code action collector ─────────────────────────────────────────────
@@ -956,20 +1413,21 @@ impl Backend {
             return;
         }
 
-        // Analyse return statements in the selection.
-        let (has_unsafe_return, has_trailing_return) = analyse_returns(content, start, end);
-
-        // Reject when the selection contains returns but does NOT end
-        // with one — the call site wouldn't be `return extracted(…)`,
-        // so early returns would exit only the extracted function
-        // instead of the caller.
-        if has_unsafe_return {
-            return;
-        }
-
         // Build scope map and classify the selected range.
         let scope_map = build_scope_map(content, start as u32);
         let classification = scope_map.classify_range(start as u32, end as u32);
+
+        // Analyse return statements in the selection.  We pass
+        // whether the selection has return values (variables modified
+        // inside and read after) so guard strategies can be rejected
+        // when we'd need to return both a sentinel and modified vars.
+        let has_return_values = !classification.return_values.is_empty();
+        let return_strategy = analyse_returns(content, start, end, has_return_values);
+
+        // Reject when the return strategy is Unsafe.
+        if return_strategy == ReturnStrategy::Unsafe {
+            return;
+        }
 
         // Use the scope-level flag as a quick pre-check before the more
         // granular range classification.  If the *entire* scope has no
@@ -1036,9 +1494,12 @@ impl Backend {
         let body_line_start = find_line_start(content, start);
         let body_text = content[body_line_start..end].to_string();
 
-        // When the selection ends with `return`, resolve the enclosing
-        // function's return type so the extracted function can carry it.
-        let trailing_return_type = if has_trailing_return {
+        // When the selection ends with `return` or uses sentinel-null,
+        // resolve the enclosing function's return type.
+        let trailing_return_type = if matches!(
+            return_strategy,
+            ReturnStrategy::TrailingReturn | ReturnStrategy::SentinelNull
+        ) {
             resolve_enclosing_return_type(content, start as u32)
         } else {
             String::new()
@@ -1053,7 +1514,7 @@ impl Backend {
             is_static: enclosing.is_static,
             member_indent,
             body_indent,
-            has_trailing_return,
+            return_strategy,
             trailing_return_type,
         };
 
@@ -1236,6 +1697,27 @@ fn is_valid_php_type_hint(type_str: &str) -> bool {
 mod tests {
     use super::*;
 
+    // ── Enclosing return type resolution ────────────────────────────
+
+    #[test]
+    fn resolve_return_type_standalone_function() {
+        let php = "<?php\nfunction classify(int $code): string\n{\n    if ($code < 0) return 'negative';\n    return 'ok';\n}\n";
+        let offset = php.find("if ($code").unwrap() as u32;
+        let result = resolve_enclosing_return_type(php, offset);
+        assert_eq!(
+            result, "string",
+            "should resolve enclosing function return type"
+        );
+    }
+
+    #[test]
+    fn resolve_return_type_method() {
+        let php = "<?php\nclass Foo {\n    public function bar(): int\n    {\n        return 42;\n    }\n}\n";
+        let offset = php.find("return 42").unwrap() as u32;
+        let result = resolve_enclosing_return_type(php, offset);
+        assert_eq!(result, "int", "should resolve enclosing method return type");
+    }
+
     // ── Statement boundary validation ───────────────────────────────
 
     #[test]
@@ -1309,18 +1791,27 @@ mod tests {
         let php = "<?php\nfunction foo() {\n    $x = 1;\n    return $x;\n}\n";
         let start = php.find("$x = 1;").unwrap();
         let end = php.find("return $x;").unwrap() + "return $x;".len();
-        let (unsafe_ret, trailing) = analyse_returns(php, start, end);
-        assert!(!unsafe_ret, "should not be unsafe when trailing return");
-        assert!(trailing, "should detect trailing return");
+        let strategy = analyse_returns(php, start, end, false);
+        assert_eq!(strategy, ReturnStrategy::TrailingReturn);
     }
 
     #[test]
     fn detects_unsafe_return_without_trailing() {
+        // `return 1;` followed by `$x = 2;` — the return doesn't end
+        // the selection, and the values are mixed (not guard clauses),
+        // so this can use sentinel-null (1 is not null).
         let php = "<?php\nfunction foo() {\n    return 1;\n    $x = 2;\n}\n";
         let start = php.find("return 1;").unwrap();
         let end = php.find("$x = 2;").unwrap() + "$x = 2;".len();
-        let (unsafe_ret, _trailing) = analyse_returns(php, start, end);
-        assert!(unsafe_ret, "return without trailing return is unsafe");
+        let strategy = analyse_returns(php, start, end, false);
+        // `$x = 2;` is NOT a return, but there IS a return in the
+        // selection that doesn't end it.  The only return value is `1`
+        // → uniform guards with value "1".
+        assert_eq!(
+            strategy,
+            ReturnStrategy::UniformGuards("1".to_string()),
+            "single non-null return value should use uniform guards"
+        );
     }
 
     #[test]
@@ -1328,9 +1819,8 @@ mod tests {
         let php = "<?php\nfunction foo() {\n    $returnValue = 1;\n}\n";
         let start = php.find("$returnValue").unwrap();
         let end = start + "$returnValue = 1;".len();
-        let (unsafe_ret, trailing) = analyse_returns(php, start, end);
-        assert!(!unsafe_ret);
-        assert!(!trailing);
+        let strategy = analyse_returns(php, start, end, false);
+        assert_eq!(strategy, ReturnStrategy::None);
     }
 
     #[test]
@@ -1342,23 +1832,90 @@ mod tests {
         let php = "<?php\nfunction foo($x) {\n    if (!$x) return 0;\n    $r = $x * 2;\n    return $r;\n}\n";
         let start = php.find("if (!$x)").unwrap();
         let end = php.find("return $r;").unwrap() + "return $r;".len();
-        let (unsafe_ret, trailing) = analyse_returns(php, start, end);
-        assert!(trailing, "should detect trailing return");
-        assert!(
-            !unsafe_ret,
-            "nested return is safe when trailing return present"
-        );
+        let strategy = analyse_returns(php, start, end, false);
+        assert_eq!(strategy, ReturnStrategy::TrailingReturn);
     }
 
     #[test]
     fn nested_return_unsafe_without_trailing_return() {
         // Return inside an if, but the selection does NOT end with return.
+        // The return value is `1` (not null) → uses sentinel-null since
+        // there are no modified variables.
         let php = "<?php\nfunction foo($x) {\n    if ($x) {\n        return 1;\n    }\n    echo 'done';\n}\n";
         let start = php.find("if ($x)").unwrap();
         let end = php.find("echo 'done';").unwrap() + "echo 'done';".len();
-        let (unsafe_ret, trailing) = analyse_returns(php, start, end);
-        assert!(unsafe_ret, "return without trailing return is unsafe");
-        assert!(!trailing);
+        let strategy = analyse_returns(php, start, end, false);
+        assert_eq!(
+            strategy,
+            ReturnStrategy::UniformGuards("1".to_string()),
+            "single non-null return should use uniform guards"
+        );
+    }
+
+    // ── Guard return strategies ─────────────────────────────────────
+
+    #[test]
+    fn void_guards_strategy() {
+        // All returns are bare `return;` → VoidGuards.
+        let php = "<?php\nfunction foo($x, $y) {\n    if (!$x) return;\n    if (!$y) return;\n    echo 'ok';\n}\n";
+        let start = php.find("if (!$x)").unwrap();
+        let end = php.find("echo 'ok';").unwrap() + "echo 'ok';".len();
+        let strategy = analyse_returns(php, start, end, false);
+        assert_eq!(strategy, ReturnStrategy::VoidGuards);
+    }
+
+    #[test]
+    fn uniform_false_guards_strategy() {
+        // All returns are `return false;` → UniformGuards("false").
+        let php = "<?php\nfunction foo($x, $y) {\n    if (!$x) return false;\n    if (!$y) return false;\n    echo 'ok';\n}\n";
+        let start = php.find("if (!$x)").unwrap();
+        let end = php.find("echo 'ok';").unwrap() + "echo 'ok';".len();
+        let strategy = analyse_returns(php, start, end, false);
+        assert_eq!(strategy, ReturnStrategy::UniformGuards("false".to_string()));
+    }
+
+    #[test]
+    fn uniform_null_guards_strategy() {
+        // All returns are `return null;` → UniformGuards("null").
+        // This works because the bool-flag approach doesn't need null
+        // as a sentinel.
+        let php = "<?php\nfunction foo($id) {\n    if ($id <= 0) return null;\n    if (!$this->exists($id)) return null;\n    echo 'ok';\n}\n";
+        let start = php.find("if ($id").unwrap();
+        let end = php.find("echo 'ok';").unwrap() + "echo 'ok';".len();
+        let strategy = analyse_returns(php, start, end, false);
+        assert_eq!(strategy, ReturnStrategy::UniformGuards("null".to_string()));
+    }
+
+    #[test]
+    fn sentinel_null_strategy() {
+        // Different non-null return values → SentinelNull.
+        let php = "<?php\nfunction foo($x) {\n    if ($x < 0) return 'negative';\n    if ($x > 100) return 'overflow';\n    echo 'ok';\n}\n";
+        let start = php.find("if ($x < 0)").unwrap();
+        let end = php.find("echo 'ok';").unwrap() + "echo 'ok';".len();
+        let strategy = analyse_returns(php, start, end, false);
+        assert_eq!(strategy, ReturnStrategy::SentinelNull);
+    }
+
+    #[test]
+    fn mixed_null_and_other_values_is_unsafe() {
+        // Returns include null AND other values → Unsafe (can't use
+        // null as sentinel when null is also a valid return).
+        let php = "<?php\nfunction foo($x) {\n    if ($x < 0) return null;\n    if ($x > 100) return 'overflow';\n    echo 'ok';\n}\n";
+        let start = php.find("if ($x < 0)").unwrap();
+        let end = php.find("echo 'ok';").unwrap() + "echo 'ok';".len();
+        let strategy = analyse_returns(php, start, end, false);
+        assert_eq!(strategy, ReturnStrategy::Unsafe);
+    }
+
+    #[test]
+    fn guard_with_return_values_is_unsafe() {
+        // Selection has return values (modified variables read after
+        // the selection) — can't use guard strategies.
+        let php = "<?php\nfunction foo($x) {\n    if (!$x) return false;\n    echo 'ok';\n}\n";
+        let start = php.find("if (!$x)").unwrap();
+        let end = php.find("echo 'ok';").unwrap() + "echo 'ok';".len();
+        let strategy = analyse_returns(php, start, end, true);
+        assert_eq!(strategy, ReturnStrategy::Unsafe);
     }
 
     // ── Type hint validation ────────────────────────────────────────
@@ -1444,7 +2001,7 @@ mod tests {
             is_static: false,
             member_indent: String::new(),
             body_indent: String::new(),
-            has_trailing_return: false,
+            return_strategy: ReturnStrategy::None,
             trailing_return_type: String::new(),
         };
         assert_eq!(build_return_type(&info), "void");
@@ -1461,7 +2018,7 @@ mod tests {
             is_static: false,
             member_indent: String::new(),
             body_indent: String::new(),
-            has_trailing_return: false,
+            return_strategy: ReturnStrategy::None,
             trailing_return_type: String::new(),
         };
         assert_eq!(build_return_type(&info), "int");
@@ -1481,7 +2038,7 @@ mod tests {
             is_static: false,
             member_indent: String::new(),
             body_indent: String::new(),
-            has_trailing_return: false,
+            return_strategy: ReturnStrategy::None,
             trailing_return_type: String::new(),
         };
         assert_eq!(build_return_type(&info), "array");
@@ -1498,10 +2055,61 @@ mod tests {
             is_static: false,
             member_indent: String::new(),
             body_indent: String::new(),
-            has_trailing_return: true,
+            return_strategy: ReturnStrategy::TrailingReturn,
             trailing_return_type: "string".to_string(),
         };
         assert_eq!(build_return_type(&info), "string");
+    }
+
+    #[test]
+    fn return_type_void_guards() {
+        let info = ExtractionInfo {
+            name: String::new(),
+            params: vec![],
+            returns: vec![],
+            body: String::new(),
+            target: ExtractionTarget::Function,
+            is_static: false,
+            member_indent: String::new(),
+            body_indent: String::new(),
+            return_strategy: ReturnStrategy::VoidGuards,
+            trailing_return_type: String::new(),
+        };
+        assert_eq!(build_return_type(&info), "bool");
+    }
+
+    #[test]
+    fn return_type_uniform_guards() {
+        let info = ExtractionInfo {
+            name: String::new(),
+            params: vec![],
+            returns: vec![],
+            body: String::new(),
+            target: ExtractionTarget::Function,
+            is_static: false,
+            member_indent: String::new(),
+            body_indent: String::new(),
+            return_strategy: ReturnStrategy::UniformGuards("false".to_string()),
+            trailing_return_type: String::new(),
+        };
+        assert_eq!(build_return_type(&info), "bool");
+    }
+
+    #[test]
+    fn return_type_sentinel_null_with_type() {
+        let info = ExtractionInfo {
+            name: String::new(),
+            params: vec![],
+            returns: vec![],
+            body: String::new(),
+            target: ExtractionTarget::Function,
+            is_static: false,
+            member_indent: String::new(),
+            body_indent: String::new(),
+            return_strategy: ReturnStrategy::SentinelNull,
+            trailing_return_type: "string".to_string(),
+        };
+        assert_eq!(build_return_type(&info), "?string");
     }
 
     // ── Name generation ─────────────────────────────────────────────
@@ -1545,7 +2153,7 @@ mod tests {
             is_static: false,
             member_indent: String::new(),
             body_indent: "    ".to_string(),
-            has_trailing_return: false,
+            return_strategy: ReturnStrategy::None,
             trailing_return_type: String::new(),
         };
         let result = build_call_site(&info, "    ");
@@ -1563,7 +2171,7 @@ mod tests {
             is_static: false,
             member_indent: String::new(),
             body_indent: "    ".to_string(),
-            has_trailing_return: false,
+            return_strategy: ReturnStrategy::None,
             trailing_return_type: String::new(),
         };
         let result = build_call_site(&info, "    ");
@@ -1584,7 +2192,7 @@ mod tests {
             is_static: false,
             member_indent: String::new(),
             body_indent: "    ".to_string(),
-            has_trailing_return: false,
+            return_strategy: ReturnStrategy::None,
             trailing_return_type: String::new(),
         };
         let result = build_call_site(&info, "    ");
@@ -1602,7 +2210,7 @@ mod tests {
             is_static: false,
             member_indent: "    ".to_string(),
             body_indent: "        ".to_string(),
-            has_trailing_return: false,
+            return_strategy: ReturnStrategy::None,
             trailing_return_type: String::new(),
         };
         let result = build_call_site(&info, "        ");
@@ -1620,7 +2228,7 @@ mod tests {
             is_static: true,
             member_indent: "    ".to_string(),
             body_indent: "        ".to_string(),
-            has_trailing_return: false,
+            return_strategy: ReturnStrategy::None,
             trailing_return_type: String::new(),
         };
         let result = build_call_site(&info, "        ");
@@ -1638,11 +2246,68 @@ mod tests {
             is_static: false,
             member_indent: "    ".to_string(),
             body_indent: "        ".to_string(),
-            has_trailing_return: true,
+            return_strategy: ReturnStrategy::TrailingReturn,
             trailing_return_type: "int".to_string(),
         };
         let result = build_call_site(&info, "        ");
         assert_eq!(result, "        return $this->extracted($x);\n");
+    }
+
+    #[test]
+    fn call_site_void_guards() {
+        let info = ExtractionInfo {
+            name: "extracted".to_string(),
+            params: vec![("$x".to_string(), String::new())],
+            returns: vec![],
+            body: String::new(),
+            target: ExtractionTarget::Method,
+            is_static: false,
+            member_indent: "    ".to_string(),
+            body_indent: "        ".to_string(),
+            return_strategy: ReturnStrategy::VoidGuards,
+            trailing_return_type: String::new(),
+        };
+        let result = build_call_site(&info, "        ");
+        assert_eq!(result, "        if (!$this->extracted($x)) return;\n");
+    }
+
+    #[test]
+    fn call_site_uniform_false_guards() {
+        let info = ExtractionInfo {
+            name: "extracted".to_string(),
+            params: vec![("$x".to_string(), String::new())],
+            returns: vec![],
+            body: String::new(),
+            target: ExtractionTarget::Method,
+            is_static: false,
+            member_indent: "    ".to_string(),
+            body_indent: "        ".to_string(),
+            return_strategy: ReturnStrategy::UniformGuards("false".to_string()),
+            trailing_return_type: String::new(),
+        };
+        let result = build_call_site(&info, "        ");
+        assert_eq!(result, "        if (!$this->extracted($x)) return false;\n");
+    }
+
+    #[test]
+    fn call_site_sentinel_null() {
+        let info = ExtractionInfo {
+            name: "extracted".to_string(),
+            params: vec![("$x".to_string(), String::new())],
+            returns: vec![],
+            body: String::new(),
+            target: ExtractionTarget::Method,
+            is_static: false,
+            member_indent: "    ".to_string(),
+            body_indent: "        ".to_string(),
+            return_strategy: ReturnStrategy::SentinelNull,
+            trailing_return_type: String::new(),
+        };
+        let result = build_call_site(&info, "        ");
+        assert_eq!(
+            result,
+            "        $__early = $this->extracted($x);\n        if ($__early !== null) return $__early;\n"
+        );
     }
 
     // ── Definition generation ───────────────────────────────────────
@@ -1658,7 +2323,7 @@ mod tests {
             is_static: false,
             member_indent: "    ".to_string(),
             body_indent: "        ".to_string(),
-            has_trailing_return: false,
+            return_strategy: ReturnStrategy::None,
             trailing_return_type: String::new(),
         };
         let result = build_extracted_definition(&info);
@@ -1680,7 +2345,7 @@ mod tests {
             is_static: false,
             member_indent: String::new(),
             body_indent: "    ".to_string(),
-            has_trailing_return: false,
+            return_strategy: ReturnStrategy::None,
             trailing_return_type: String::new(),
         };
         let result = build_extracted_definition(&info);
@@ -1702,7 +2367,7 @@ mod tests {
             is_static: true,
             member_indent: "    ".to_string(),
             body_indent: "        ".to_string(),
-            has_trailing_return: false,
+            return_strategy: ReturnStrategy::None,
             trailing_return_type: String::new(),
         };
         let result = build_extracted_definition(&info);
@@ -1723,7 +2388,7 @@ mod tests {
             is_static: false,
             member_indent: "    ".to_string(),
             body_indent: "        ".to_string(),
-            has_trailing_return: true,
+            return_strategy: ReturnStrategy::TrailingReturn,
             trailing_return_type: "int".to_string(),
         };
         let result = build_extracted_definition(&info);
@@ -1741,6 +2406,224 @@ mod tests {
             result.matches("return").count(),
             1,
             "should have exactly one return: {result}"
+        );
+    }
+
+    #[test]
+    fn definition_void_guards_appends_return_true() {
+        let info = ExtractionInfo {
+            name: "validate".to_string(),
+            params: vec![("$x".to_string(), String::new())],
+            returns: vec![],
+            body: "if (!$x) return;".to_string(),
+            target: ExtractionTarget::Method,
+            is_static: false,
+            member_indent: "    ".to_string(),
+            body_indent: "        ".to_string(),
+            return_strategy: ReturnStrategy::VoidGuards,
+            trailing_return_type: String::new(),
+        };
+        let result = build_extracted_definition(&info);
+        assert!(
+            result.contains(": bool"),
+            "should have bool return type: {result}"
+        );
+        assert!(
+            result.contains("return true;"),
+            "should append return true as fall-through: {result}"
+        );
+    }
+
+    #[test]
+    fn definition_uniform_false_guards_appends_return_true() {
+        let info = ExtractionInfo {
+            name: "validate".to_string(),
+            params: vec![("$x".to_string(), String::new())],
+            returns: vec![],
+            body: "if (!$x) return false;".to_string(),
+            target: ExtractionTarget::Method,
+            is_static: false,
+            member_indent: "    ".to_string(),
+            body_indent: "        ".to_string(),
+            return_strategy: ReturnStrategy::UniformGuards("false".to_string()),
+            trailing_return_type: String::new(),
+        };
+        let result = build_extracted_definition(&info);
+        assert!(
+            result.contains(": bool"),
+            "should have bool return type: {result}"
+        );
+        assert!(
+            result.contains("return true;"),
+            "should append return true (inverse of false) as sentinel: {result}"
+        );
+    }
+
+    #[test]
+    fn definition_uniform_true_guards_appends_return_false() {
+        let info = ExtractionInfo {
+            name: "validate".to_string(),
+            params: vec![("$x".to_string(), String::new())],
+            returns: vec![],
+            body: "if (!$x) return true;".to_string(),
+            target: ExtractionTarget::Method,
+            is_static: false,
+            member_indent: "    ".to_string(),
+            body_indent: "        ".to_string(),
+            return_strategy: ReturnStrategy::UniformGuards("true".to_string()),
+            trailing_return_type: String::new(),
+        };
+        let result = build_extracted_definition(&info);
+        assert!(
+            result.contains("return false;"),
+            "should append return false (inverse of true) as sentinel: {result}"
+        );
+    }
+
+    #[test]
+    fn definition_sentinel_null_appends_return_null() {
+        let info = ExtractionInfo {
+            name: "classify".to_string(),
+            params: vec![("$x".to_string(), String::new())],
+            returns: vec![],
+            body: "if ($x < 0) return 'negative';".to_string(),
+            target: ExtractionTarget::Method,
+            is_static: false,
+            member_indent: "    ".to_string(),
+            body_indent: "        ".to_string(),
+            return_strategy: ReturnStrategy::SentinelNull,
+            trailing_return_type: "string".to_string(),
+        };
+        let result = build_extracted_definition(&info);
+        assert!(
+            result.contains(": ?string"),
+            "should have nullable return type: {result}"
+        );
+        assert!(
+            result.contains("return null;"),
+            "should append return null as sentinel: {result}"
+        );
+    }
+
+    // ── Guard return rewriting ──────────────────────────────────────
+
+    #[test]
+    fn rewrite_void_guards_to_false() {
+        let body = "if (!$x) return;\nif (!$y) return;";
+        let result = rewrite_guard_returns(body, None);
+        assert_eq!(result, "if (!$x) return false;\nif (!$y) return false;");
+    }
+
+    #[test]
+    fn rewrite_void_guards_preserves_non_bare_returns() {
+        let body = "if (!$x) return;\nreturn $result;";
+        let result = rewrite_guard_returns(body, None);
+        assert_eq!(
+            result, "if (!$x) return false;\nreturn $result;",
+            "should only rewrite bare returns"
+        );
+    }
+
+    #[test]
+    fn rewrite_void_guards_ignores_return_in_identifiers() {
+        let body = "$returnValue = 1;\nif (!$x) return;";
+        let result = rewrite_guard_returns(body, None);
+        assert_eq!(result, "$returnValue = 1;\nif (!$x) return false;");
+    }
+
+    #[test]
+    fn rewrite_uniform_null_to_false() {
+        let body = "if ($id <= 0) return null;\nif (!$org) return null;";
+        let result = rewrite_guard_returns(body, Some("null"));
+        assert_eq!(
+            result,
+            "if ($id <= 0) return false;\nif (!$org) return false;"
+        );
+    }
+
+    #[test]
+    fn rewrite_uniform_value_preserves_other_returns() {
+        let body = "if ($id <= 0) return null;\nreturn $result;";
+        let result = rewrite_guard_returns(body, Some("null"));
+        assert_eq!(
+            result, "if ($id <= 0) return false;\nreturn $result;",
+            "should only rewrite matching return values"
+        );
+    }
+
+    #[test]
+    fn rewrite_uniform_numeric_to_false() {
+        let body = "if ($x < 0) return 0;\nif ($x > 100) return 0;";
+        let result = rewrite_guard_returns(body, Some("0"));
+        assert_eq!(
+            result,
+            "if ($x < 0) return false;\nif ($x > 100) return false;"
+        );
+    }
+
+    #[test]
+    fn void_guards_definition_rewrites_body() {
+        // End-to-end: the definition should contain `return false;`
+        // for the guards and `return true;` for the fall-through.
+        let info = ExtractionInfo {
+            name: "validate".to_string(),
+            params: vec![("$x".to_string(), String::new())],
+            returns: vec![],
+            body: "if (!$x) return;\nif (!$y) return;".to_string(),
+            target: ExtractionTarget::Method,
+            is_static: false,
+            member_indent: "    ".to_string(),
+            body_indent: "        ".to_string(),
+            return_strategy: ReturnStrategy::VoidGuards,
+            trailing_return_type: String::new(),
+        };
+        let result = build_extracted_definition(&info);
+        assert!(
+            result.contains("return false;"),
+            "guards should be rewritten to return false: {result}"
+        );
+        assert!(
+            result.contains("return true;"),
+            "fall-through should be return true: {result}"
+        );
+        // Should NOT contain bare `return;` (the original void return).
+        let bare_return_count = result.matches("return;").count();
+        assert_eq!(
+            bare_return_count, 0,
+            "should not contain bare return: {result}"
+        );
+    }
+
+    #[test]
+    fn uniform_null_definition_rewrites_body() {
+        // `return null;` guards should become `return false;` in the
+        // extracted function since the return type is bool.
+        let info = ExtractionInfo {
+            name: "validate".to_string(),
+            params: vec![("$id".to_string(), String::new())],
+            returns: vec![],
+            body: "if ($id <= 0) return null;\nif (!$this->exists($id)) return null;".to_string(),
+            target: ExtractionTarget::Method,
+            is_static: false,
+            member_indent: "    ".to_string(),
+            body_indent: "        ".to_string(),
+            return_strategy: ReturnStrategy::UniformGuards("null".to_string()),
+            trailing_return_type: String::new(),
+        };
+        let result = build_extracted_definition(&info);
+        assert!(
+            result.contains("return false;"),
+            "null guards should be rewritten to return false: {result}"
+        );
+        assert!(
+            result.contains("return true;"),
+            "fall-through should be return true: {result}"
+        );
+        // Should NOT contain `return null;`.
+        let null_return_count = result.matches("return null;").count();
+        assert_eq!(
+            null_return_count, 0,
+            "should not contain return null: {result}"
         );
     }
 
@@ -1982,7 +2865,9 @@ function foo() {
     }
 
     #[test]
-    fn extract_function_not_offered_for_non_trailing_return() {
+    fn extract_function_offered_for_guard_clause_return() {
+        // Non-trailing returns that form guard clauses should now be
+        // offered with the appropriate guard strategy.
         let backend = crate::Backend::new_test();
         let uri = "file:///test.php";
         let content = "\
@@ -2016,13 +2901,19 @@ function foo($x) {
         };
 
         let actions = backend.handle_code_action(uri, content, &params);
-        let extract_actions: Vec<_> = actions
-            .iter()
-            .filter(|a| matches!(a, CodeActionOrCommand::CodeAction(ca) if ca.title.starts_with("Extract function") || ca.title.starts_with("Extract method")))
-            .collect();
+        let extract_action = actions.iter().find(|a| {
+            matches!(a, CodeActionOrCommand::CodeAction(ca) if ca.title.starts_with("Extract function") || ca.title.starts_with("Extract method"))
+        });
         assert!(
-            extract_actions.is_empty(),
-            "should not offer extract for non-trailing return (inside if)"
+            extract_action.is_some(),
+            "should offer extract for guard clause return pattern, got: {:?}",
+            actions
+                .iter()
+                .map(|a| match a {
+                    CodeActionOrCommand::CodeAction(ca) => ca.title.clone(),
+                    CodeActionOrCommand::Command(cmd) => cmd.title.clone(),
+                })
+                .collect::<Vec<_>>()
         );
     }
 

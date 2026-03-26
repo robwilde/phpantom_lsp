@@ -8,14 +8,12 @@
 //!
 //! Most call sites currently pass a raw docblock string (`&str`) obtained
 //! from [`super::tags::get_docblock_text_for_node`].  The adapter provides
-//! two entry points:
+//! one entry point:
 //!
 //! - [`parse_docblock`]: parses a raw `/** … */` string into a `Document`.
-//! - [`parse_docblock_trivia`]: parses directly from a mago-syntax `Trivia`
-//!   token (used when we already have the trivia slice).
 //!
-//! Both functions create a short-lived bumpalo arena, parse the docblock,
-//! and return an owned [`DocblockInfo`] that captures the tag data we need
+//! It creates a short-lived bumpalo arena, parses the docblock, and
+//! returns an owned [`DocblockInfo`] that captures the tag data we need
 //! without borrowing from the arena.  This keeps the arena lifetime
 //! contained within each call, which is fine for the incremental migration
 //! (see the performance note in `docs/todo/mago.md`).
@@ -27,8 +25,6 @@
 use bumpalo::Bump;
 use mago_docblock::document::{Element, TagKind};
 use mago_span::Span;
-#[cfg(test)]
-use mago_syntax::ast::Trivia;
 
 /// Owned snapshot of a parsed tag from a `mago-docblock` `Document`.
 ///
@@ -96,18 +92,6 @@ pub fn parse_docblock(docblock: &str, base_span: Span) -> Option<DocblockInfo> {
     let content: &str = arena.alloc_str(docblock);
 
     let document = mago_docblock::parse_phpdoc_with_span(&arena, content, base_span).ok()?;
-
-    Some(collect_tags(&document))
-}
-
-/// Parse a docblock directly from a mago-syntax `Trivia` token.
-///
-/// Returns `None` if the trivia is not a `DocBlockComment` or parsing
-/// fails.
-#[cfg(test)]
-pub(crate) fn parse_docblock_trivia(trivia: &Trivia<'_>) -> Option<DocblockInfo> {
-    let arena = Bump::new();
-    let document = mago_docblock::parse_trivia(&arena, trivia).ok()?;
 
     Some(collect_tags(&document))
 }

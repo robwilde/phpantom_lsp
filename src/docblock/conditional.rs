@@ -15,7 +15,7 @@ use mago_docblock::document::TagKind;
 
 use crate::types::{ConditionalReturnType, ParamCondition};
 
-use super::parser::{collapse_newlines, parse_docblock_for_tags, DocblockInfo};
+use super::parser::{DocblockInfo, collapse_newlines, parse_docblock_for_tags};
 use super::types::clean_type;
 
 // ─── Public API ─────────────────────────────────────────────────────────────
@@ -35,7 +35,9 @@ pub fn extract_conditional_return_type(docblock: &str) -> Option<ConditionalRetu
 }
 
 /// Like [`extract_conditional_return_type`], but operates on a pre-parsed [`DocblockInfo`].
-pub fn extract_conditional_return_type_from_info(info: &DocblockInfo) -> Option<ConditionalReturnType> {
+pub fn extract_conditional_return_type_from_info(
+    info: &DocblockInfo,
+) -> Option<ConditionalReturnType> {
     let raw = extract_raw_return_content_from_info(info)?;
     let trimmed = raw.trim();
     if !trimmed.starts_with('(') {

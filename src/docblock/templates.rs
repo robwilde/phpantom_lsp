@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 use mago_docblock::document::TagKind;
 
-use super::parser::{collapse_newlines, parse_docblock_for_tags, DocblockInfo};
+use super::parser::{DocblockInfo, collapse_newlines, parse_docblock_for_tags};
 use super::types::{split_generic_args, split_type_token};
 use crate::types::{ConditionalReturnType, ParamCondition, TemplateVariance};
 
@@ -300,10 +300,11 @@ pub fn extract_generics_tag_from_info(
     // Also match by tag name for variants that mago-docblock classifies
     // as `TagKind::Other` (e.g. `@phpstan-extends`).
     for tag in &info.tags {
-        if name_fallbacks.contains(&tag.name.as_str()) && tag.kind == TagKind::Other {
-            if let Some(result) = parse_generics_from_description(&tag.description) {
-                results.push(result);
-            }
+        if name_fallbacks.contains(&tag.name.as_str())
+            && tag.kind == TagKind::Other
+            && let Some(result) = parse_generics_from_description(&tag.description)
+        {
+            results.push(result);
         }
     }
 
