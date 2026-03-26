@@ -92,6 +92,10 @@ pub(crate) struct Frame {
     pub kind: FrameKind,
     /// Variables explicitly captured via `use($x, &$y)` in closures.
     /// Each entry is `(name_with_dollar, is_by_reference)`.
+    ///
+    /// Populated during collection; will be read by Extract Function
+    /// (A2) to detect closure captures that cross extraction boundaries.
+    #[allow(dead_code)] // infrastructure for A2 closure-aware extraction
     pub captures: Vec<(String, bool)>,
 }
 
@@ -127,7 +131,22 @@ pub(crate) struct ScopeMap {
     /// anywhere in the collected region.  Set during collection.
     pub has_this_or_self: bool,
     /// Whether any by-reference parameter (`&$var`) was encountered.
+    ///
+    /// Used by Extract Function to detect when by-reference semantics
+    /// would make extraction unsafe.
     pub has_reference_params: bool,
+}
+
+impl ScopeMap {
+    /// Whether the enclosing scope uses by-reference parameters.
+    ///
+    /// When `true`, variable extraction must be careful about
+    /// reference semantics — a variable modified via `&$var` in the
+    /// extracted range may need to be passed by reference to the new
+    /// function.
+    pub(crate) fn uses_reference_params(&self) -> bool {
+        self.has_reference_params
+    }
 }
 
 /// Variables classified by their role relative to a byte range.
@@ -297,7 +316,16 @@ impl ScopeMap {
                 }
             } else if has_write_inside && has_read_after {
                 // Written inside, read after → return value.
-                if (has_write_before || has_read_inside) && !result.parameters.contains(var_name) {
+                // Only treat as parameter if there's a write before (the
+                // initial value matters) or if it's read inside but its
+                // first write is *before* the range (meaning the read
+                // consumes an external value).  When the first write is
+                // inside the range the internal reads consume local
+                // assignments, so no parameter is needed.
+                let first_write_inside =
+                    first_write.is_some_and(|w| w.offset >= start && w.offset < end);
+                let needs_param = has_write_before || (has_read_inside && !first_write_inside);
+                if needs_param && !result.parameters.contains(var_name) {
                     result.parameters.push(var_name.clone());
                 }
                 if !result.return_values.contains(var_name) {
@@ -413,7 +441,7 @@ pub(crate) fn collect_scope(
     collector.push_frame(Frame {
         start: body_start,
         end: body_end,
-        kind: FrameKind::Function,
+        kind: FrameKind::TopLevel,
         captures: Vec::new(),
     });
 
@@ -469,12 +497,25 @@ pub(crate) fn collect_function_scope<'a>(
     body_start: u32,
     body_end: u32,
 ) -> ScopeMap {
+    collect_function_scope_with_kind(params, body, body_start, body_end, FrameKind::Function)
+}
+
+/// Like [`collect_function_scope`] but allows specifying the
+/// [`FrameKind`] for the outermost frame.  Use `FrameKind::Method`
+/// when collecting inside a class method.
+pub(crate) fn collect_function_scope_with_kind<'a>(
+    params: &FunctionLikeParameterList<'a>,
+    body: &[Statement<'a>],
+    body_start: u32,
+    body_end: u32,
+    kind: FrameKind,
+) -> ScopeMap {
     let mut collector = Collector::new();
 
     collector.push_frame(Frame {
         start: body_start,
         end: body_end,
-        kind: FrameKind::Function,
+        kind,
         captures: Vec::new(),
     });
 

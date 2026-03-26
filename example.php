@@ -2772,6 +2772,49 @@ class ConstantTypeDemo
 }
 
 
+// ── Extract Function / Method (Code Action) ────────────────────────────────
+// Select one or more complete statements inside a method body and trigger
+// "Code Action" to see "Extract function" or "Extract method".
+//
+// Variables defined before the selection become parameters.  Variables
+// written inside the selection and read afterwards become return values.
+// When $this is used, the code is extracted as a private method.
+
+class ExtractFunctionDemo
+{
+    private int $factor = 3;
+
+    public function demo(): void
+    {
+        // Select these two lines and extract:
+        // → creates a function with $x as return value (read after selection)
+        $x = 10;
+        $y = $x * 2;
+
+        echo $x + $y;
+    }
+
+    public function methodExtraction(): void
+    {
+        // Select this line and extract:
+        // → creates a private method (uses $this)
+        $result = $this->factor * 42;
+
+        echo $result;
+    }
+
+    public static function staticExtraction(): void
+    {
+        // Select these lines and extract:
+        // → creates a private static method
+        $a = 1;
+        $b = 2;
+
+        echo $a + $b;
+    }
+}
+
+
 // ── Promote Constructor Parameter ───────────────────────────────────────────
 // Place cursor on a constructor parameter (e.g. `string $name`) and trigger
 // code actions to see "Promote to constructor property".  The action removes

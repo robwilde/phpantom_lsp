@@ -36,6 +36,7 @@
 
 mod change_visibility;
 pub(crate) mod cursor_context;
+mod extract_function;
 mod extract_variable;
 mod generate_constructor;
 pub(crate) mod implement_methods;
@@ -92,6 +93,9 @@ impl Backend {
 
         // ── Extract variable ────────────────────────────────────────────
         self.collect_extract_variable_actions(uri, content, params, &mut actions);
+
+        // ── Extract function / method ───────────────────────────────────
+        self.collect_extract_function_actions(uri, content, params, &mut actions);
 
         // ── Inline variable ─────────────────────────────────────────────
         self.collect_inline_variable_actions(uri, content, params, &mut actions);

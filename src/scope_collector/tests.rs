@@ -29,17 +29,17 @@ fn collect_from_method(php: &str) -> ScopeMap {
         for stmt in program.statements.iter() {
             if let Statement::Class(class) = stmt {
                 for member in class.members.iter() {
-                    if let ClassLikeMember::Method(method) = member {
-                        if let MethodBody::Concrete(block) = &method.body {
-                            let body_start = block.left_brace.start.offset;
-                            let body_end = block.right_brace.end.offset;
-                            return collect_function_scope(
-                                &method.parameter_list,
-                                block.statements.as_slice(),
-                                body_start,
-                                body_end,
-                            );
-                        }
+                    if let ClassLikeMember::Method(method) = member
+                        && let MethodBody::Concrete(block) = &method.body
+                    {
+                        let body_start = block.left_brace.start.offset;
+                        let body_end = block.right_brace.end.offset;
+                        return collect_function_scope(
+                            &method.parameter_list,
+                            block.statements.as_slice(),
+                            body_start,
+                            body_end,
+                        );
                     }
                 }
             }
@@ -1257,6 +1257,47 @@ class Foo {
     assert!(!classification.locals.contains(&"$this".to_string()));
     // But uses_this should be true.
     assert!(classification.uses_this);
+}
+
+// ─── Accumulator pattern ────────────────────────────────────────────────────
+
+#[test]
+fn classify_range_init_and_accumulate_is_return_only() {
+    // $count is first written inside the range ($count = 0), then read
+    // and written again inside ($count = $count + …), then read after
+    // (return $count).  Because its first write is inside the range and
+    // there is no write before, it should be a return value only — NOT
+    // a parameter.
+    let php = r#"<?php
+function test($items) {
+    $count = 0;
+    foreach ($items as $item) {
+        $count = $count + 1;
+    }
+    return $count;
+}
+"#;
+    let scope_map = collect_from_function(php);
+
+    let count_accesses = accesses_for(&scope_map, "$count");
+    // First access is the `$count = 0` write.
+    let range_start = count_accesses[0].0;
+    // Range ends just before `return $count`.
+    let last_access = count_accesses.last().unwrap().0;
+    let range_end = last_access; // exclude the return read
+
+    let classification = scope_map.classify_range(range_start, range_end);
+
+    assert!(
+        classification.return_values.contains(&"$count".to_string()),
+        "Expected $count in return_values: {:?}",
+        classification
+    );
+    assert!(
+        !classification.parameters.contains(&"$count".to_string()),
+        "$count must NOT be a parameter (first write is inside range): {:?}",
+        classification
+    );
 }
 
 // ─── Source order ───────────────────────────────────────────────────────────

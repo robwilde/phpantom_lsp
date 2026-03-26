@@ -108,13 +108,51 @@ fn is_valid_expression(selected_text: &str) -> bool {
         }
     }
 
-    // Parse `<?php $__x = <selection>;` — if the parser produces errors,
+    // Reject selections that contain a semicolon in a non-trailing
+    // position — this indicates multiple statements (e.g.
+    // `$this->foo();\n$this->bar()`).  A trailing semicolon is fine
+    // because `$expr;` is just an expression with a statement terminator
+    // that we strip before wrapping.
+    let body = trimmed.strip_suffix(';').unwrap_or(trimmed);
+    if contains_unquoted_semicolon(body) {
+        return false;
+    }
+
+    // Parse `<?php $__x = <body>;` — if the parser produces errors,
     // the selection is not a valid expression.
-    let wrapper = format!("<?php $__x = {};", trimmed);
+    let wrapper = format!("<?php $__x = {};", body);
     let arena = bumpalo::Bump::new();
     let file_id = mago_database::file::FileId::new("extract_check.php");
     let program = mago_syntax::parser::parse_file_content(&arena, file_id, &wrapper);
     program.errors.is_empty()
+}
+
+/// Check whether `text` contains a semicolon outside of string literals.
+///
+/// Uses a simple quote-parity heuristic that handles the common cases
+/// (`'...'` and `"..."`) but not heredoc/nowdoc.
+fn contains_unquoted_semicolon(text: &str) -> bool {
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut prev_backslash = false;
+
+    for ch in text.chars() {
+        if prev_backslash {
+            prev_backslash = false;
+            continue;
+        }
+        if ch == '\\' {
+            prev_backslash = true;
+            continue;
+        }
+        match ch {
+            '\'' if !in_double => in_single = !in_single,
+            '"' if !in_single => in_double = !in_double,
+            ';' if !in_single && !in_double => return true,
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Returns `true` when the selection `[start, end)` covers the entire
@@ -1638,6 +1676,31 @@ mod tests {
         // So is_valid_expression returns true (it IS valid PHP syntax),
         // but the action is still rejected by the `->` prefix check.
         assert!(is_valid_expression("getLabel()"));
+    }
+
+    #[test]
+    fn invalid_expr_multi_statement() {
+        assert!(!is_valid_expression(
+            "$this->generateId();\n        $this->save($id)"
+        ));
+    }
+
+    #[test]
+    fn invalid_expr_two_calls_with_semicolons() {
+        assert!(!is_valid_expression("foo(); bar()"));
+    }
+
+    #[test]
+    fn semicolon_in_string_not_rejected() {
+        assert!(is_valid_expression("'hello; world'"));
+        assert!(is_valid_expression("\"hello; world\""));
+    }
+
+    #[test]
+    fn trailing_semicolon_not_rejected() {
+        // A single expression with trailing `;` is fine — it's just
+        // the statement terminator which we strip.
+        assert!(is_valid_expression("$this->save($id);"));
     }
 
     #[test]

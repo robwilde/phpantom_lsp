@@ -121,40 +121,6 @@ once and produces a `ScopeMap` containing:
 
 ---
 
-## A2. Extract Function refactoring
-
-**Impact: Low-Medium · Effort: High**
-
-Select a range of statements inside a method/function and extract them into a
-new function. With the `ScopeCollector` (A11) already in place, the remaining
-work is:
-
-1. **Statement boundary validation** — reject selections that split an
-   expression or cross control-flow boundaries in invalid ways.
-2. **Type annotation** — use variable type resolution to generate parameter and
-   return type hints on the new function.
-3. **Code generation** — produce a `WorkspaceEdit` that replaces the selection
-   with a call and inserts the new function definition nearby.
-4. **Range partitioning** — use the `ScopeCollector` to derive parameters,
-   return values, and locals from the selected range.
-
-### `$this` and method extraction
-
-If the `ScopeCollector` reports that the selection reads `$this` (or
-`self::`/`static::`), the extracted code must be a method on the same
-class, not a standalone function.
-
-### Prerequisites (build these first)
-
-| Feature                                  | What it contributes                                                                       |
-| ---------------------------------------- | ----------------------------------------------------------------------------------------- |
-| ScopeCollector (A11)                     | Variable read/write tracking with byte offsets, range partitioning                        |
-| Hover                                    | "Resolve type at arbitrary position" — needed to type params                              |
-| Document Symbols (see `lsp-features.md`) | AST range → symbol mapping — needed to find enclosing function and valid insertion points |
-| Implement missing methods (shipped)      | Builds the code action + `WorkspaceEdit` plumbing                                         |
-
----
-
 ## A3. Switch → match conversion
 
 **Impact: Low · Effort: Medium**

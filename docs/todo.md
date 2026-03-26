@@ -21,29 +21,13 @@ within the same impact tier.
 
 ## Sprint 4 — Refactoring toolkit
 
-| #   | Item                                                                                                | Impact | Effort |
-| --- | --------------------------------------------------------------------------------------------------- | ------ | ------ |
-| A11 | ✅ [ScopeCollector infrastructure](todo/actions.md#a11-scopecollector-infrastructure)                 | Medium | Medium |
-| A2  | [Extract function](todo/actions.md#a2-extract-function-refactoring)                                 | High   | High   |
-| A5  | ✅ [Extract variable](todo/actions.md#a5-extract-variable)                                           | Medium | Medium |
-| A12 | ✅ [Inline variable](todo/actions.md#a4-inline-variable)                                             | Medium | Medium |
-| A13 | [Generate constructor](todo/actions.md#a13-generate-constructor)                                    | Medium | Medium |
-|     | **Release 0.7.0**                                                                                   |        |        |
-
-## Sprint 4a — Mago foundation: Composer + Docblock + Names
-
-| #   | Item                                                        | Impact | Effort      |
-| --- | ----------------------------------------------------------- | ------ | ----------- |
-|     | Clear [refactoring gate](todo/refactor.md)                  | —      | —           |
-| M2  | ✅ [Migrate to mago-docblock](todo/mago.md#m2-mago-docblock) | High   | Medium      |
-| M3  | [Migrate to mago-names](todo/mago.md#m3-mago-names)         | High   | Medium-High |
-
-## Sprint 4b — Mago foundation: Type Syntax
-
-| #   | Item                                                              | Impact   | Effort    |
-| --- | ----------------------------------------------------------------- | -------- | --------- |
-|     | Clear [refactoring gate](todo/refactor.md)                        | —        | —         |
-| M4  | [Migrate to mago-type-syntax](todo/mago.md#m4-mago-type-syntax)  | Critical | Very High |
+| #   | Item                                                                                                | Impact   | Effort      |
+| --- | --------------------------------------------------------------------------------------------------- | -------- | ----------- |
+| M3  | [Migrate to mago-names](todo/mago.md#m3-mago-names)                                                 | High     | Medium-High |
+| M4  | [Migrate to mago-type-syntax](todo/mago.md#m4-mago-type-syntax)                                     | Critical | Very High   |
+| A2  | [Extract function](todo/actions.md#a2-extract-function-refactoring)                                 | High     | High        |
+| A13 | [Generate constructor](todo/actions.md#a13-generate-constructor)                                    | Medium   | Medium      |
+|     | **Release 0.7.0**                                                                                   |          |             |
 
 ## Sprint 5 — Polish for office adoption
 
