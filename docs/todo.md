@@ -114,7 +114,8 @@ unlikely to move the needle for most users.
 | A7   | [Extract constant](todo/actions.md#a7-extract-constant)                                                                                                      | Medium      | Medium      |
 | A8   | [Update docblock to match signature](todo/actions.md#a8-update-docblock-to-match-signature)                                                                  | Medium      | Medium      |
 | A6   | [Inline function/method](todo/actions.md#a6-inline-functionmethod)                                                                                           | Medium      | High        |
-| A10  | Generate interface from class                                                                                                                                | Low-Medium  | Medium      |
+| A16  | [Snippet placeholder for extracted method name](todo/actions.md#a16-snippet-placeholder-for-extracted-method-name) (lets the user type over the generated name immediately) | Medium      | Low-Medium  |
+| A10  | [Generate interface from class](todo/actions.md#a10-generate-interface-from-class)                                                                           | Low-Medium  | Medium      |
 | A3   | Switch → match conversion                                                                                                                                    | Low         | Medium      |
 |      | **[PHPStan Code Actions](todo/phpstan-actions.md)**                                                                                                          |             |             |
 | H1   | `new.static` — add `final` or `@phpstan-consistent-constructor`                                                                                              | Medium      | Low         |

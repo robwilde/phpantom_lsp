@@ -556,5 +556,53 @@ public string $name {
 | PHP version detection        | Only offer this action when the project targets PHP 8.4+               |
 
 
+## A16. Snippet Placeholder for Extracted Method Name
+
+**Impact: Medium · Effort: Low-Medium**
+
+After an Extract Function/Method code action is applied, let the user
+immediately rename the generated name by placing a snippet tab-stop on
+it.  The contextual name (`createUsers`, `validateGuard`, …) serves as
+the default, but the cursor lands directly on it so the user can type
+over it without an extra rename step.
+
+### Behaviour
+
+- **Trigger:** User applies "Extract method 'createUsers'" (or any
+  extract function/method action).
+- **Result:** The workspace edit uses a `SnippetTextEdit` with
+  `${1:createUsers}` for the method name at both the definition site
+  and every call site.  The editor enters snippet mode and the user
+  can type a new name that updates all locations simultaneously.
+- **Fallback:** When the client does not advertise
+  `workspace.workspaceEdit.snippetEditSupport`, emit a regular
+  `TextEdit` (current behaviour — no snippet, no cursor placement).
+
+### Implementation
+
+1. **Store client capabilities at initialisation.**  In `initialize`,
+   save the `InitializeParams.capabilities` (or at least the snippet
+   edit flag) on the `Backend` struct.
+
+2. **Check the flag in `collect_extract_function_actions`.**  When
+   the client supports snippet edits, build the workspace edit with
+   `DocumentChanges::Operations` containing `SnippetTextEdit` entries
+   instead of plain `TextEdit`.  The new-text for the method name
+   uses `${1:name}` syntax.
+
+3. **Linked edit ranges (optional enhancement).**  If the client
+   supports `workspace.workspaceEdit.changeAnnotationSupport` or
+   linked edit groups, use those so that editing the name at the
+   definition also updates the call site in real time.
+
+### Prerequisites
+
+| Feature                          | What it contributes                                       |
+| -------------------------------- | --------------------------------------------------------- |
+| Client capability storage        | Need to know whether the client supports snippet edits    |
+| `SnippetTextEdit` in tower-lsp   | Verify tower-lsp exposes the snippet edit type            |
+| Extract Function (shipped)       | The code action that this enhances                        |
+
+
 
 
