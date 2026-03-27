@@ -1008,7 +1008,7 @@ pub(crate) fn enrichment_snippet(
     // `void` is never enriched for return types (caller handles skip).
     // `array` always needs enrichment.
     if th == "array" {
-        let s = format!("${{{}:array}}", *tab_stop);
+        let s = format!("array<${{{}:mixed}}>", *tab_stop);
         *tab_stop += 1;
         return Some(s);
     }
@@ -1021,16 +1021,35 @@ pub(crate) fn enrichment_snippet(
         return Some(s);
     }
 
-    // Union types containing `array`, `Closure`, or `callable` need
-    // enrichment — echo the raw type so the user can refine it.
+    // Union types — enrich individual callable / array parts.
     if th.contains('|') {
-        let needs = th.split('|').any(|part| {
+        let parts: Vec<&str> = th.split('|').collect();
+        let needs = parts.iter().any(|part| {
             let p = part.trim().trim_start_matches('\\');
             p.eq_ignore_ascii_case("array")
                 || CALLABLE_TYPES.iter().any(|c| c.eq_ignore_ascii_case(p))
         });
         if needs {
-            return Some(th.to_string());
+            let enriched_parts: Vec<String> = parts
+                .iter()
+                .map(|part| {
+                    let p = part.trim().trim_start_matches('\\');
+                    if CALLABLE_TYPES.iter().any(|c| c.eq_ignore_ascii_case(p)) {
+                        format!("({}(): ${{{}:mixed}})", p, {
+                            let s = *tab_stop;
+                            *tab_stop += 1;
+                            s
+                        })
+                    } else if p.eq_ignore_ascii_case("array") {
+                        let s = format!("array<${{{}:mixed}}>", *tab_stop);
+                        *tab_stop += 1;
+                        s
+                    } else {
+                        part.trim().to_string()
+                    }
+                })
+                .collect();
+            return Some(enriched_parts.join("|"));
         }
         return None;
     }
@@ -1077,7 +1096,7 @@ pub(crate) fn enrichment_plain(
     };
 
     if th == "array" {
-        return Some("array".to_string());
+        return Some("array<mixed>".to_string());
     }
 
     let clean = th.trim_start_matches('\\');
@@ -1085,15 +1104,29 @@ pub(crate) fn enrichment_plain(
         return Some(format!("({}(): mixed)", clean));
     }
 
-    // Union types containing `array`, `Closure`, or `callable` — echo raw type.
+    // Union types — enrich individual callable / array parts.
     if th.contains('|') {
-        let needs = th.split('|').any(|part| {
+        let parts: Vec<&str> = th.split('|').collect();
+        let needs = parts.iter().any(|part| {
             let p = part.trim().trim_start_matches('\\');
             p.eq_ignore_ascii_case("array")
                 || CALLABLE_TYPES.iter().any(|c| c.eq_ignore_ascii_case(p))
         });
         if needs {
-            return Some(th.to_string());
+            let enriched_parts: Vec<String> = parts
+                .iter()
+                .map(|part| {
+                    let p = part.trim().trim_start_matches('\\');
+                    if CALLABLE_TYPES.iter().any(|c| c.eq_ignore_ascii_case(p)) {
+                        format!("({}(): mixed)", p)
+                    } else if p.eq_ignore_ascii_case("array") {
+                        "array<mixed>".to_string()
+                    } else {
+                        part.trim().to_string()
+                    }
+                })
+                .collect();
+            return Some(enriched_parts.join("|"));
         }
         return None;
     }
@@ -2120,7 +2153,7 @@ mod tests {
     fn enrichment_array_produces_array_tabstop() {
         let mut ts = 1;
         let result = enrichment_snippet(&Some("array".to_string()), &mut ts, &no_classes);
-        assert_eq!(result, Some("${1:array}".to_string()));
+        assert_eq!(result, Some("array<${1:mixed}>".to_string()));
         assert_eq!(ts, 2);
     }
 
@@ -2140,17 +2173,17 @@ mod tests {
     }
 
     #[test]
-    fn enrichment_union_with_array_returns_raw_type() {
+    fn enrichment_union_with_array_enriches_parts() {
         let mut ts = 1;
         let result = enrichment_snippet(&Some("array|string".to_string()), &mut ts, &no_classes);
-        assert_eq!(result, Some("array|string".to_string()));
+        assert_eq!(result, Some("array<${1:mixed}>|string".to_string()));
     }
 
     #[test]
-    fn enrichment_union_with_closure_returns_raw_type() {
+    fn enrichment_union_with_closure_enriches_parts() {
         let mut ts = 1;
         let result = enrichment_snippet(&Some("Closure|null".to_string()), &mut ts, &no_classes);
-        assert_eq!(result, Some("Closure|null".to_string()));
+        assert_eq!(result, Some("(Closure(): ${1:mixed})|null".to_string()));
     }
 
     #[test]

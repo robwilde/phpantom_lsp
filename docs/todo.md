@@ -28,7 +28,8 @@ within the same impact tier.
 | M4  | [Migrate to mago-type-syntax](todo/mago.md#m4-mago-type-syntax)                                     | Critical | Very High   |
 | A2  | [Extract function](todo/actions.md#a2-extract-function-refactoring)                                 | High     | High        |
 | A13 | [Generate constructor](todo/actions.md#a13-generate-constructor)                                    | Medium   | Medium      |
-| A14 | [Extract method polish](todo/actions.md#a14-extract-method-polish)                                  | Medium   | Medium      |
+| A14 | [Generate getter/setter](todo/actions.md#a14-generate-gettersetter)                                 | Medium   | Low-Medium  |
+| A15 | [Generate property hooks (PHP 8.4+)](todo/actions.md#a15-generate-property-hooks-php-84)            | Medium   | Low-Medium  |
 |     | **Release 0.7.0**                                                                                   |          |             |
 
 ## Sprint 5 — Polish for office adoption
@@ -95,6 +96,8 @@ unlikely to move the needle for most users.
 |      | **[Type Inference](todo/type-inference.md)**                                                                                                                 |             |             |
 | T1   | [Inherited docblock type propagation](todo/type-inference.md#t1-inherited-docblock-type-propagation)                                                         | High        | Medium      |
 | T6   | `Closure::bind()` / `Closure::fromCallable()` return type preservation                                                                                      | Low-Medium  | Low-Medium  |
+| T12  | [Intersection types flattened to unions by `type_strings_joined`](todo/type-inference.md#t12-intersection-types-flattened-to-unions-by-type_strings_joined)    | Low-Medium  | Low (after M4) |
+| T13  | [Closure variables lose callable signature detail](todo/type-inference.md#t13-closure-variables-lose-callable-signature-detail)                               | Low-Medium  | Medium      |
 | T4   | Non-empty-\* type narrowing and propagation                                                                                                                  | Low         | Low         |
 | T5   | Fiber type resolution                                                                                                                                        | Low         | Low         |
 | T9   | [Dead-code elimination after `never`-returning calls](todo/type-inference.md#t9-dead-code-elimination-after-never-returning-calls)                            | Low         | Low-Medium  |

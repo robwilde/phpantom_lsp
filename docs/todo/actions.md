@@ -81,56 +81,6 @@ but bounded in scope.
 
 ---
 
-## A14. Extract method polish
-
-**Impact: Medium · Effort: Medium**
-
-The core extract function/method code action (A2) is shipped with guard-clause
-return handling that exceeds all competitors. This task covers the remaining
-gaps between PHPantom and PHPStorm/Phpactor/Devsense to bring the feature to
-full parity.
-
-### PHPDoc generation on extracted method
-
-The extracted function/method currently gets native type hints but no docblock.
-When parameter or return types benefit from enrichment (generics, `array<K,V>`,
-union types that exceed what native hints express), generate a `/** ... */`
-block on the new function.
-
-- Reuse the enrichment logic from `completion/phpdoc/generation.rs`
-  (`enrichment_plain`, `enrichment_snippet`) to decide which `@param` tags
-  are needed. A `@param` is emitted only when the native hint cannot fully
-  express the type (same rule the `/**` trigger uses for existing functions).
-- `@return` enrichment already exists in the PHPDoc generation pipeline.
-  Wire it through for the extracted function's return type.
-- Align parameter names in the `@param` block (existing convention).
-
-### Disabled code action with rejection reason
-
-When the extract action is NOT offered (unsafe returns, cross-scope selection,
-too many return values, by-ref parameter writes, etc.), emit a **disabled**
-`CodeAction` with a human-readable `disabled.reason` string instead of
-silently omitting the action. This tells the user why extraction is
-unavailable for their selection rather than leaving them guessing.
-
-The LSP `CodeAction` type has a `disabled` field with a `reason` string.
-Editors display this as greyed-out text in the code action menu.
-
-### Implementation
-
-1. In `build_extracted_definition`, after generating the function signature,
-   call into the PHPDoc enrichment pipeline with the typed params and return
-   type. If any tag is emitted, prepend the docblock before the function.
-2. In `collect_extract_function_actions`, at each early-return point where
-   the action is rejected, push a disabled `CodeAction` with a short reason
-   string (e.g. "Selection contains by-reference parameter writes",
-   "Too many return values for clean extraction", "Selection spans different
-   scope levels").
-3. Add tests for both: docblock presence when types need enrichment, and
-   disabled actions with reason strings for each rejection path.
-
----
-
 ## A6. Inline Function/Method
 
 **Impact: Medium · Effort: High**
@@ -449,6 +399,161 @@ interface file path is derived from the namespace.
 | ----------------------------------- | --------------------------------------------------------------------------------- |
 | Parser (`parser/classes.rs`)        | Extracts public method signatures with full type information                      |
 | Implement missing methods (shipped) | Shared infrastructure for generating method stubs and `implements` clause editing |
+
+
+## A14. Generate Getter/Setter
+
+**Impact: Medium · Effort: Low-Medium**
+
+Generate `getX()` / `setX()` accessor methods for one or more class
+properties. This is a standard code action offered by every major PHP
+IDE and is expected by users migrating from PHPStorm or Intelephense.
+
+### Behaviour
+
+- **Trigger:** Cursor is on a property declaration (or a selection
+  spanning multiple properties). Three code actions appear:
+  - "Generate getter"
+  - "Generate setter"
+  - "Generate getter and setter"
+- **Code action kind:** `refactor`.
+- **Result:** Methods are inserted after the last existing method in the
+  class (or after the property block if there are no methods).
+
+### Generation rules
+
+- **Getter name:** `get` + PascalCase property name. A `bool` property
+  named `$active` also offers `isActive()` as an alternative.
+- **Setter name:** `set` + PascalCase property name.
+- **Return type:** The getter's return type matches the property's type
+  hint (native or docblock). If no type is declared, omit the return
+  type.
+- **Parameter type:** The setter's parameter type matches the property's
+  type hint. If no type is declared, omit the parameter type.
+- **Setter return type:** `self` (returns `$this` for fluent chaining).
+- **Readonly properties:** Only offer "Generate getter". No setter.
+- **Static properties:** Generate static methods (`public static
+  function getX()`).
+- **Promoted constructor properties:** Treat the same as regular
+  properties.
+- **Existing methods:** If `getX()` or `setX()` already exists, skip
+  that property (do not offer the action or silently omit it from a
+  multi-property generation).
+
+### Generated code shape
+
+```php
+public function getName(): string
+{
+    return $this->name;
+}
+
+public function setName(string $name): self
+{
+    $this->name = $name;
+
+    return $this;
+}
+```
+
+### Edge cases
+
+- **Nullable types:** Preserve nullability in both getter return type
+  and setter parameter type (`?string` or `string|null`).
+- **Union / intersection types:** Copy verbatim from the property
+  declaration.
+- **Docblock types:** If the property has a `@var` tag but no native
+  type, add a `@return` / `@param` tag on the generated method instead
+  of a native type hint.
+- **Multiple properties on one line:** `private int $a, $b;` — generate
+  accessors for each.
+
+### Prerequisites
+
+| Feature                      | What it contributes                                          |
+| ---------------------------- | ------------------------------------------------------------ |
+| Parser (`parser/classes.rs`) | Property type hints, visibility, readonly flag, static flag  |
+| Docblock (`docblock/tags.rs`)| `@var` type extraction for properties without native types   |
+
+
+## A15. Generate Property Hooks (PHP 8.4+)
+
+**Impact: Medium · Effort: Low-Medium**
+
+Generate `get` and `set` property hooks inline on a property
+declaration. Property hooks are the modern PHP 8.4 replacement for
+getter/setter boilerplate and keep the public API as a property access
+rather than method calls.
+
+### Behaviour
+
+- **Trigger:** Cursor is on a property declaration that does not already
+  have hooks. Three code actions appear:
+  - "Generate get hook"
+  - "Generate set hook"
+  - "Generate get and set hooks"
+- **Code action kind:** `refactor`.
+- **Result:** The property declaration is rewritten to include the
+  hook block.
+
+### Generation rules
+
+- **Get hook:** Returns the backing value. For simple cases this is an
+  arrow expression (`get => $this->name;`).
+- **Set hook:** Assigns the incoming value. Arrow expression for simple
+  cases (`set => $this->name = $value;`), or a braced body if
+  validation logic is expected.
+- **Readonly properties:** Only offer "Generate get hook". No set hook.
+- **Static properties:** Property hooks are not supported on static
+  properties in PHP 8.4. Do not offer the action.
+- **Existing hooks:** If the property already has a `get` or `set`
+  hook, skip that hook (do not duplicate it).
+- **Abstract properties:** In abstract classes or interfaces, generate
+  hook signatures without bodies.
+
+### Generated code shape
+
+```php
+public string $name {
+    get => $this->name;
+    set => $this->name = $value;
+}
+```
+
+For a property that previously had no hooks:
+
+```php
+// Before
+public string $name;
+
+// After
+public string $name {
+    get => $this->name;
+    set => $this->name = $value;
+}
+```
+
+### Edge cases
+
+- **Default values:** Preserve the default value assignment when adding
+  hooks. `public string $name = 'default' { get => ... }` is valid
+  PHP 8.4.
+- **Constructor promotion:** Promoted properties can have hooks in
+  PHP 8.4. Generate the hook block inline on the promoted parameter.
+- **Virtual properties:** If the user generates only a `get` hook and
+  removes the backing store, the property becomes virtual. The action
+  should not remove the backing store automatically, but should
+  generate valid code that works either way.
+- **Interface properties:** PHP 8.4 allows property declarations in
+  interfaces with hook signatures. Generate only the hook signature
+  (no body).
+
+### Prerequisites
+
+| Feature                      | What it contributes                                                     |
+| ---------------------------- | ----------------------------------------------------------------------- |
+| Parser (`parser/classes.rs`) | Property type hints, visibility, readonly flag, existing hook detection |
+| PHP version detection        | Only offer this action when the project targets PHP 8.4+               |
 
 
 

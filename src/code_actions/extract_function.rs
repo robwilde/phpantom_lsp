@@ -13,14 +13,17 @@ use bumpalo::Bump;
 use mago_span::HasSpan;
 use mago_syntax::ast::*;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tower_lsp::lsp_types::*;
 
 use crate::Backend;
 use crate::code_actions::cursor_context::{CursorContext, MemberContext, find_cursor_context};
+use crate::completion::phpdoc::generation::enrichment_plain;
 use crate::completion::resolver::Loaders;
 use crate::scope_collector::{
     FrameKind, ScopeMap, collect_function_scope, collect_function_scope_with_kind, collect_scope,
 };
+use crate::types::ClassInfo;
 use crate::util::{find_class_at_offset, offset_to_position, position_to_byte_offset};
 
 // ─── Statement boundary validation ─────────────────────────────────────────
@@ -549,6 +552,122 @@ struct ExtractionInfo {
     /// Return type hint for the trailing return (resolved from the
     /// enclosing function's return type or the return expression).
     trailing_return_type: String,
+    /// Pre-computed PHPDoc block (including `/**` … `*/\n`) to prepend
+    /// before the function definition, or empty if no enrichment needed.
+    docblock: String,
+}
+
+/// Build a PHPDoc block for the extracted function when types need enrichment.
+///
+/// Each parameter is a triple `(var_name, cleaned_type, raw_type)` where
+/// `cleaned_type` is the native PHP hint (generics stripped) and
+/// `raw_type` is the full resolved type string (e.g. `Collection<User>`).
+///
+/// When `raw_type` already contains concrete generic arguments (`<`),
+/// it is used verbatim as the docblock type.  Otherwise we fall back to
+/// `enrichment_plain` which reconstructs template parameters from the
+/// class definition (yielding placeholder names like `T`).
+///
+/// A `@return` tag follows the same logic: if `raw_return_type` carries
+/// concrete generics, use it; otherwise try enrichment.
+///
+/// Returns an empty string when no enrichment is needed.
+fn build_docblock_for_extraction(
+    params: &[(String, String, String)],
+    return_type_hint: &str,
+    raw_return_type: &str,
+    member_indent: &str,
+    class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
+) -> String {
+    let mut tags: Vec<String> = Vec::new();
+
+    // Collect @param tags that need enrichment.
+    for (name, type_hint, raw) in params {
+        if type_hint.is_empty() && raw.is_empty() {
+            continue;
+        }
+        // Prefer the raw resolved type when it carries concrete generics.
+        if raw.contains('<') {
+            tags.push(format!("@param {} {}", raw, name));
+            continue;
+        }
+        let hint = if type_hint.is_empty() { raw } else { type_hint };
+        let opt = Some(hint.clone());
+        if let Some(enriched) = enrichment_plain(&opt, class_loader) {
+            tags.push(format!("@param {} {}", enriched, name));
+        }
+    }
+
+    // Collect @return tag if the return type needs enrichment.
+    if !return_type_hint.is_empty() || !raw_return_type.is_empty() {
+        if raw_return_type.contains('<') {
+            tags.push(format!("@return {}", raw_return_type));
+        } else {
+            let hint = if return_type_hint.is_empty() {
+                raw_return_type
+            } else {
+                return_type_hint
+            };
+            let opt = Some(hint.to_string());
+            if let Some(enriched) = enrichment_plain(&opt, class_loader) {
+                tags.push(format!("@return {}", enriched));
+            }
+        }
+    }
+
+    if tags.is_empty() {
+        return String::new();
+    }
+
+    // Align @param tag types for readability.
+    // Find the max type width among @param tags.
+    let param_tags: Vec<(&str, &str)> = tags
+        .iter()
+        .filter_map(|t| {
+            let rest = t.strip_prefix("@param ")?;
+            // Split on `$` — PHP param names always start with `$`,
+            // and the type string may contain spaces (e.g. `(Closure(): mixed)`).
+            let dollar_pos = rest.find('$')?;
+            let type_str = rest[..dollar_pos].trim_end();
+            let name_str = &rest[dollar_pos..];
+            Some((type_str, name_str))
+        })
+        .collect();
+
+    let max_type_len = param_tags.iter().map(|(t, _)| t.len()).max().unwrap_or(0);
+
+    let mut out = String::new();
+    out.push_str(member_indent);
+    out.push_str("/**\n");
+
+    for tag in &tags {
+        out.push_str(member_indent);
+        out.push_str(" * ");
+        if let Some(rest) = tag.strip_prefix("@param ") {
+            if let Some(dollar_pos) = rest.find('$') {
+                let type_str = rest[..dollar_pos].trim_end();
+                let name_str = &rest[dollar_pos..];
+                out.push_str("@param ");
+                out.push_str(type_str);
+                // Pad to align parameter names.
+                for _ in 0..(max_type_len.saturating_sub(type_str.len())) {
+                    out.push(' ');
+                }
+                out.push(' ');
+                out.push_str(name_str);
+            } else {
+                out.push_str(tag);
+            }
+        } else {
+            out.push_str(tag);
+        }
+        out.push('\n');
+    }
+
+    out.push_str(member_indent);
+    out.push_str(" */\n");
+
+    out
 }
 
 /// Build the definition text of the extracted function or method.
@@ -557,6 +676,11 @@ fn build_extracted_definition(info: &ExtractionInfo) -> String {
 
     // Blank line before the new definition.
     out.push('\n');
+
+    // Prepend PHPDoc block if types need enrichment.
+    if !info.docblock.is_empty() {
+        out.push_str(&info.docblock);
+    }
 
     let param_list = build_param_list(&info.params);
     let return_type = build_return_type(info);
@@ -1463,6 +1587,64 @@ fn classify_guard_returns(
 /// Resolve the return type of the enclosing function/method at `offset`.
 ///
 /// Extracts the native return type hint from the function signature.
+/// Extract the parameter names of the enclosing function/method in
+/// declaration order.  Used to sort extracted-function parameters so
+/// they mirror the original signature.
+fn resolve_enclosing_param_order(content: &str, offset: u32) -> Vec<String> {
+    let arena = Bump::new();
+    let file_id = mago_database::file::FileId::new("extract_fn_pord");
+    let program = mago_syntax::parser::parse_file_content(&arena, file_id, content);
+
+    let ctx = find_cursor_context(&program.statements, offset);
+
+    let param_list = match ctx {
+        CursorContext::InClassLike { member, .. } => {
+            if let MemberContext::Method(method, true) = member {
+                Some(&method.parameter_list)
+            } else {
+                None
+            }
+        }
+        CursorContext::InFunction(func, true) => Some(&func.parameter_list),
+        _ => None,
+    };
+
+    match param_list {
+        Some(pl) => pl
+            .parameters
+            .iter()
+            .map(|p| p.variable.name.to_string())
+            .collect(),
+        None => Vec::new(),
+    }
+}
+
+/// Sort extracted-function parameters so that variables matching the
+/// enclosing function's signature come first (in their original order),
+/// followed by any other variables in classification order.
+fn sort_params_by_enclosing_order(
+    mut params: Vec<(String, String, String)>,
+    enclosing_order: &[String],
+) -> Vec<(String, String, String)> {
+    if enclosing_order.is_empty() {
+        return params;
+    }
+    params.sort_by(|a, b| {
+        let idx_a = enclosing_order.iter().position(|n| *n == a.0);
+        let idx_b = enclosing_order.iter().position(|n| *n == b.0);
+        match (idx_a, idx_b) {
+            // Both are signature params → preserve signature order.
+            (Some(ia), Some(ib)) => ia.cmp(&ib),
+            // Signature params come before non-signature variables.
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            // Neither is a signature param → preserve classification order.
+            (None, None) => std::cmp::Ordering::Equal,
+        }
+    });
+    params
+}
+
 fn resolve_enclosing_return_type(content: &str, offset: u32) -> String {
     let arena = Bump::new();
     let file_id = mago_database::file::FileId::new("extract_fn_rtype");
@@ -1542,6 +1724,10 @@ impl Backend {
             return;
         }
 
+        // ── From here the user plausibly intended an extraction ──────
+        // Any rejection below emits a *disabled* code action with a
+        // reason string instead of silently returning.
+
         // Build scope map and classify the selected range.
         let scope_map = build_scope_map(content, start as u32);
         let classification = scope_map.classify_range(start as u32, end as u32);
@@ -1555,6 +1741,10 @@ impl Backend {
 
         // Reject when the return strategy is Unsafe.
         if return_strategy == ReturnStrategy::Unsafe {
+            Self::push_disabled_extract(
+                out,
+                "Selection contains return statements that cannot be safely extracted",
+            );
             return;
         }
 
@@ -1577,12 +1767,14 @@ impl Backend {
         // change semantics (writes through `&$var` would no longer
         // propagate to the caller).  Reject for safety.
         if scope_map.uses_reference_params() && !classification.reference_writes.is_empty() {
+            Self::push_disabled_extract(out, "Selection writes to by-reference parameters");
             return;
         }
 
         // Reject if there are too many return values (more than can be
         // cleanly handled with list() / array destructuring).
         if classification.return_values.len() > 4 {
+            Self::push_disabled_extract(out, "Too many return values for clean extraction");
             return;
         }
 
@@ -1598,6 +1790,11 @@ impl Backend {
         // Resolve types for parameters and return values.
         let typed_params =
             self.resolve_param_types(uri, content, start as u32, &classification.parameters);
+        // Sort parameters: enclosing function's signature params first
+        // (in their original order), then any other variables in the
+        // order they were classified.
+        let enclosing_param_order = resolve_enclosing_param_order(content, start as u32);
+        let typed_params = sort_params_by_enclosing_order(typed_params, &enclosing_param_order);
         let typed_returns =
             self.resolve_param_types(uri, content, start as u32, &classification.return_values);
 
@@ -1642,10 +1839,57 @@ impl Backend {
             String::new()
         };
 
+        // Also resolve the docblock @return type of the enclosing
+        // function — it may carry concrete generic arguments (e.g.
+        // `Collection<User>`) that the native hint lacks.
+        let enclosing_docblock_return = if matches!(
+            return_strategy,
+            ReturnStrategy::TrailingReturn | ReturnStrategy::SentinelNull
+        ) {
+            crate::docblock::find_enclosing_return_type(content, start).unwrap_or_default()
+        } else {
+            String::new()
+        };
+
+        // ── PHPDoc generation ───────────────────────────────────────
+        // Build a docblock when parameter or return types benefit from
+        // enrichment (generics, array<K,V>, callable signatures, etc.).
+        let return_type_for_docblock = build_return_type_hint_for_docblock(
+            &return_strategy,
+            &trailing_return_type,
+            &typed_returns,
+        );
+        let raw_return_type_for_docblock = build_raw_return_type_for_docblock(
+            &return_strategy,
+            &trailing_return_type,
+            &enclosing_docblock_return,
+            &typed_returns,
+        );
+        let ctx = self.file_context(uri);
+        let class_loader = self.class_loader(&ctx);
+        let docblock = build_docblock_for_extraction(
+            &typed_params,
+            &return_type_for_docblock,
+            &raw_return_type_for_docblock,
+            &member_indent,
+            &class_loader,
+        );
+
+        // Strip raw types for ExtractionInfo (only cleaned hints
+        // are needed for code generation).
+        let params_for_info: Vec<(String, String)> = typed_params
+            .iter()
+            .map(|(name, cleaned, _)| (name.clone(), cleaned.clone()))
+            .collect();
+        let returns_for_info: Vec<(String, String)> = typed_returns
+            .iter()
+            .map(|(name, cleaned, _)| (name.clone(), cleaned.clone()))
+            .collect();
+
         let info = ExtractionInfo {
             name: fn_name.clone(),
-            params: typed_params,
-            returns: typed_returns,
+            params: params_for_info,
+            returns: returns_for_info,
             body: body_text,
             target: enclosing.target,
             is_static: enclosing.is_static,
@@ -1653,6 +1897,7 @@ impl Backend {
             body_indent,
             return_strategy,
             trailing_return_type,
+            docblock,
         };
 
         // Build the definition text.
@@ -1720,14 +1965,38 @@ impl Backend {
         }));
     }
 
+    /// Push a disabled "Extract function/method" code action with a
+    /// human-readable reason string.  Editors show this greyed-out in
+    /// the refactor menu so the user knows *why* extraction is
+    /// unavailable for their selection.
+    fn push_disabled_extract(out: &mut Vec<CodeActionOrCommand>, reason: &str) {
+        out.push(CodeActionOrCommand::CodeAction(CodeAction {
+            title: "Extract function/method".to_string(),
+            kind: Some(CodeActionKind::REFACTOR_EXTRACT),
+            diagnostics: None,
+            edit: None,
+            command: None,
+            is_preferred: Some(false),
+            disabled: Some(CodeActionDisabled {
+                reason: reason.to_string(),
+            }),
+            data: None,
+        }));
+    }
+
     /// Resolve types for a list of variable names at a given offset.
+    ///
+    /// Returns `(dollar_name, cleaned_hint, raw_hint)` triples.
+    /// `cleaned_hint` has generics stripped for use in native PHP
+    /// signatures.  `raw_hint` preserves the full resolved type
+    /// (e.g. `Collection<User>`) for PHPDoc generation.
     fn resolve_param_types(
         &self,
         uri: &str,
         content: &str,
         offset: u32,
         var_names: &[String],
-    ) -> Vec<(String, String)> {
+    ) -> Vec<(String, String, String)> {
         var_names
             .iter()
             .map(|name| {
@@ -1740,7 +2009,7 @@ impl Backend {
                     resolve_var_type(self, &dollar_name, content, offset, uri).unwrap_or_default();
                 // Clean up the type hint for use in a signature.
                 let cleaned = clean_type_for_signature(&type_hint);
-                (dollar_name, cleaned)
+                (dollar_name, cleaned, type_hint)
             })
             .collect()
     }
@@ -1750,9 +2019,110 @@ impl Backend {
 ///
 /// Removes generic parameters (PHP doesn't support them in signatures),
 /// and simplifies union types that are too complex for type hints.
+/// Compute the raw (un-cleaned) return type hint string for PHPDoc
+/// enrichment purposes.  Unlike `build_return_type` (which strips
+/// generics for native hints), this preserves the full type so that
+/// `enrichment_plain` can detect whether a docblock `@return` tag is
+/// warranted.
+fn build_return_type_hint_for_docblock(
+    strategy: &ReturnStrategy,
+    trailing_return_type: &str,
+    returns: &[(String, String, String)],
+) -> String {
+    match strategy {
+        ReturnStrategy::TrailingReturn => trailing_return_type.to_string(),
+        ReturnStrategy::VoidGuards | ReturnStrategy::UniformGuards(_) => "bool".to_string(),
+        ReturnStrategy::SentinelNull => {
+            if !trailing_return_type.is_empty() {
+                trailing_return_type.to_string()
+            } else {
+                String::new()
+            }
+        }
+        ReturnStrategy::NullGuardWithValue(_) => {
+            if returns.len() == 1 && !returns[0].1.is_empty() {
+                returns[0].1.clone()
+            } else {
+                String::new()
+            }
+        }
+        ReturnStrategy::None | ReturnStrategy::Unsafe => {
+            if returns.is_empty() {
+                "void".to_string()
+            } else if returns.len() == 1 {
+                returns[0].1.clone()
+            } else {
+                "array".to_string()
+            }
+        }
+    }
+}
+
+/// Like `build_return_type_hint_for_docblock` but returns the raw
+/// (un-cleaned) type string that preserves concrete generic arguments.
+fn build_raw_return_type_for_docblock(
+    strategy: &ReturnStrategy,
+    trailing_return_type: &str,
+    enclosing_docblock_return: &str,
+    returns: &[(String, String, String)],
+) -> String {
+    match strategy {
+        ReturnStrategy::TrailingReturn => {
+            // Prefer the docblock @return type when it carries concrete
+            // generics (e.g. `Collection<User>`) over the native hint
+            // (e.g. `Collection`).
+            if !enclosing_docblock_return.is_empty() && enclosing_docblock_return.contains('<') {
+                enclosing_docblock_return.to_string()
+            } else {
+                trailing_return_type.to_string()
+            }
+        }
+        ReturnStrategy::VoidGuards | ReturnStrategy::UniformGuards(_) => "bool".to_string(),
+        ReturnStrategy::SentinelNull => {
+            if !enclosing_docblock_return.is_empty() && enclosing_docblock_return.contains('<') {
+                enclosing_docblock_return.to_string()
+            } else if !trailing_return_type.is_empty() {
+                trailing_return_type.to_string()
+            } else {
+                String::new()
+            }
+        }
+        ReturnStrategy::NullGuardWithValue(_) => {
+            // Use raw type (index 2) which preserves generics.
+            if returns.len() == 1 && !returns[0].2.is_empty() {
+                returns[0].2.clone()
+            } else {
+                String::new()
+            }
+        }
+        ReturnStrategy::None | ReturnStrategy::Unsafe => {
+            if returns.is_empty() {
+                "void".to_string()
+            } else if returns.len() == 1 {
+                // Use raw type (index 2) which preserves generics.
+                returns[0].2.clone()
+            } else {
+                "array".to_string()
+            }
+        }
+    }
+}
+
 fn clean_type_for_signature(type_str: &str) -> String {
     if type_str.is_empty() {
         return String::new();
+    }
+
+    // Parenthesized callable signatures like `(Closure(int): string)`
+    // or `(callable(Foo): Bar)` — extract the base callable name for
+    // the native PHP hint.
+    let trimmed = type_str.trim();
+    if let Some(inner) = trimmed.strip_prefix('(') {
+        for callable in &["Closure", "callable"] {
+            if inner.starts_with(callable) {
+                return callable.to_string();
+            }
+        }
     }
 
     // If it contains generic params like `array<string, int>`, strip them
@@ -2187,6 +2557,7 @@ mod tests {
             body_indent: String::new(),
             return_strategy: ReturnStrategy::None,
             trailing_return_type: String::new(),
+            docblock: String::new(),
         };
         assert_eq!(build_return_type(&info), "void");
     }
@@ -2204,6 +2575,7 @@ mod tests {
             body_indent: String::new(),
             return_strategy: ReturnStrategy::None,
             trailing_return_type: String::new(),
+            docblock: String::new(),
         };
         assert_eq!(build_return_type(&info), "int");
     }
@@ -2224,6 +2596,7 @@ mod tests {
             body_indent: String::new(),
             return_strategy: ReturnStrategy::None,
             trailing_return_type: String::new(),
+            docblock: String::new(),
         };
         assert_eq!(build_return_type(&info), "array");
     }
@@ -2241,6 +2614,7 @@ mod tests {
             body_indent: String::new(),
             return_strategy: ReturnStrategy::TrailingReturn,
             trailing_return_type: "string".to_string(),
+            docblock: String::new(),
         };
         assert_eq!(build_return_type(&info), "string");
     }
@@ -2258,6 +2632,7 @@ mod tests {
             body_indent: String::new(),
             return_strategy: ReturnStrategy::VoidGuards,
             trailing_return_type: String::new(),
+            docblock: String::new(),
         };
         assert_eq!(build_return_type(&info), "bool");
     }
@@ -2275,6 +2650,7 @@ mod tests {
             body_indent: String::new(),
             return_strategy: ReturnStrategy::UniformGuards("false".to_string()),
             trailing_return_type: String::new(),
+            docblock: String::new(),
         };
         assert_eq!(build_return_type(&info), "bool");
     }
@@ -2292,6 +2668,7 @@ mod tests {
             body_indent: String::new(),
             return_strategy: ReturnStrategy::SentinelNull,
             trailing_return_type: "string".to_string(),
+            docblock: String::new(),
         };
         assert_eq!(build_return_type(&info), "?string");
     }
@@ -2309,6 +2686,7 @@ mod tests {
             body_indent: String::new(),
             return_strategy: ReturnStrategy::NullGuardWithValue(false),
             trailing_return_type: String::new(),
+            docblock: String::new(),
         };
         assert_eq!(build_return_type(&info), "?string");
     }
@@ -2326,6 +2704,7 @@ mod tests {
             body_indent: String::new(),
             return_strategy: ReturnStrategy::NullGuardWithValue(false),
             trailing_return_type: String::new(),
+            docblock: String::new(),
         };
         assert_eq!(build_return_type(&info), "?int");
     }
@@ -2345,6 +2724,7 @@ mod tests {
             body_indent: String::new(),
             return_strategy: ReturnStrategy::NullGuardWithValue(true),
             trailing_return_type: String::new(),
+            docblock: String::new(),
         };
         assert_eq!(build_return_type(&info), "?string");
     }
@@ -2392,6 +2772,7 @@ mod tests {
             body_indent: "    ".to_string(),
             return_strategy: ReturnStrategy::None,
             trailing_return_type: String::new(),
+            docblock: String::new(),
         };
         let result = build_call_site(&info, "    ");
         assert_eq!(result, "    extracted($x);\n");
@@ -2410,6 +2791,7 @@ mod tests {
             body_indent: "    ".to_string(),
             return_strategy: ReturnStrategy::None,
             trailing_return_type: String::new(),
+            docblock: String::new(),
         };
         let result = build_call_site(&info, "    ");
         assert_eq!(result, "    $result = extracted($x);\n");
@@ -2431,6 +2813,7 @@ mod tests {
             body_indent: "    ".to_string(),
             return_strategy: ReturnStrategy::None,
             trailing_return_type: String::new(),
+            docblock: String::new(),
         };
         let result = build_call_site(&info, "    ");
         assert_eq!(result, "    [$a, $b] = extracted();\n");
@@ -2449,6 +2832,7 @@ mod tests {
             body_indent: "        ".to_string(),
             return_strategy: ReturnStrategy::None,
             trailing_return_type: String::new(),
+            docblock: String::new(),
         };
         let result = build_call_site(&info, "        ");
         assert_eq!(result, "        $this->extracted($x);\n");
@@ -2467,6 +2851,7 @@ mod tests {
             body_indent: "        ".to_string(),
             return_strategy: ReturnStrategy::None,
             trailing_return_type: String::new(),
+            docblock: String::new(),
         };
         let result = build_call_site(&info, "        ");
         assert_eq!(result, "        self::extracted();\n");
@@ -2485,6 +2870,7 @@ mod tests {
             body_indent: "        ".to_string(),
             return_strategy: ReturnStrategy::TrailingReturn,
             trailing_return_type: "int".to_string(),
+            docblock: String::new(),
         };
         let result = build_call_site(&info, "        ");
         assert_eq!(result, "        return $this->extracted($x);\n");
@@ -2503,6 +2889,7 @@ mod tests {
             body_indent: "        ".to_string(),
             return_strategy: ReturnStrategy::VoidGuards,
             trailing_return_type: String::new(),
+            docblock: String::new(),
         };
         let result = build_call_site(&info, "        ");
         assert_eq!(result, "        if (!$this->extracted($x)) return;\n");
@@ -2521,6 +2908,7 @@ mod tests {
             body_indent: "        ".to_string(),
             return_strategy: ReturnStrategy::UniformGuards("false".to_string()),
             trailing_return_type: String::new(),
+            docblock: String::new(),
         };
         let result = build_call_site(&info, "        ");
         assert_eq!(result, "        if (!$this->extracted($x)) return false;\n");
@@ -2539,6 +2927,7 @@ mod tests {
             body_indent: "        ".to_string(),
             return_strategy: ReturnStrategy::SentinelNull,
             trailing_return_type: String::new(),
+            docblock: String::new(),
         };
         let result = build_call_site(&info, "        ");
         assert_eq!(
@@ -2560,6 +2949,7 @@ mod tests {
             body_indent: "        ".to_string(),
             return_strategy: ReturnStrategy::NullGuardWithValue(false),
             trailing_return_type: String::new(),
+            docblock: String::new(),
         };
         let result = build_call_site(&info, "        ");
         assert_eq!(
@@ -2581,6 +2971,7 @@ mod tests {
             body_indent: "        ".to_string(),
             return_strategy: ReturnStrategy::NullGuardWithValue(true),
             trailing_return_type: String::new(),
+            docblock: String::new(),
         };
         let result = build_call_site(&info, "        ");
         assert_eq!(
@@ -2604,6 +2995,7 @@ mod tests {
             body_indent: "        ".to_string(),
             return_strategy: ReturnStrategy::None,
             trailing_return_type: String::new(),
+            docblock: String::new(),
         };
         let result = build_extracted_definition(&info);
         assert!(
@@ -2626,6 +3018,7 @@ mod tests {
             body_indent: "    ".to_string(),
             return_strategy: ReturnStrategy::None,
             trailing_return_type: String::new(),
+            docblock: String::new(),
         };
         let result = build_extracted_definition(&info);
         assert!(
@@ -2648,6 +3041,7 @@ mod tests {
             body_indent: "        ".to_string(),
             return_strategy: ReturnStrategy::None,
             trailing_return_type: String::new(),
+            docblock: String::new(),
         };
         let result = build_extracted_definition(&info);
         assert!(
@@ -2669,6 +3063,7 @@ mod tests {
             body_indent: "        ".to_string(),
             return_strategy: ReturnStrategy::TrailingReturn,
             trailing_return_type: "int".to_string(),
+            docblock: String::new(),
         };
         let result = build_extracted_definition(&info);
         assert!(
@@ -2701,6 +3096,7 @@ mod tests {
             body_indent: "        ".to_string(),
             return_strategy: ReturnStrategy::VoidGuards,
             trailing_return_type: String::new(),
+            docblock: String::new(),
         };
         let result = build_extracted_definition(&info);
         assert!(
@@ -2726,6 +3122,7 @@ mod tests {
             body_indent: "        ".to_string(),
             return_strategy: ReturnStrategy::UniformGuards("false".to_string()),
             trailing_return_type: String::new(),
+            docblock: String::new(),
         };
         let result = build_extracted_definition(&info);
         assert!(
@@ -2751,6 +3148,7 @@ mod tests {
             body_indent: "        ".to_string(),
             return_strategy: ReturnStrategy::UniformGuards("true".to_string()),
             trailing_return_type: String::new(),
+            docblock: String::new(),
         };
         let result = build_extracted_definition(&info);
         assert!(
@@ -2772,6 +3170,7 @@ mod tests {
             body_indent: "        ".to_string(),
             return_strategy: ReturnStrategy::SentinelNull,
             trailing_return_type: "string".to_string(),
+            docblock: String::new(),
         };
         let result = build_extracted_definition(&info);
         assert!(
@@ -2797,6 +3196,7 @@ mod tests {
             body_indent: "        ".to_string(),
             return_strategy: ReturnStrategy::NullGuardWithValue(false),
             trailing_return_type: String::new(),
+            docblock: String::new(),
         };
         let result = build_extracted_definition(&info);
         assert!(
@@ -2826,6 +3226,7 @@ mod tests {
             body_indent: "        ".to_string(),
             return_strategy: ReturnStrategy::NullGuardWithValue(true),
             trailing_return_type: String::new(),
+            docblock: String::new(),
         };
         let result = build_extracted_definition(&info);
         assert!(
@@ -2943,6 +3344,7 @@ mod tests {
             body_indent: "        ".to_string(),
             return_strategy: ReturnStrategy::VoidGuards,
             trailing_return_type: String::new(),
+            docblock: String::new(),
         };
         let result = build_extracted_definition(&info);
         assert!(
@@ -2976,6 +3378,7 @@ mod tests {
             body_indent: "        ".to_string(),
             return_strategy: ReturnStrategy::UniformGuards("null".to_string()),
             trailing_return_type: String::new(),
+            docblock: String::new(),
         };
         let result = build_extracted_definition(&info);
         assert!(
@@ -3346,5 +3749,352 @@ function foo($x) {
         assert!(ctx.is_some());
         let ctx = ctx.unwrap();
         assert_eq!(ctx.target, ExtractionTarget::Method);
+    }
+
+    // ── PHPDoc generation on extracted method ───────────────────────
+
+    fn no_classes(_name: &str) -> Option<Arc<ClassInfo>> {
+        None
+    }
+
+    #[test]
+    fn docblock_not_generated_for_scalar_types() {
+        let params = vec![
+            ("$x".to_string(), "int".to_string(), "int".to_string()),
+            ("$y".to_string(), "string".to_string(), "string".to_string()),
+        ];
+        let result = build_docblock_for_extraction(&params, "void", "void", "    ", &no_classes);
+        assert!(
+            result.is_empty(),
+            "scalar types should not trigger docblock, got: {result}"
+        );
+    }
+
+    #[test]
+    fn docblock_generated_for_array_param() {
+        let params = vec![(
+            "$items".to_string(),
+            "array".to_string(),
+            "array".to_string(),
+        )];
+        let result = build_docblock_for_extraction(&params, "void", "void", "    ", &no_classes);
+        assert!(
+            result.contains("@param"),
+            "array param should trigger @param enrichment, got: {result}"
+        );
+        assert!(result.contains("$items"));
+        assert!(result.starts_with("    /**"));
+        assert!(result.contains("     */"));
+    }
+
+    #[test]
+    fn docblock_generated_for_callable_param() {
+        let params = vec![(
+            "$fn".to_string(),
+            "Closure".to_string(),
+            "Closure".to_string(),
+        )];
+        let result = build_docblock_for_extraction(&params, "void", "void", "    ", &no_classes);
+        assert!(
+            result.contains("@param"),
+            "Closure param should trigger @param enrichment, got: {result}"
+        );
+        assert!(result.contains("$fn"));
+    }
+
+    #[test]
+    fn docblock_not_generated_for_empty_types() {
+        let params = vec![("$x".to_string(), String::new(), String::new())];
+        let result = build_docblock_for_extraction(&params, "", "", "", &no_classes);
+        assert!(
+            result.is_empty(),
+            "empty types should not trigger docblock, got: {result}"
+        );
+    }
+
+    #[test]
+    fn docblock_aligns_param_names() {
+        let params = vec![
+            (
+                "$items".to_string(),
+                "array".to_string(),
+                "array".to_string(),
+            ),
+            (
+                "$cb".to_string(),
+                "Closure".to_string(),
+                "Closure".to_string(),
+            ),
+        ];
+        let result = build_docblock_for_extraction(&params, "void", "void", "", &no_classes);
+        // Both @param tags should be present.
+        let param_lines: Vec<&str> = result.lines().filter(|l| l.contains("@param")).collect();
+        assert_eq!(
+            param_lines.len(),
+            2,
+            "expected 2 @param lines, got: {result}"
+        );
+        // The $-names should be aligned (both start at the same column).
+        let dollar_positions: Vec<usize> =
+            param_lines.iter().map(|l| l.find('$').unwrap()).collect();
+        assert_eq!(
+            dollar_positions[0], dollar_positions[1],
+            "param names should be aligned, got: {result}"
+        );
+    }
+
+    #[test]
+    fn docblock_return_type_hint_for_docblock_trailing() {
+        let result =
+            build_return_type_hint_for_docblock(&ReturnStrategy::TrailingReturn, "string", &[]);
+        assert_eq!(result, "string");
+    }
+
+    #[test]
+    fn docblock_return_type_hint_for_docblock_void_guards() {
+        let result = build_return_type_hint_for_docblock(&ReturnStrategy::VoidGuards, "", &[]);
+        assert_eq!(result, "bool");
+    }
+
+    #[test]
+    fn docblock_return_type_hint_for_docblock_none_void() {
+        let result = build_return_type_hint_for_docblock(&ReturnStrategy::None, "", &[]);
+        assert_eq!(result, "void");
+    }
+
+    #[test]
+    fn docblock_return_type_hint_for_docblock_single_return() {
+        let returns = vec![("$x".to_string(), "array".to_string(), "array".to_string())];
+        let result = build_return_type_hint_for_docblock(&ReturnStrategy::None, "", &returns);
+        assert_eq!(result, "array");
+    }
+
+    #[test]
+    fn definition_includes_docblock_for_array_param() {
+        let info = ExtractionInfo {
+            name: "process".to_string(),
+            params: vec![("$items".to_string(), "array".to_string())],
+            returns: vec![],
+            body: "foreach ($items as $item) {}".to_string(),
+            target: ExtractionTarget::Function,
+            is_static: false,
+            member_indent: String::new(),
+            body_indent: "    ".to_string(),
+            return_strategy: ReturnStrategy::None,
+            trailing_return_type: String::new(),
+            docblock: build_docblock_for_extraction(
+                &[(
+                    "$items".to_string(),
+                    "array".to_string(),
+                    "array".to_string(),
+                )],
+                "void",
+                "void",
+                "",
+                &no_classes,
+            ),
+        };
+        let def = build_extracted_definition(&info);
+        assert!(
+            def.contains("/**"),
+            "definition should include docblock for array param, got:\n{def}"
+        );
+        assert!(
+            def.contains("@param"),
+            "definition should include @param tag, got:\n{def}"
+        );
+        // Docblock should appear before the function keyword.
+        let doc_pos = def.find("/**").unwrap();
+        let fn_pos = def.find("function").unwrap();
+        assert!(doc_pos < fn_pos, "docblock should precede function keyword");
+    }
+
+    #[test]
+    fn definition_no_docblock_for_scalar_params() {
+        let info = ExtractionInfo {
+            name: "add".to_string(),
+            params: vec![
+                ("$a".to_string(), "int".to_string()),
+                ("$b".to_string(), "int".to_string()),
+            ],
+            returns: vec![("$sum".to_string(), "int".to_string())],
+            body: "$sum = $a + $b;".to_string(),
+            target: ExtractionTarget::Function,
+            is_static: false,
+            member_indent: String::new(),
+            body_indent: "    ".to_string(),
+            return_strategy: ReturnStrategy::None,
+            trailing_return_type: String::new(),
+            docblock: build_docblock_for_extraction(
+                &[
+                    ("$a".to_string(), "int".to_string(), "int".to_string()),
+                    ("$b".to_string(), "int".to_string(), "int".to_string()),
+                ],
+                "int",
+                "int",
+                "",
+                &no_classes,
+            ),
+        };
+        let def = build_extracted_definition(&info);
+        assert!(
+            !def.contains("/**"),
+            "definition should NOT include docblock for scalar types, got:\n{def}"
+        );
+    }
+
+    // ── Disabled code action with rejection reason ──────────────────
+
+    #[test]
+    fn disabled_action_for_unsafe_returns() {
+        let backend = crate::Backend::new_test();
+        let uri = "file:///test.php";
+        let content = "\
+<?php
+function foo() {
+    if ($a) return 1;
+    if ($b) return null;
+    echo 'done';
+}
+";
+        // Select the three statements (mixed return values including
+        // null → Unsafe strategy).
+        let params = CodeActionParams {
+            text_document: TextDocumentIdentifier {
+                uri: uri.parse().unwrap(),
+            },
+            range: Range {
+                start: Position::new(2, 4),
+                end: Position::new(4, 17),
+            },
+            context: CodeActionContext {
+                diagnostics: vec![],
+                only: None,
+                trigger_kind: None,
+            },
+            work_done_progress_params: WorkDoneProgressParams {
+                work_done_token: None,
+            },
+            partial_result_params: PartialResultParams {
+                partial_result_token: None,
+            },
+        };
+
+        let actions = backend.handle_code_action(uri, content, &params);
+        let disabled = actions
+            .iter()
+            .find(|a| matches!(a, CodeActionOrCommand::CodeAction(ca) if ca.disabled.is_some()));
+        assert!(
+            disabled.is_some(),
+            "should emit a disabled code action for unsafe returns, got: {:?}",
+            actions
+                .iter()
+                .map(|a| match a {
+                    CodeActionOrCommand::CodeAction(ca) => format!(
+                        "{} (disabled: {:?})",
+                        ca.title,
+                        ca.disabled.as_ref().map(|d| &d.reason)
+                    ),
+                    CodeActionOrCommand::Command(cmd) => cmd.title.clone(),
+                })
+                .collect::<Vec<_>>()
+        );
+        if let Some(CodeActionOrCommand::CodeAction(ca)) = disabled {
+            assert!(
+                ca.disabled.as_ref().unwrap().reason.contains("return"),
+                "reason should mention returns, got: {}",
+                ca.disabled.as_ref().unwrap().reason
+            );
+            assert!(ca.edit.is_none(), "disabled action should have no edit");
+        }
+    }
+
+    #[test]
+    fn no_disabled_action_for_empty_selection() {
+        let backend = crate::Backend::new_test();
+        let uri = "file:///test.php";
+        let content = "\
+<?php
+function foo() {
+    $x = 1;
+}
+";
+        let params = CodeActionParams {
+            text_document: TextDocumentIdentifier {
+                uri: uri.parse().unwrap(),
+            },
+            range: Range {
+                start: Position::new(2, 4),
+                end: Position::new(2, 4), // empty selection
+            },
+            context: CodeActionContext {
+                diagnostics: vec![],
+                only: None,
+                trigger_kind: None,
+            },
+            work_done_progress_params: WorkDoneProgressParams {
+                work_done_token: None,
+            },
+            partial_result_params: PartialResultParams {
+                partial_result_token: None,
+            },
+        };
+
+        let actions = backend.handle_code_action(uri, content, &params);
+        let disabled_extract = actions.iter().find(|a| {
+            matches!(a, CodeActionOrCommand::CodeAction(ca)
+                if ca.disabled.is_some()
+                    && ca.kind == Some(CodeActionKind::REFACTOR_EXTRACT)
+                    && ca.title.contains("Extract"))
+        });
+        assert!(
+            disabled_extract.is_none(),
+            "should NOT emit a disabled extract action for empty selection"
+        );
+    }
+
+    #[test]
+    fn no_disabled_action_for_partial_statement() {
+        let backend = crate::Backend::new_test();
+        let uri = "file:///test.php";
+        let content = "\
+<?php
+function foo() {
+    $x = some_function($a, $b);
+}
+";
+        // Select partial statement (just the function call, not the assignment).
+        let params = CodeActionParams {
+            text_document: TextDocumentIdentifier {
+                uri: uri.parse().unwrap(),
+            },
+            range: Range {
+                start: Position::new(2, 9),
+                end: Position::new(2, 30),
+            },
+            context: CodeActionContext {
+                diagnostics: vec![],
+                only: None,
+                trigger_kind: None,
+            },
+            work_done_progress_params: WorkDoneProgressParams {
+                work_done_token: None,
+            },
+            partial_result_params: PartialResultParams {
+                partial_result_token: None,
+            },
+        };
+
+        let actions = backend.handle_code_action(uri, content, &params);
+        let disabled_extract = actions.iter().find(|a| {
+            matches!(a, CodeActionOrCommand::CodeAction(ca)
+                if ca.disabled.is_some()
+                    && ca.kind == Some(CodeActionKind::REFACTOR_EXTRACT)
+                    && ca.title.contains("Extract"))
+        });
+        assert!(
+            disabled_extract.is_none(),
+            "should NOT emit a disabled extract action for partial statement"
+        );
     }
 }

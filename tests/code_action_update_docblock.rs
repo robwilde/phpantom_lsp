@@ -723,7 +723,7 @@ interface Transformer {
 
     let new_text = extract_edit_text(action);
     assert!(
-        contains_param(&new_text, "array", "$options"),
+        contains_param(&new_text, "array<mixed>", "$options"),
         "should add missing param: {}",
         new_text
     );

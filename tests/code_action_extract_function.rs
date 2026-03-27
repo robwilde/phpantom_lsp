@@ -49,8 +49,9 @@ fn get_code_actions(
 fn find_extract_action(actions: &[CodeActionOrCommand]) -> Option<&CodeAction> {
     actions.iter().find_map(|a| match a {
         CodeActionOrCommand::CodeAction(ca)
-            if ca.title.starts_with("Extract function")
-                || ca.title.starts_with("Extract method") =>
+            if ca.disabled.is_none()
+                && (ca.title.starts_with("Extract function")
+                    || ca.title.starts_with("Extract method")) =>
         {
             Some(ca)
         }
@@ -1069,7 +1070,7 @@ class Foo {
     public function multi(array $items): int
     {
         $count = 0;
-        
+
         foreach ($items as $item) {
             $count = $count + $item;
         }

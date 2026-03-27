@@ -409,3 +409,88 @@ $one->  // should see Foo members
 
 ---
 
+## T12. Intersection types flattened to unions by `type_strings_joined`
+**Impact: Low-Medium · Effort: Low (after M4)**
+
+`ResolvedType::type_strings_joined` joins all resolved type entries
+with `|`. When a variable has an intersection type (`A&B`), the
+resolution pipeline produces separate `ResolvedType` entries for each
+part, and the join produces `A|B` instead of `A&B`.
+
+This affects any consumer that reads the joined type string, including
+hover display, extract function parameter types, and docblock
+generation on extracted methods.
+
+**Example:**
+
+```php
+function measure(Countable&Serializable $thing): void {
+    // Select and extract:
+    echo $thing->count();
+}
+// Extracted method gets `Countable|Serializable $thing` instead of
+// `Countable&Serializable $thing`.
+```
+
+**Blocked by M4.** The fix requires `PhpType::Intersection` from the
+mago-type-syntax migration. The current `Vec<ResolvedType>` has no way
+to distinguish "these types form an intersection" from "these types
+form a union". With `PhpType`, the intersection is a single tree node.
+
+**After fixing:** verify that extract function docblock generation
+preserves intersection types in both the native hint and the `@param`
+tag.
+
+---
+
+## T13. Closure variables lose callable signature detail
+**Impact: Low-Medium · Effort: Medium**
+
+When a variable holds a closure or arrow function, the resolution
+pipeline resolves it to the `Closure` class name. The callable
+signature (parameter types, return type) is lost. This means:
+
+1. Passing `$fn` to an extracted method produces `Closure $fn` with
+   `@param (Closure(): mixed)` instead of the concrete signature.
+2. An explicit `/** @var (Closure(int): string) $fn */` annotation
+   is recognised by variable resolution (`find_var_raw_type_in_source`
+   returns the annotated type), but `clean_type_for_signature` now
+   correctly extracts `Closure` as the native hint. The raw type is
+   preserved for docblock generation.
+
+The remaining gap is that *unannotated* closures like
+`$fn = function(int $x): string { ... }` resolve to bare `Closure`
+with no signature detail. `extract_closure_return_type_from_assignment`
+extracts the return type for call-site resolution, but does not
+produce a full callable type string for variable-type contexts.
+
+**Example:**
+
+```php
+$fn = function(int $x): string { return (string)$x; };
+// Extracting code that uses $fn as a parameter produces:
+//   @param (Closure(): mixed) $fn
+// Instead of:
+//   @param (Closure(int): string) $fn
+```
+
+**What needs to change:**
+
+1. When resolving a variable whose assignment RHS is a closure or
+   arrow function, build a callable type string from the literal's
+   parameter list and return type hint (e.g. `(Closure(int): string)`).
+   Return this as the variable's type string instead of bare `Closure`.
+
+2. `clean_type_for_signature` already handles parenthesized callable
+   types by extracting the base name (`Closure` or `callable`), so
+   the native hint will be correct.
+
+3. `enrichment_plain` should recognise that a raw type like
+   `(Closure(int): string)` already carries a full signature and
+   should not be re-enriched to `(Closure(): mixed)`.
+
+**After fixing:** verify that extract function docblock generation
+emits the concrete callable signature in the `@param` tag.
+
+---
+

@@ -501,8 +501,8 @@ async fn generates_param_for_union_with_array() {
         snippet
     );
     assert!(
-        snippet.contains("array|string"),
-        "Should echo the raw union type, got:\n{}",
+        snippet.contains("array<${1:mixed}>|string"),
+        "Should enrich array part in union type, got:\n{}",
         snippet
     );
     assert!(

@@ -1684,18 +1684,18 @@ class Foo {
         let updated = build_updated_docblock(&info, php, &cl, no_function_loader());
         // All $names should be aligned at the same column.
         assert!(
-            updated.contains("@param string $a"),
+            updated.contains("@param string       $a"),
             "Should have string padded: {}",
             updated
         );
         assert!(
-            updated.contains("@param int    $b"),
+            updated.contains("@param int          $b"),
             "Should have int padded: {}",
             updated
         );
         assert!(
-            updated.contains("@param array  $items"),
-            "Should have array padded: {}",
+            updated.contains("@param array<mixed> $items"),
+            "Should have array<mixed> padded: {}",
             updated
         );
     }

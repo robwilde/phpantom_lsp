@@ -447,7 +447,10 @@ Modules in recommended migration order (least dependencies first):
    on `PhpType` variants instead of string prefix checks.
 
 7. **`src/code_actions/`** — Type-aware refactorings. Use `PhpType`
-   for type comparison, docblock generation, etc.
+   for type comparison, docblock generation, etc. Currently,
+   `ResolvedType::type_strings_joined` joins all resolved types
+   with `|`, which flattens intersection types (`A&B`) into unions
+   (`A|B`). With `PhpType::Intersection` this is preserved.
 
 ### Phase 4: Migrate the Laravel provider
 
