@@ -21,23 +21,27 @@ within the same impact tier.
 
 ## Sprint 4 — Refactoring toolkit
 
-| #   | Item                                                                                                | Impact   | Effort      |
-| --- | --------------------------------------------------------------------------------------------------- | -------- | ----------- |
-| M3  | [Migrate to mago-names](todo/mago.md#m3-mago-names)                                                 | High     | Medium-High |
-| M4  | [Migrate to mago-type-syntax](todo/mago.md#m4-mago-type-syntax)                                     | Critical | Very High   |
-| A2  | [Extract function](todo/actions.md#a2-extract-function-refactoring)                                 | High     | High        |
-| A1  | [Simplify with null coalescing / null-safe operator](todo/actions.md#a1-simplify-with-null-coalescing--null-safe-operator) | Medium | Medium |
-| A7  | [Extract constant](todo/actions.md#a7-extract-constant)                                             | Medium   | Medium      |
-| A15 | [Generate property hooks (PHP 8.4+)](todo/actions.md#a15-generate-property-hooks-php-84)            | Medium   | Low-Medium  |
+| #   | Item                                                                                                                    | Impact   | Effort      |
+| --- | ----------------------------------------------------------------------------------------------------------------------- | -------- | ----------- |
+| M3  | [Migrate to mago-names](todo/mago.md#m3-mago-names)                                                                     | High     | Medium-High |
+| M4  | [Migrate to mago-type-syntax](todo/mago.md#m4-mago-type-syntax)                                                         | Critical | Very High   |
+| F4  | [`codeAction/resolve` — deferred edit computation](todo/lsp-features.md#f4-codeactionresolve--deferred-edit-computation-and-diagnostic-clearing) | High     | Medium      |
+| A2  | [Extract function](todo/actions.md#a2-extract-function-refactoring)                                                     | High     | High        |
+| A1  | [Simplify with null coalescing / null-safe operator](todo/actions.md#a1-simplify-with-null-coalescing--null-safe-operator) | Medium  | Medium      |
+| A7  | [Extract constant](todo/actions.md#a7-extract-constant)                                                                 | Medium   | Medium      |
+| A15 | [Generate property hooks (PHP 8.4+)](todo/actions.md#a15-generate-property-hooks-php-84)                                | Medium   | Low-Medium  |
 |     | **Release 0.7.0**                                                                                   |          |             |
 
 ## Sprint 5 — Polish for office adoption
 
-| #   | Item                                                       | Impact | Effort |
-| --- | ---------------------------------------------------------- | ------ | ------ |
-|     | Clear [refactoring gate](todo/refactor.md)                 | —      | —      |
-| D4  | Unused variable warning                                    | Medium | Medium |
-|     | **Release 0.8.0**                                          |        |        |
+| #   | Item                                                                                                               | Impact | Effort |
+| --- | ------------------------------------------------------------------------------------------------------------------ | ------ | ------ |
+|     | Clear [refactoring gate](todo/refactor.md)                                                                         | —      | —      |
+| T1  | [Inherited docblock type propagation](todo/type-inference.md#t1-inherited-docblock-type-propagation)               | High   | Medium |
+| D8  | [Undefined variable diagnostic](todo/diagnostics.md#d8-undefined-variable-diagnostic)                              | High   | Medium |
+| D11 | [Invalid class-like kind in context](todo/diagnostics.md#d11-invalid-class-like-kind-in-context)                   | Medium | Low    |
+| D4  | Unused variable warning                                                                                            | Medium | Medium |
+|     | **Release 0.8.0**                                                                                                  |        |        |
 
 > **Note:** F1 (Workspace symbol search), F2 (Document symbols), A8
 > (Implement interface methods), A9 (Auto import), D1 (Unknown class
@@ -87,13 +91,11 @@ unlikely to move the needle for most users.
 | C11  | [Smarter member ordering after `->` / `::`](todo/completion.md#c11-smarter-member-ordering-after----)                                                        | Medium      | Medium      |
 | C3   | Go-to-definition for array shape keys via bracket access                                                                                                     | Low-Medium  | Medium      |
 | C7   | `class_alias()` support                                                                                                                                      | Low-Medium  | Medium      |
-| C8   | [Filesystem proximity as an affinity tiebreaker](todo/completion.md#c8-filesystem-proximity-as-an-affinity-tiebreaker)                                        | Low-Medium  | Low         |
 | C4   | Non-array functions with dynamic return types                                                                                                                | Low         | High        |
 | C5   | `#[ReturnTypeContract]` parameter-dependent return types                                                                                                     | Low         | Low         |
 | C6   | `#[ExpectedValues]` parameter value suggestions                                                                                                              | Low         | Medium      |
 | C10  | [Deprecation markers on class-name completions from all sources](todo/completion.md#c10-deprecation-markers-on-class-name-completions-from-all-sources)       | Low         | Low         |
 |      | **[Type Inference](todo/type-inference.md)**                                                                                                                 |             |             |
-| T1   | [Inherited docblock type propagation](todo/type-inference.md#t1-inherited-docblock-type-propagation)                                                         | High        | Medium      |
 | T6   | `Closure::bind()` / `Closure::fromCallable()` return type preservation                                                                                      | Low-Medium  | Low-Medium  |
 | T12  | [Intersection types flattened to unions by `type_strings_joined`](todo/type-inference.md#t12-intersection-types-flattened-to-unions-by-type_strings_joined)    | Low-Medium  | Low (after M4) |
 | T13  | [Closure variables lose callable signature detail](todo/type-inference.md#t13-closure-variables-lose-callable-signature-detail)                               | Low-Medium  | Medium      |
@@ -103,10 +105,8 @@ unlikely to move the needle for most users.
 | T10  | [Ternary expression as RHS of list destructuring](todo/type-inference.md#t10-ternary-expression-as-rhs-of-list-destructuring)                                 | Low         | Low-Medium  |
 | T11  | [Nested list destructuring](todo/type-inference.md#t11-nested-list-destructuring)                                                                             | Low         | Low-Medium  |
 |      | **[Diagnostics](todo/diagnostics.md)**                                                                                                                       |             |             |
-| D8   | [Undefined variable diagnostic](todo/diagnostics.md#d8-undefined-variable-diagnostic)                                                                        | High        | Medium      |
 | D2   | Chain error propagation (flag only the first broken link)                                                                                                     | Medium      | Medium      |
 | D5   | Diagnostic suppression intelligence                                                                                                                          | Medium      | Medium      |
-| D11  | [Invalid class-like kind in context](todo/diagnostics.md#d11-invalid-class-like-kind-in-context)                                                             | Medium      | Low         |
 | D6   | [Unreachable code diagnostic](todo/diagnostics.md#d6-unreachable-code-diagnostic)                                                                            | Low-Medium  | Low         |
 | D10  | PHPMD diagnostic proxy                                                                                                                                       | Low         | Medium      |
 |      | **[Code Actions](todo/actions.md)**                                                                                                                          |             |             |
@@ -117,7 +117,6 @@ unlikely to move the needle for most users.
 | A3   | Switch → match conversion                                                                                                                                    | Low         | Medium      |
 |      | **[PHPStan Code Actions](todo/phpstan-actions.md)**                                                                                                          |             |             |
 | H1   | `new.static` — add `final` or `@phpstan-consistent-constructor`                                                                                              | Medium      | Low         |
-| H2   | `method.missingOverride` — add `#[Override]`                                                                                                                 | Medium      | Low         |
 | H3   | `method.override` / `property.override` — remove `#[Override]`                                                                                               | Medium      | Low         |
 | H5   | `method.tentativeReturnType` — add `#[\ReturnTypeWillChange]`                                                                                                | Medium      | Low         |
 | H7   | `return.phpDocType` — fix `@return` to match native type                                                                                                     | Medium      | Low         |

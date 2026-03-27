@@ -218,6 +218,9 @@ impl Backend {
 ///   was removed — stale if the type no longer appears after `@throws`.
 /// - `missingType.checkedException`: the `@throws` tag was added —
 ///   stale if the exception short name now appears after `@throws`.
+/// - `method.missingOverride`: the `#[Override]` attribute was added —
+///   stale if a `#[...]` line containing `Override` appears near the
+///   diagnostic line.
 /// - **Any identifier**: the line now contains a `@phpstan-ignore`
 ///   comment that covers the diagnostic's identifier.
 fn is_stale_phpstan_diagnostic(diag: &Diagnostic, content: &str) -> bool {
@@ -271,6 +274,19 @@ fn is_stale_phpstan_diagnostic(diag: &Diagnostic, content: &str) -> bool {
                 }
                 None => false,
             }
+        }
+        "method.missingOverride" => {
+            // The diagnostic says the method is missing #[Override].
+            // If any line within a few lines above the diagnostic
+            // contains `Override` in a `#[...]` attribute, the user
+            // added it and the diagnostic is stale.
+            let lines: Vec<&str> = content.lines().collect();
+            let start = diag_line.saturating_sub(5);
+            let end = (diag_line + 1).min(lines.len());
+            (start..end).any(|i| {
+                let t = lines[i].trim();
+                t.starts_with("#[") && t.contains("Override")
+            })
         }
         _ => false,
     }
@@ -1692,6 +1708,78 @@ mod tests {
         assert!(
             !is_stale_phpstan_diagnostic(&diag, content),
             "should NOT be stale for blanket @phpstan-ignore-line"
+        );
+    }
+
+    // ── method.missingOverride stale detection ──────────────────────
+
+    #[test]
+    fn stale_missing_override_when_override_added() {
+        let content = "<?php\nclass Foo extends Bar {\n    #[\\Override]\n    public function baz(): void {}\n}\n";
+        let diag = make_phpstan_diag(
+            3, // diagnostic on `public function baz()` line
+            "method.missingOverride",
+            "Method Foo::baz() overrides method Bar::baz() but is missing the #[\\Override] attribute.",
+        );
+        assert!(
+            is_stale_phpstan_diagnostic(&diag, content),
+            "should be stale when #[\\Override] was added above the method"
+        );
+    }
+
+    #[test]
+    fn stale_missing_override_when_short_override_added() {
+        let content = "<?php\nclass Foo extends Bar {\n    #[Override]\n    public function baz(): void {}\n}\n";
+        let diag = make_phpstan_diag(
+            3,
+            "method.missingOverride",
+            "Method Foo::baz() overrides method Bar::baz() but is missing the #[\\Override] attribute.",
+        );
+        assert!(
+            is_stale_phpstan_diagnostic(&diag, content),
+            "should be stale when #[Override] (short form) was added above the method"
+        );
+    }
+
+    #[test]
+    fn not_stale_missing_override_when_not_added() {
+        let content = "<?php\nclass Foo extends Bar {\n    public function baz(): void {}\n}\n";
+        let diag = make_phpstan_diag(
+            2,
+            "method.missingOverride",
+            "Method Foo::baz() overrides method Bar::baz() but is missing the #[\\Override] attribute.",
+        );
+        assert!(
+            !is_stale_phpstan_diagnostic(&diag, content),
+            "should NOT be stale when #[Override] is still missing"
+        );
+    }
+
+    #[test]
+    fn stale_missing_override_with_other_attrs() {
+        let content = "<?php\nclass Foo extends Bar {\n    #[Override]\n    #[Route('/baz')]\n    public function baz(): void {}\n}\n";
+        let diag = make_phpstan_diag(
+            4, // diagnostic on `public function baz()` line
+            "method.missingOverride",
+            "Method Foo::baz() overrides method Bar::baz() but is missing the #[\\Override] attribute.",
+        );
+        assert!(
+            is_stale_phpstan_diagnostic(&diag, content),
+            "should be stale when #[Override] exists among other attributes"
+        );
+    }
+
+    #[test]
+    fn stale_missing_override_in_combined_attr_list() {
+        let content = "<?php\nclass Foo extends Bar {\n    #[Override, Deprecated]\n    public function baz(): void {}\n}\n";
+        let diag = make_phpstan_diag(
+            3,
+            "method.missingOverride",
+            "Method Foo::baz() overrides method Bar::baz() but is missing the #[\\Override] attribute.",
+        );
+        assert!(
+            is_stale_phpstan_diagnostic(&diag, content),
+            "should be stale when Override is in a combined attribute list"
         );
     }
 

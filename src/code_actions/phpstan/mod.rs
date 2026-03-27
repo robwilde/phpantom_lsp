@@ -13,10 +13,14 @@
 //! - **Remove `@throws`** — when PHPStan reports `throws.unusedType`
 //!   or `throws.notThrowable`, offer to remove the offending `@throws`
 //!   line from the docblock.
+//! - **Add `#[Override]`** — when PHPStan reports
+//!   `method.missingOverride`, offer to insert `#[\Override]` above
+//!   the method declaration.
 //! - **PHPStan ignore** — when the cursor is on a line with a PHPStan
 //!   error, offer to add `@phpstan-ignore <identifier>`.  When PHPStan
 //!   reports an unnecessary ignore, offer to remove it.
 
+mod add_override;
 mod add_throws;
 mod ignore;
 mod remove_throws;
@@ -45,5 +49,8 @@ impl Backend {
 
         // ── Remove invalid/unused @throws ───────────────────────────
         self.collect_remove_throws_actions(uri, content, params, out);
+
+        // ── Add #[Override] for overriding methods ──────────────────
+        self.collect_add_override_actions(uri, content, params, out);
     }
 }

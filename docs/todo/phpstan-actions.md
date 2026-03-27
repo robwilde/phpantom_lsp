@@ -76,23 +76,6 @@ the constructor has `final` keyword, or the class docblock contains
 
 ---
 
-### H2. `method.missingOverride` — Add `#[Override]` attribute
-
-**Identifier:** `method.missingOverride`
-**Message:** `Method Foo::bar() overrides method Parent::bar() but is missing the #[\Override] attribute.`
-
-The diagnostic points to the method declaration line. Insert `#[\Override]`
-on the line before the method (after the docblock, before modifiers). Use the
-same indentation as the method line.
-
-No message parsing needed beyond confirming the identifier. The fix is always
-the same: insert the attribute.
-
-**Stale detection:** scan upward from the diagnostic line (skipping blank lines)
-and check whether a line contains `#[Override]` or `#[\Override]`.
-
----
-
 ### H3. `method.override` / `property.override` — Remove `#[Override]` attribute
 
 **Identifiers:** `method.override`, `property.override`
@@ -550,18 +533,17 @@ the list.
 Based on effort-to-value ratio and shared infrastructure:
 
 1. **R1, R2, R3** — prerequisites (small, unblocks everything)
-2. **H2** — `#[Override]` add (trivial, high frequency)
-3. **H3** — `#[Override]` remove (shares logic with H2)
-4. **H5** — `#[\ReturnTypeWillChange]` (reuses P2 pattern)
-5. **H1** — `new.static` (three fixes, but each is simple)
-6. **H7, H8, H9** — PHPDoc type mismatch family (implement together)
-7. **H11** — visibility fix (leverages existing `change_visibility.rs`)
-8. **H14** — narrow `@throws` (extends existing `remove_throws.rs`)
-9. **H6** — return type update
-10. **H10** — remove unused union member
-11. **H12** — prefixed class name
-12. **H4** — unset by-ref foreach variable
-13. Everything else based on user demand
+2. **H3** — `#[Override]` remove (shares logic with H2, already shipped)
+3. **H5** — `#[\ReturnTypeWillChange]` (reuses attribute insertion pattern)
+4. **H1** — `new.static` (three fixes, but each is simple)
+5. **H7, H8, H9** — PHPDoc type mismatch family (implement together)
+6. **H11** — visibility fix (leverages existing `change_visibility.rs`)
+7. **H14** — narrow `@throws` (extends existing `remove_throws.rs`)
+8. **H6** — return type update
+9. **H10** — remove unused union member
+10. **H12** — prefixed class name
+11. **H4** — unset by-ref foreach variable
+12. Everything else based on user demand
 
 ---
 
@@ -622,10 +604,11 @@ Each action needs tests following the existing pattern:
 - Stale detection tests that construct `Diagnostic` objects and call
   `is_stale_phpstan_diagnostic`
 
-### Attribute insertion pattern (H2, H3, H5)
+### Attribute insertion pattern (H3, H5)
 
-P2 and P5 both insert an attribute on the line before a method. P3 removes
-one. Factor this into a shared helper:
+H3 and H5 both need to insert or remove an attribute on the line before a
+method. Factor this into a shared helper (H2 is already implemented in
+`add_override.rs` and can serve as a reference):
 
 ```rust
 /// Insert an attribute line before the declaration at `line`.

@@ -485,6 +485,13 @@ public string $name {
 
 **Impact: Medium · Effort: Low-Medium**
 
+> **Blocked:** Requires `SnippetTextEdit` support in `lsp-types`.
+> Upstream issue: [gluon-lang/lsp-types#310](https://github.com/gluon-lang/lsp-types/issues/310).
+> The current `lsp-types` (0.94, pinned by `tower-lsp` 0.20) only
+> covers LSP 3.17. `SnippetTextEdit` is an LSP 3.18 proposed feature.
+> Revisit once the upstream issue is resolved and `tower-lsp` picks up
+> the new version.
+
 After an Extract Function/Method code action is applied, let the user
 immediately rename the generated name by placing a snippet tab-stop on
 it.  The contextual name (`createUsers`, `validateGuard`, …) serves as
