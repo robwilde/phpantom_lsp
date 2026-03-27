@@ -28,6 +28,7 @@ within the same impact tier.
 | M4  | [Migrate to mago-type-syntax](todo/mago.md#m4-mago-type-syntax)                                     | Critical | Very High   |
 | A2  | [Extract function](todo/actions.md#a2-extract-function-refactoring)                                 | High     | High        |
 | A13 | [Generate constructor](todo/actions.md#a13-generate-constructor)                                    | Medium   | Medium      |
+| A14 | [Extract method polish](todo/actions.md#a14-extract-method-polish)                                  | Medium   | Medium      |
 |     | **Release 0.7.0**                                                                                   |          |             |
 
 ## Sprint 5 — Polish for office adoption

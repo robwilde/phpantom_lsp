@@ -615,6 +615,11 @@ fn build_extracted_definition(info: &ExtractionInfo) -> String {
                 rewrite_guard_returns(&info.body, Some(value))
             }
         }
+        ReturnStrategy::NullGuardWithValue(void_guards) if *void_guards => {
+            // Bare `return;` → `return null;` so the extracted
+            // function returns null on guard-fire.
+            rewrite_void_returns_to_null(&info.body)
+        }
         _ => info.body.clone(),
     };
 
@@ -677,6 +682,17 @@ fn build_extracted_definition(info: &ExtractionInfo) -> String {
             out.push_str(&info.body_indent);
             out.push_str("return null;\n");
         }
+        ReturnStrategy::NullGuardWithValue(_) => {
+            // Guards return null (or were rewritten from bare return;),
+            // and we also compute a value.  The fall-through returns
+            // the computed variable.
+            if info.returns.len() == 1 {
+                out.push_str(&info.body_indent);
+                out.push_str("return ");
+                out.push_str(&info.returns[0].0);
+                out.push_str(";\n");
+            }
+        }
         ReturnStrategy::None | ReturnStrategy::Unsafe => {
             // Normal extraction: add return for captured variables.
             if info.returns.len() == 1 {
@@ -711,6 +727,9 @@ fn build_extracted_definition(info: &ExtractionInfo) -> String {
 /// This operates on source text rather than AST to keep things simple.
 /// It matches `return` followed by optional whitespace and either `;`
 /// (void) or the uniform value and `;`.
+///
+/// See also [`rewrite_void_returns_to_null`] for the
+/// `NullGuardWithValue(true)` case.
 fn rewrite_guard_returns(body: &str, uniform_value: Option<&str>) -> String {
     match uniform_value {
         None => {
@@ -795,6 +814,41 @@ fn rewrite_guard_returns(body: &str, uniform_value: Option<&str>) -> String {
     }
 }
 
+/// Rewrite bare `return;` to `return null;` in the body text.
+///
+/// Used by `NullGuardWithValue(true)` — void guard clauses that are
+/// extracted alongside a computed value.  The extracted function must
+/// return `null` (not void) to signal "guard fired" to the caller.
+fn rewrite_void_returns_to_null(body: &str) -> String {
+    let mut result = String::with_capacity(body.len());
+    let mut remaining = body;
+    while let Some(pos) = remaining.find("return") {
+        let before_ok = pos == 0
+            || !remaining.as_bytes()[pos - 1].is_ascii_alphanumeric()
+                && remaining.as_bytes()[pos - 1] != b'_'
+                && remaining.as_bytes()[pos - 1] != b'$';
+        if !before_ok {
+            result.push_str(&remaining[..pos + 6]);
+            remaining = &remaining[pos + 6..];
+            continue;
+        }
+        let after = &remaining[pos + 6..];
+        let trimmed = after.trim_start();
+        if trimmed.starts_with(';') {
+            // Bare `return;` → `return null;`
+            result.push_str(&remaining[..pos]);
+            result.push_str("return null");
+            let ws_len = after.len() - trimmed.len();
+            remaining = &remaining[pos + 6 + ws_len..];
+        } else {
+            result.push_str(&remaining[..pos + 6]);
+            remaining = &remaining[pos + 6..];
+        }
+    }
+    result.push_str(remaining);
+    result
+}
+
 /// Build the parameter list string for the function signature.
 fn build_param_list(params: &[(String, String)]) -> String {
     params
@@ -834,6 +888,23 @@ fn build_return_type(info: &ExtractionInfo) -> String {
                 return format!("?{}", t);
             }
             // Can't determine a useful nullable type.
+            String::new()
+        }
+        ReturnStrategy::NullGuardWithValue(_) => {
+            // The return type is the computed value's type made nullable.
+            if info.returns.len() == 1 {
+                let type_hint = &info.returns[0].1;
+                if !type_hint.is_empty() {
+                    let t = clean_type_for_signature(type_hint);
+                    if !t.is_empty() && !t.starts_with('?') && t != "null" && t != "mixed" {
+                        return format!("?{}", t);
+                    }
+                    // Already nullable or mixed — use as-is.
+                    if !t.is_empty() {
+                        return t;
+                    }
+                }
+            }
             String::new()
         }
         ReturnStrategy::None | ReturnStrategy::Unsafe => {
@@ -915,6 +986,28 @@ fn build_call_site(info: &ExtractionInfo, call_indent: &str) -> String {
             out.push_str(call_indent);
             out.push_str("if ($__early !== null) return $__early;\n");
         }
+        ReturnStrategy::NullGuardWithValue(void_guards) => {
+            // Guards return null (or were void), the function also
+            // computes a value.
+            // Call site:
+            //   $var = extracted(…);
+            //   if ($var === null) return null;  // or `return;`
+            if info.returns.len() == 1 {
+                out.push_str(call_indent);
+                out.push_str(&info.returns[0].0);
+                out.push_str(" = ");
+                out.push_str(&call_expr);
+                out.push_str(";\n");
+                out.push_str(call_indent);
+                out.push_str("if (");
+                out.push_str(&info.returns[0].0);
+                if *void_guards {
+                    out.push_str(" === null) return;\n");
+                } else {
+                    out.push_str(" === null) return null;\n");
+                }
+            }
+        }
         ReturnStrategy::None | ReturnStrategy::Unsafe => {
             // Normal extraction.
             if info.returns.is_empty() {
@@ -959,16 +1052,16 @@ fn build_call_site(info: &ExtractionInfo, call_indent: &str) -> String {
 ///   patterns that can be safely extracted with special call sites.
 /// - `Unsafe` — cannot safely extract.
 ///
-/// `has_return_values` should be `true` when the selection modifies
-/// variables that are read after it (the scope classifier's
-/// `return_values` is non-empty).  Guard strategies are rejected in
-/// that case because we'd need to return both the sentinel and the
-/// modified variables.
+/// `return_value_count` is the number of variables modified inside the
+/// selection that are read after it (the scope classifier's
+/// `return_values.len()`).  Most guard strategies are rejected when
+/// this is non-zero, except `NullGuardWithValue` which handles exactly
+/// one return value with all-null guards.
 fn analyse_returns(
     content: &str,
     start: usize,
     end: usize,
-    has_return_values: bool,
+    return_value_count: usize,
 ) -> ReturnStrategy {
     let arena = Bump::new();
     let file_id = mago_database::file::FileId::new("extract_fn_ret");
@@ -1012,7 +1105,7 @@ fn analyse_returns(
 
     // The selection contains returns but does NOT end with one.
     // Try to find a guard-clause strategy.
-    classify_guard_returns(content, &selected, has_return_values)
+    classify_guard_returns(content, &selected, return_value_count)
 }
 
 /// Check whether a statement is or contains a `return` at any depth.
@@ -1138,6 +1231,21 @@ enum ReturnStrategy {
     /// if ($__early !== null) return $__early;
     /// ```
     SentinelNull,
+    /// All guard returns are `null` (or bare `return;`) and the
+    /// selection also computes exactly one return value.  The extracted
+    /// function returns the computed value on success or `null` when a
+    /// guard fires.  The call site assigns the result and checks for
+    /// null:
+    /// ```php
+    /// $var = extracted(…);
+    /// if ($var === null) return null;  // or `return;` for void guards
+    /// ```
+    ///
+    /// The `bool` flag is `true` when the original guards were bare
+    /// `return;` (void).  In that case the body's `return;` statements
+    /// are rewritten to `return null;`, and the call site uses bare
+    /// `return;` instead of `return null;`.
+    NullGuardWithValue(bool),
     /// Cannot safely extract (e.g. returns null, or modified variables
     /// are used after the selection).
     Unsafe,
@@ -1269,17 +1377,38 @@ fn collect_returns_from_stmt<'a>(
 fn classify_guard_returns(
     content: &str,
     stmts: &[&Statement<'_>],
-    has_return_values: bool,
+    return_value_count: usize,
 ) -> ReturnStrategy {
-    // If the selection modifies variables that are used after it,
-    // we can't use guard extraction — we'd need to return both the
-    // "did I exit?" flag and the modified variables.
-    if has_return_values {
+    let return_exprs = collect_return_expressions(content, stmts);
+    if return_exprs.is_empty() {
         return ReturnStrategy::Unsafe;
     }
 
-    let return_exprs = collect_return_expressions(content, stmts);
-    if return_exprs.is_empty() {
+    // When the selection modifies variables that are used after it,
+    // most guard strategies can't work — we'd need to return both
+    // the sentinel and the modified variables.  The exception is
+    // NullGuardWithValue: all guards return null (or bare return;),
+    // exactly one return value, and the extracted function returns
+    // the value or null.
+    if return_value_count > 0 {
+        if return_value_count != 1 {
+            return ReturnStrategy::Unsafe;
+        }
+        // All bare `return;` → NullGuardWithValue(true) (void guards).
+        if return_exprs.iter().all(|e| e.is_none()) {
+            return ReturnStrategy::NullGuardWithValue(true);
+        }
+        // All `return null;` → NullGuardWithValue(false).
+        if return_exprs.iter().any(|e| e.is_none()) {
+            // Mix of bare and valued returns — can't handle.
+            return ReturnStrategy::Unsafe;
+        }
+        let all_null = return_exprs
+            .iter()
+            .all(|e| e.unwrap().trim().eq_ignore_ascii_case("null"));
+        if all_null {
+            return ReturnStrategy::NullGuardWithValue(false);
+        }
         return ReturnStrategy::Unsafe;
     }
 
@@ -1421,13 +1550,18 @@ impl Backend {
         // whether the selection has return values (variables modified
         // inside and read after) so guard strategies can be rejected
         // when we'd need to return both a sentinel and modified vars.
-        let has_return_values = !classification.return_values.is_empty();
-        let return_strategy = analyse_returns(content, start, end, has_return_values);
+        let return_value_count = classification.return_values.len();
+        let return_strategy = analyse_returns(content, start, end, return_value_count);
 
         // Reject when the return strategy is Unsafe.
         if return_strategy == ReturnStrategy::Unsafe {
             return;
         }
+
+        // For NullGuardWithValue the return values are incorporated into
+        // the extracted function's return (not as separate out-variables),
+        // so we must also resolve the enclosing return type to derive a
+        // nullable hint.
 
         // Use the scope-level flag as a quick pre-check before the more
         // granular range classification.  If the *entire* scope has no
@@ -1494,11 +1628,14 @@ impl Backend {
         let body_line_start = find_line_start(content, start);
         let body_text = content[body_line_start..end].to_string();
 
-        // When the selection ends with `return` or uses sentinel-null,
-        // resolve the enclosing function's return type.
+        // When the selection ends with `return`, uses sentinel-null,
+        // or uses null-guard-with-value, resolve the enclosing
+        // function's return type.
         let trailing_return_type = if matches!(
             return_strategy,
-            ReturnStrategy::TrailingReturn | ReturnStrategy::SentinelNull
+            ReturnStrategy::TrailingReturn
+                | ReturnStrategy::SentinelNull
+                | ReturnStrategy::NullGuardWithValue(_)
         ) {
             resolve_enclosing_return_type(content, start as u32)
         } else {
@@ -1791,7 +1928,7 @@ mod tests {
         let php = "<?php\nfunction foo() {\n    $x = 1;\n    return $x;\n}\n";
         let start = php.find("$x = 1;").unwrap();
         let end = php.find("return $x;").unwrap() + "return $x;".len();
-        let strategy = analyse_returns(php, start, end, false);
+        let strategy = analyse_returns(php, start, end, 0);
         assert_eq!(strategy, ReturnStrategy::TrailingReturn);
     }
 
@@ -1803,7 +1940,7 @@ mod tests {
         let php = "<?php\nfunction foo() {\n    return 1;\n    $x = 2;\n}\n";
         let start = php.find("return 1;").unwrap();
         let end = php.find("$x = 2;").unwrap() + "$x = 2;".len();
-        let strategy = analyse_returns(php, start, end, false);
+        let strategy = analyse_returns(php, start, end, 0);
         // `$x = 2;` is NOT a return, but there IS a return in the
         // selection that doesn't end it.  The only return value is `1`
         // → uniform guards with value "1".
@@ -1819,7 +1956,7 @@ mod tests {
         let php = "<?php\nfunction foo() {\n    $returnValue = 1;\n}\n";
         let start = php.find("$returnValue").unwrap();
         let end = start + "$returnValue = 1;".len();
-        let strategy = analyse_returns(php, start, end, false);
+        let strategy = analyse_returns(php, start, end, 0);
         assert_eq!(strategy, ReturnStrategy::None);
     }
 
@@ -1832,7 +1969,7 @@ mod tests {
         let php = "<?php\nfunction foo($x) {\n    if (!$x) return 0;\n    $r = $x * 2;\n    return $r;\n}\n";
         let start = php.find("if (!$x)").unwrap();
         let end = php.find("return $r;").unwrap() + "return $r;".len();
-        let strategy = analyse_returns(php, start, end, false);
+        let strategy = analyse_returns(php, start, end, 0);
         assert_eq!(strategy, ReturnStrategy::TrailingReturn);
     }
 
@@ -1844,7 +1981,7 @@ mod tests {
         let php = "<?php\nfunction foo($x) {\n    if ($x) {\n        return 1;\n    }\n    echo 'done';\n}\n";
         let start = php.find("if ($x)").unwrap();
         let end = php.find("echo 'done';").unwrap() + "echo 'done';".len();
-        let strategy = analyse_returns(php, start, end, false);
+        let strategy = analyse_returns(php, start, end, 0);
         assert_eq!(
             strategy,
             ReturnStrategy::UniformGuards("1".to_string()),
@@ -1860,7 +1997,7 @@ mod tests {
         let php = "<?php\nfunction foo($x, $y) {\n    if (!$x) return;\n    if (!$y) return;\n    echo 'ok';\n}\n";
         let start = php.find("if (!$x)").unwrap();
         let end = php.find("echo 'ok';").unwrap() + "echo 'ok';".len();
-        let strategy = analyse_returns(php, start, end, false);
+        let strategy = analyse_returns(php, start, end, 0);
         assert_eq!(strategy, ReturnStrategy::VoidGuards);
     }
 
@@ -1870,7 +2007,7 @@ mod tests {
         let php = "<?php\nfunction foo($x, $y) {\n    if (!$x) return false;\n    if (!$y) return false;\n    echo 'ok';\n}\n";
         let start = php.find("if (!$x)").unwrap();
         let end = php.find("echo 'ok';").unwrap() + "echo 'ok';".len();
-        let strategy = analyse_returns(php, start, end, false);
+        let strategy = analyse_returns(php, start, end, 0);
         assert_eq!(strategy, ReturnStrategy::UniformGuards("false".to_string()));
     }
 
@@ -1882,7 +2019,7 @@ mod tests {
         let php = "<?php\nfunction foo($id) {\n    if ($id <= 0) return null;\n    if (!$this->exists($id)) return null;\n    echo 'ok';\n}\n";
         let start = php.find("if ($id").unwrap();
         let end = php.find("echo 'ok';").unwrap() + "echo 'ok';".len();
-        let strategy = analyse_returns(php, start, end, false);
+        let strategy = analyse_returns(php, start, end, 0);
         assert_eq!(strategy, ReturnStrategy::UniformGuards("null".to_string()));
     }
 
@@ -1892,7 +2029,7 @@ mod tests {
         let php = "<?php\nfunction foo($x) {\n    if ($x < 0) return 'negative';\n    if ($x > 100) return 'overflow';\n    echo 'ok';\n}\n";
         let start = php.find("if ($x < 0)").unwrap();
         let end = php.find("echo 'ok';").unwrap() + "echo 'ok';".len();
-        let strategy = analyse_returns(php, start, end, false);
+        let strategy = analyse_returns(php, start, end, 0);
         assert_eq!(strategy, ReturnStrategy::SentinelNull);
     }
 
@@ -1903,18 +2040,65 @@ mod tests {
         let php = "<?php\nfunction foo($x) {\n    if ($x < 0) return null;\n    if ($x > 100) return 'overflow';\n    echo 'ok';\n}\n";
         let start = php.find("if ($x < 0)").unwrap();
         let end = php.find("echo 'ok';").unwrap() + "echo 'ok';".len();
-        let strategy = analyse_returns(php, start, end, false);
+        let strategy = analyse_returns(php, start, end, 0);
         assert_eq!(strategy, ReturnStrategy::Unsafe);
     }
 
     #[test]
     fn guard_with_return_values_is_unsafe() {
         // Selection has return values (modified variables read after
-        // the selection) — can't use guard strategies.
+        // the selection) — can't use guard strategies unless all
+        // guards return null and there's exactly 1 return value.
         let php = "<?php\nfunction foo($x) {\n    if (!$x) return false;\n    echo 'ok';\n}\n";
         let start = php.find("if (!$x)").unwrap();
         let end = php.find("echo 'ok';").unwrap() + "echo 'ok';".len();
-        let strategy = analyse_returns(php, start, end, true);
+        let strategy = analyse_returns(php, start, end, 1);
+        assert_eq!(strategy, ReturnStrategy::Unsafe);
+    }
+
+    #[test]
+    fn guard_with_multiple_return_values_is_unsafe() {
+        // More than 1 return value — even null guards can't help.
+        let php =
+            "<?php\nfunction foo($x) {\n    if (!$x) return null;\n    $a = 1;\n    $b = 2;\n}\n";
+        let start = php.find("if (!$x)").unwrap();
+        let end = php.find("$b = 2;").unwrap() + "$b = 2;".len();
+        let strategy = analyse_returns(php, start, end, 2);
+        assert_eq!(strategy, ReturnStrategy::Unsafe);
+    }
+
+    #[test]
+    fn null_guard_with_single_return_value() {
+        // All guards return null, exactly 1 return value →
+        // NullGuardWithValue(false).
+        let php = "<?php\nfunction foo($obj) {\n    if (!$obj) return null;\n    $val = $obj->compute();\n}\n";
+        let start = php.find("if (!$obj)").unwrap();
+        let end = php.find("$val = $obj->compute();").unwrap() + "$val = $obj->compute();".len();
+        let strategy = analyse_returns(php, start, end, 1);
+        assert_eq!(strategy, ReturnStrategy::NullGuardWithValue(false));
+    }
+
+    #[test]
+    fn void_guard_with_single_return_value() {
+        // All guards are bare `return;`, exactly 1 return value →
+        // NullGuardWithValue(true).
+        let php =
+            "<?php\nfunction foo($obj) {\n    if (!$obj) return;\n    $val = $obj->compute();\n}\n";
+        let start = php.find("if (!$obj)").unwrap();
+        let end = php.find("$val = $obj->compute();").unwrap() + "$val = $obj->compute();".len();
+        let strategy = analyse_returns(php, start, end, 1);
+        assert_eq!(strategy, ReturnStrategy::NullGuardWithValue(true));
+    }
+
+    #[test]
+    fn non_null_guard_with_return_value_is_unsafe() {
+        // Guards return false (not null) with a return value — can't
+        // use NullGuardWithValue, and other strategies can't handle
+        // return values.
+        let php = "<?php\nfunction foo($obj) {\n    if (!$obj) return false;\n    $val = $obj->compute();\n}\n";
+        let start = php.find("if (!$obj)").unwrap();
+        let end = php.find("$val = $obj->compute();").unwrap() + "$val = $obj->compute();".len();
+        let strategy = analyse_returns(php, start, end, 1);
         assert_eq!(strategy, ReturnStrategy::Unsafe);
     }
 
@@ -2108,6 +2292,59 @@ mod tests {
             body_indent: String::new(),
             return_strategy: ReturnStrategy::SentinelNull,
             trailing_return_type: "string".to_string(),
+        };
+        assert_eq!(build_return_type(&info), "?string");
+    }
+
+    #[test]
+    fn return_type_null_guard_with_value() {
+        let info = ExtractionInfo {
+            name: String::new(),
+            params: vec![],
+            returns: vec![("$sound".to_string(), "string".to_string())],
+            body: String::new(),
+            target: ExtractionTarget::Function,
+            is_static: false,
+            member_indent: String::new(),
+            body_indent: String::new(),
+            return_strategy: ReturnStrategy::NullGuardWithValue(false),
+            trailing_return_type: String::new(),
+        };
+        assert_eq!(build_return_type(&info), "?string");
+    }
+
+    #[test]
+    fn return_type_null_guard_with_value_already_nullable() {
+        let info = ExtractionInfo {
+            name: String::new(),
+            params: vec![],
+            returns: vec![("$val".to_string(), "?int".to_string())],
+            body: String::new(),
+            target: ExtractionTarget::Function,
+            is_static: false,
+            member_indent: String::new(),
+            body_indent: String::new(),
+            return_strategy: ReturnStrategy::NullGuardWithValue(false),
+            trailing_return_type: String::new(),
+        };
+        assert_eq!(build_return_type(&info), "?int");
+    }
+
+    #[test]
+    fn return_type_void_guard_with_value() {
+        // Void guards with a computed value — return type is still
+        // nullable (the extracted function returns null on guard-fire).
+        let info = ExtractionInfo {
+            name: String::new(),
+            params: vec![],
+            returns: vec![("$sound".to_string(), "string".to_string())],
+            body: String::new(),
+            target: ExtractionTarget::Function,
+            is_static: false,
+            member_indent: String::new(),
+            body_indent: String::new(),
+            return_strategy: ReturnStrategy::NullGuardWithValue(true),
+            trailing_return_type: String::new(),
         };
         assert_eq!(build_return_type(&info), "?string");
     }
@@ -2310,6 +2547,48 @@ mod tests {
         );
     }
 
+    #[test]
+    fn call_site_null_guard_with_value() {
+        let info = ExtractionInfo {
+            name: "extracted".to_string(),
+            params: vec![("$obj".to_string(), String::new())],
+            returns: vec![("$sound".to_string(), "string".to_string())],
+            body: String::new(),
+            target: ExtractionTarget::Method,
+            is_static: false,
+            member_indent: "    ".to_string(),
+            body_indent: "        ".to_string(),
+            return_strategy: ReturnStrategy::NullGuardWithValue(false),
+            trailing_return_type: String::new(),
+        };
+        let result = build_call_site(&info, "        ");
+        assert_eq!(
+            result,
+            "        $sound = $this->extracted($obj);\n        if ($sound === null) return null;\n"
+        );
+    }
+
+    #[test]
+    fn call_site_void_guard_with_value() {
+        let info = ExtractionInfo {
+            name: "extracted".to_string(),
+            params: vec![("$obj".to_string(), String::new())],
+            returns: vec![("$sound".to_string(), "string".to_string())],
+            body: String::new(),
+            target: ExtractionTarget::Method,
+            is_static: false,
+            member_indent: "    ".to_string(),
+            body_indent: "        ".to_string(),
+            return_strategy: ReturnStrategy::NullGuardWithValue(true),
+            trailing_return_type: String::new(),
+        };
+        let result = build_call_site(&info, "        ");
+        assert_eq!(
+            result,
+            "        $sound = $this->extracted($obj);\n        if ($sound === null) return;\n"
+        );
+    }
+
     // ── Definition generation ───────────────────────────────────────
 
     #[test]
@@ -2503,6 +2782,94 @@ mod tests {
             result.contains("return null;"),
             "should append return null as sentinel: {result}"
         );
+    }
+
+    #[test]
+    fn definition_null_guard_with_value_appends_return_variable() {
+        let info = ExtractionInfo {
+            name: "getSound".to_string(),
+            params: vec![],
+            returns: vec![("$sound".to_string(), "string".to_string())],
+            body: "if (!$this->frog) return null;\n$sound = $this->frog->speak();".to_string(),
+            target: ExtractionTarget::Method,
+            is_static: false,
+            member_indent: "    ".to_string(),
+            body_indent: "        ".to_string(),
+            return_strategy: ReturnStrategy::NullGuardWithValue(false),
+            trailing_return_type: String::new(),
+        };
+        let result = build_extracted_definition(&info);
+        assert!(
+            result.contains(": ?string"),
+            "should have nullable return type: {result}"
+        );
+        assert!(
+            result.contains("return $sound;"),
+            "should append return $sound as fall-through: {result}"
+        );
+        assert!(
+            result.contains("return null;"),
+            "should keep the guard's return null: {result}"
+        );
+    }
+
+    #[test]
+    fn definition_void_guard_with_value_rewrites_returns() {
+        let info = ExtractionInfo {
+            name: "getSound".to_string(),
+            params: vec![],
+            returns: vec![("$sound".to_string(), "string".to_string())],
+            body: "if (!$this->frog) return;\n$sound = $this->frog->speak();".to_string(),
+            target: ExtractionTarget::Method,
+            is_static: false,
+            member_indent: "    ".to_string(),
+            body_indent: "        ".to_string(),
+            return_strategy: ReturnStrategy::NullGuardWithValue(true),
+            trailing_return_type: String::new(),
+        };
+        let result = build_extracted_definition(&info);
+        assert!(
+            result.contains(": ?string"),
+            "should have nullable return type: {result}"
+        );
+        assert!(
+            result.contains("return $sound;"),
+            "should append return $sound as fall-through: {result}"
+        );
+        // Bare `return;` should be rewritten to `return null;`.
+        assert!(
+            result.contains("return null;"),
+            "void guard should be rewritten to return null: {result}"
+        );
+        // Should NOT contain bare `return;`.
+        assert_eq!(
+            result.matches("return;").count(),
+            0,
+            "should not contain bare return: {result}"
+        );
+    }
+
+    // ── Void return rewriting ───────────────────────────────────────
+
+    #[test]
+    fn rewrite_void_returns_to_null_basic() {
+        let body = "if (!$x) return;\nif (!$y) return;";
+        let result = rewrite_void_returns_to_null(body);
+        assert_eq!(result, "if (!$x) return null;\nif (!$y) return null;");
+    }
+
+    #[test]
+    fn rewrite_void_returns_to_null_preserves_valued_returns() {
+        let body = "if (!$x) return;\nreturn $result;";
+        let result = rewrite_void_returns_to_null(body);
+        assert_eq!(result, "if (!$x) return null;\nreturn $result;");
+    }
+
+    #[test]
+    fn rewrite_void_returns_to_null_ignores_identifiers() {
+        let body = "$returnValue = 1;\nif (!$x) return;";
+        let result = rewrite_void_returns_to_null(body);
+        assert_eq!(result, "$returnValue = 1;\nif (!$x) return null;");
     }
 
     // ── Guard return rewriting ──────────────────────────────────────

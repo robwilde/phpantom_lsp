@@ -371,6 +371,120 @@ function classify(int $code): string
 }
 
 #[test]
+fn null_guard_with_computed_value_extraction() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = "\
+<?php
+class Animal {
+    private ?Frog $frog;
+
+    public function getSound(): ?string
+    {
+        if (!$this->frog) return null;
+        $sound = $this->frog->speak();
+        echo $sound;
+    }
+}
+";
+    // Select the guard + the assignment (lines 6-7).
+    // Line 6: "        if (!$this->frog) return null;"  (8+30=38)
+    // Line 7: "        $sound = $this->frog->speak();"  (8+30=38)
+    let actions = get_code_actions(&backend, uri, content, 6, 8, 7, 38);
+    let action = find_extract_action(&actions)
+        .expect("should offer extract for null guard with computed value");
+    let result = apply_edit(content, action.edit.as_ref().unwrap());
+
+    // Call site should assign and check for null:
+    //   $sound = $this->extracted();
+    //   if ($sound === null) return null;
+    assert!(
+        result.contains("$sound = $this->extracted(")
+            || result.contains("$sound = $this->extracted2("),
+        "call site should assign $sound from extracted call:\n{result}"
+    );
+    assert!(
+        result.contains("if ($sound === null) return null;"),
+        "call site should check $sound for null:\n{result}"
+    );
+    // Extracted method should keep the guard's return null.
+    let extracted_start = result.find("private function extracted").unwrap();
+    let extracted_body = &result[extracted_start..];
+    assert!(
+        extracted_body.contains("return null;"),
+        "extracted method should contain guard's return null:\n{result}"
+    );
+    // Extracted method should return $sound at the end.
+    assert!(
+        extracted_body.contains("return $sound;"),
+        "extracted method should return $sound as fall-through:\n{result}"
+    );
+}
+
+#[test]
+fn void_guard_with_computed_value_extraction() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = "\
+<?php
+class Animal {
+    private ?Frog $frog;
+
+    public function process(): void
+    {
+        if (!$this->frog) return;
+        $sound = $this->frog->speak();
+        echo $sound;
+    }
+}
+";
+    // Select the guard + the assignment (lines 6-7).
+    let actions = get_code_actions(&backend, uri, content, 6, 8, 7, 38);
+    let action = find_extract_action(&actions)
+        .expect("should offer extract for void guard with computed value");
+    let result = apply_edit(content, action.edit.as_ref().unwrap());
+
+    // Call site should assign and check for null, but return bare
+    // (matching the original void return):
+    //   $sound = $this->extracted();
+    //   if ($sound === null) return;
+    assert!(
+        result.contains("$sound = $this->extracted(")
+            || result.contains("$sound = $this->extracted2("),
+        "call site should assign $sound from extracted call:\n{result}"
+    );
+    assert!(
+        result.contains("if ($sound === null) return;"),
+        "call site should use bare return (void method):\n{result}"
+    );
+    // The call site must NOT have `return null;` — the enclosing
+    // method is void.
+    let call_site_area = &result[..result.find("private function").unwrap()];
+    assert!(
+        !call_site_area.contains("return null;"),
+        "call site should not use return null in a void method:\n{result}"
+    );
+    // Extracted method should rewrite bare `return;` to `return null;`.
+    let extracted_start = result.find("private function extracted").unwrap();
+    let extracted_body = &result[extracted_start..];
+    assert!(
+        extracted_body.contains("return null;"),
+        "extracted method should rewrite void guard to return null:\n{result}"
+    );
+    // Extracted method should return $sound at the end.
+    assert!(
+        extracted_body.contains("return $sound;"),
+        "extracted method should return $sound as fall-through:\n{result}"
+    );
+    // Extracted method should NOT contain bare `return;`.
+    assert_eq!(
+        extracted_body.matches("return;").count(),
+        0,
+        "extracted method should not have bare return:\n{result}"
+    );
+}
+
+#[test]
 fn offered_when_guard_clause_returns_with_trailing_return() {
     let backend = create_test_backend();
     let uri = "file:///test.php";

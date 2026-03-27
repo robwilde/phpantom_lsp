@@ -81,6 +81,56 @@ but bounded in scope.
 
 ---
 
+## A14. Extract method polish
+
+**Impact: Medium · Effort: Medium**
+
+The core extract function/method code action (A2) is shipped with guard-clause
+return handling that exceeds all competitors. This task covers the remaining
+gaps between PHPantom and PHPStorm/Phpactor/Devsense to bring the feature to
+full parity.
+
+### PHPDoc generation on extracted method
+
+The extracted function/method currently gets native type hints but no docblock.
+When parameter or return types benefit from enrichment (generics, `array<K,V>`,
+union types that exceed what native hints express), generate a `/** ... */`
+block on the new function.
+
+- Reuse the enrichment logic from `completion/phpdoc/generation.rs`
+  (`enrichment_plain`, `enrichment_snippet`) to decide which `@param` tags
+  are needed. A `@param` is emitted only when the native hint cannot fully
+  express the type (same rule the `/**` trigger uses for existing functions).
+- `@return` enrichment already exists in the PHPDoc generation pipeline.
+  Wire it through for the extracted function's return type.
+- Align parameter names in the `@param` block (existing convention).
+
+### Disabled code action with rejection reason
+
+When the extract action is NOT offered (unsafe returns, cross-scope selection,
+too many return values, by-ref parameter writes, etc.), emit a **disabled**
+`CodeAction` with a human-readable `disabled.reason` string instead of
+silently omitting the action. This tells the user why extraction is
+unavailable for their selection rather than leaving them guessing.
+
+The LSP `CodeAction` type has a `disabled` field with a `reason` string.
+Editors display this as greyed-out text in the code action menu.
+
+### Implementation
+
+1. In `build_extracted_definition`, after generating the function signature,
+   call into the PHPDoc enrichment pipeline with the typed params and return
+   type. If any tag is emitted, prepend the docblock before the function.
+2. In `collect_extract_function_actions`, at each early-return point where
+   the action is rejected, push a disabled `CodeAction` with a short reason
+   string (e.g. "Selection contains by-reference parameter writes",
+   "Too many return values for clean extraction", "Selection spans different
+   scope levels").
+3. Add tests for both: docblock presence when types need enrichment, and
+   disabled actions with reason strings for each rejection path.
+
+---
+
 ## A6. Inline Function/Method
 
 **Impact: Medium · Effort: High**
