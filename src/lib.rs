@@ -50,6 +50,9 @@
 //!     (delete individual or all unused `use` statements)
 //!   - `code_actions::generate_constructor` — Generate a constructor from
 //!     non-static properties
+//!   - `code_actions::generate_getter_setter` — Generate `getX()`/`setX()`
+//!     accessor methods (or `isX()` for `bool` properties) from a property
+//!     declaration
 //! - [`diagnostics`] — Diagnostic collection and delivery.  Supports both
 //!   pull diagnostics (`textDocument/diagnostic`, LSP 3.17) and push
 //!   diagnostics (`textDocument/publishDiagnostics`) as a fallback.

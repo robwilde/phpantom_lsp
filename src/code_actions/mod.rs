@@ -33,12 +33,17 @@
 //!   has non-static properties but no `__construct` method, offer to
 //!   generate a constructor that accepts each qualifying property as a
 //!   parameter and assigns it.
+//! - **Generate getter/setter** — when the cursor is on a property
+//!   declaration, offer to generate `getX()` / `setX()` accessor
+//!   methods (or `isX()` for `bool` properties).  Readonly properties
+//!   only get a getter.  Static properties generate static methods.
 
 mod change_visibility;
 pub(crate) mod cursor_context;
 mod extract_function;
 mod extract_variable;
 mod generate_constructor;
+mod generate_getter_setter;
 pub(crate) mod implement_methods;
 mod import_class;
 mod inline_variable;
@@ -90,6 +95,9 @@ impl Backend {
 
         // ── Generate constructor ────────────────────────────────────────────
         self.collect_generate_constructor_actions(uri, content, params, &mut actions);
+
+        // ── Generate getter/setter ──────────────────────────────────────────
+        self.collect_generate_getter_setter_actions(uri, content, params, &mut actions);
 
         // ── Extract variable ────────────────────────────────────────────
         self.collect_extract_variable_actions(uri, content, params, &mut actions);

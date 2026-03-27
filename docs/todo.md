@@ -26,8 +26,6 @@ within the same impact tier.
 | M3  | [Migrate to mago-names](todo/mago.md#m3-mago-names)                                                 | High     | Medium-High |
 | M4  | [Migrate to mago-type-syntax](todo/mago.md#m4-mago-type-syntax)                                     | Critical | Very High   |
 | A2  | [Extract function](todo/actions.md#a2-extract-function-refactoring)                                 | High     | High        |
-| A13 | [Generate constructor](todo/actions.md#a13-generate-constructor)                                    | Medium   | Medium      |
-| A14 | [Generate getter/setter](todo/actions.md#a14-generate-gettersetter)                                 | Medium   | Low-Medium  |
 | A15 | [Generate property hooks (PHP 8.4+)](todo/actions.md#a15-generate-property-hooks-php-84)            | Medium   | Low-Medium  |
 |     | **Release 0.7.0**                                                                                   |          |             |
 

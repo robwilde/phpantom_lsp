@@ -2441,6 +2441,25 @@ class GenerateConstructorDemo
 }
 
 
+// ── Generate Getter/Setter (Code Action) ────────────────────────────────────
+// Place the cursor on a property declaration below and trigger "Code Action"
+// to see "Generate getter", "Generate setter", and "Generate getter and
+// setter".  Bool properties use an `is` prefix (`isActive()`).  Readonly
+// properties only offer a getter.  Static properties generate static
+// methods.  If a getter or setter already exists, the corresponding action
+// is suppressed.
+
+class GenerateGetterSetterDemo
+{
+    private string $name;
+    private bool $active;
+    public readonly int $id;
+    private static int $count;
+    /** @var list<string> */
+    public $tags;
+}
+
+
 // ── Property-Level Narrowing ────────────────────────────────────────────────
 
 class PropertyNarrowingDemo
