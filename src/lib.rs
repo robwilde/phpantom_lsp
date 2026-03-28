@@ -458,6 +458,14 @@ pub struct Backend {
     /// returns this cached set.  Updated by the background diagnostic
     /// worker after each pass and by the PHPStan worker after each run.
     pub(crate) diag_last_full: Arc<Mutex<HashMap<String, Vec<tower_lsp::lsp_types::Diagnostic>>>>,
+    /// Diagnostics to suppress from the next publish cycle.
+    ///
+    /// When a `codeAction/resolve` handler eagerly clears a diagnostic
+    /// (e.g. an unused-import warning), it pushes the diagnostic here.
+    /// The next `publish_diagnostics_for_file` call filters these out
+    /// before sending to the client, then clears the set.  This lets
+    /// the squiggly line disappear before the text edit is applied.
+    pub(crate) diag_suppressed: Arc<Mutex<Vec<tower_lsp::lsp_types::Diagnostic>>>,
     /// Whether the client supports pull diagnostics.
     ///
     /// Set during `initialize` based on the client's
@@ -548,6 +556,7 @@ impl Backend {
             phpstan_last_diags: Arc::new(Mutex::new(HashMap::new())),
             diag_result_ids: Arc::new(Mutex::new(HashMap::new())),
             diag_last_full: Arc::new(Mutex::new(HashMap::new())),
+            diag_suppressed: Arc::new(Mutex::new(Vec::new())),
             supports_pull_diagnostics: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             supports_file_rename: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             supports_work_done_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -767,6 +776,7 @@ impl Backend {
             phpstan_last_diags: Arc::clone(&self.phpstan_last_diags),
             diag_result_ids: Arc::clone(&self.diag_result_ids),
             diag_last_full: Arc::clone(&self.diag_last_full),
+            diag_suppressed: Arc::clone(&self.diag_suppressed),
             supports_pull_diagnostics: Arc::clone(&self.supports_pull_diagnostics),
             supports_file_rename: Arc::clone(&self.supports_file_rename),
             supports_work_done_progress: Arc::clone(&self.supports_work_done_progress),

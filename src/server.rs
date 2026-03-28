@@ -145,7 +145,7 @@ impl LanguageServer for Backend {
                         work_done_progress_options: WorkDoneProgressOptions {
                             work_done_progress: None,
                         },
-                        resolve_provider: None,
+                        resolve_provider: Some(true),
                     },
                 )),
                 rename_provider: Some(OneOf::Right(RenameOptions {
@@ -546,6 +546,20 @@ impl LanguageServer for Backend {
                 Some(actions)
             }
         })
+    }
+
+    async fn code_action_resolve(&self, action: CodeAction) -> Result<CodeAction> {
+        let (resolved, republish_uri) = self.resolve_code_action(action);
+
+        // If a PHPStan quickfix was resolved, republish diagnostics so
+        // the cleared diagnostic disappears immediately.
+        if let Some(uri_str) = republish_uri
+            && let Some(content) = self.get_file_content(&uri_str)
+        {
+            self.publish_diagnostics_for_file(&uri_str, &content).await;
+        }
+
+        Ok(resolved)
     }
 
     async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {

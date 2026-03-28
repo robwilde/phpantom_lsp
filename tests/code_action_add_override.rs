@@ -7,6 +7,8 @@
 
 mod common;
 
+use std::sync::Arc;
+
 use common::create_test_backend;
 use tower_lsp::lsp_types::*;
 
@@ -77,6 +79,27 @@ fn find_add_override_action(actions: &[CodeActionOrCommand]) -> Option<&CodeActi
 }
 
 /// Extract all text edits from a code action's workspace edit.
+/// Resolve a deferred code action by storing file content in open_files
+/// and calling resolve_code_action.
+fn resolve_action(
+    backend: &phpantom_lsp::Backend,
+    uri: &str,
+    content: &str,
+    action: &CodeAction,
+) -> CodeAction {
+    backend
+        .open_files()
+        .write()
+        .insert(uri.to_string(), Arc::new(content.to_string()));
+    let (resolved, _) = backend.resolve_code_action(action.clone());
+    assert!(
+        resolved.edit.is_some(),
+        "resolved action should have an edit, title: {}",
+        resolved.title
+    );
+    resolved
+}
+
 fn extract_edits(action: &CodeAction) -> Vec<TextEdit> {
     let edit = action.edit.as_ref().expect("action should have an edit");
     let changes = edit.changes.as_ref().expect("edit should have changes");
@@ -148,7 +171,8 @@ class Child extends Base {
         action.title
     );
 
-    let edits = extract_edits(action);
+    let resolved = resolve_action(&backend, uri, content, action);
+    let edits = extract_edits(&resolved);
     let result = apply_edits(content, &edits);
 
     // Non-namespaced file → short form, no import.
@@ -204,7 +228,8 @@ class Child extends Base {
     let actions = get_code_actions(&backend, uri, content, 5, 10);
     let action = find_add_override_action(&actions).expect("should offer action");
 
-    let edits = extract_edits(action);
+    let resolved = resolve_action(&backend, uri, content, action);
+    let edits = extract_edits(&resolved);
     let result = apply_edits(content, &edits);
 
     // #[Override] should be between the docblock and `public function`.
@@ -240,7 +265,8 @@ class Child extends Base {
     let actions = get_code_actions(&backend, uri, content, 3, 10);
     let action = find_add_override_action(&actions).expect("should offer action");
 
-    let edits = extract_edits(action);
+    let resolved = resolve_action(&backend, uri, content, action);
+    let edits = extract_edits(&resolved);
     let result = apply_edits(content, &edits);
 
     // #[Override] should appear before #[Route].
@@ -277,7 +303,8 @@ class Child extends Base {
     let actions = get_code_actions(&backend, uri, content, 4, 10);
     let action = find_add_override_action(&actions).expect("should offer action");
 
-    let edits = extract_edits(action);
+    let resolved = resolve_action(&backend, uri, content, action);
+    let edits = extract_edits(&resolved);
     let result = apply_edits(content, &edits);
 
     // #[Override] should appear before both existing attributes.
@@ -403,7 +430,8 @@ class Child extends Base {
     let actions = get_code_actions(&backend, uri, content, 2, 10);
     let action = find_add_override_action(&actions).expect("should offer action");
 
-    let edits = extract_edits(action);
+    let resolved = resolve_action(&backend, uri, content, action);
+    let edits = extract_edits(&resolved);
     let result = apply_edits(content, &edits);
 
     assert!(
@@ -437,7 +465,8 @@ class Child extends Base {
     let actions = get_code_actions(&backend, uri, content, 2, 10);
     let action = find_add_override_action(&actions).expect("should offer action");
 
-    let edits = extract_edits(action);
+    let resolved = resolve_action(&backend, uri, content, action);
+    let edits = extract_edits(&resolved);
     let result = apply_edits(content, &edits);
 
     assert!(
@@ -477,7 +506,8 @@ class Child extends Base {
         action.title
     );
 
-    let edits = extract_edits(action);
+    let resolved = resolve_action(&backend, uri, content, action);
+    let edits = extract_edits(&resolved);
     let result = apply_edits(content, &edits);
 
     assert!(
@@ -513,7 +543,8 @@ class UserController extends Controller {
     let actions = get_code_actions(&backend, uri, content, 4, 10);
     let action = find_add_override_action(&actions).expect("should offer action");
 
-    let edits = extract_edits(action);
+    let resolved = resolve_action(&backend, uri, content, action);
+    let edits = extract_edits(&resolved);
     let result = apply_edits(content, &edits);
 
     assert!(
@@ -566,7 +597,8 @@ class Child extends Base {
     let actions = get_code_actions(&backend, uri, content, 6, 10);
     let action = find_add_override_action(&actions).expect("should offer action");
 
-    let edits = extract_edits(action);
+    let resolved = resolve_action(&backend, uri, content, action);
+    let edits = extract_edits(&resolved);
     let result = apply_edits(content, &edits);
 
     assert!(
@@ -612,7 +644,8 @@ class UserController extends Controller {
     let actions = get_code_actions(&backend, uri, content, 7, 10);
     let action = find_add_override_action(&actions).expect("should offer action");
 
-    let edits = extract_edits(action);
+    let resolved = resolve_action(&backend, uri, content, action);
+    let edits = extract_edits(&resolved);
     let result = apply_edits(content, &edits);
 
     assert!(
@@ -651,7 +684,8 @@ class Child extends Base {
     let actions = get_code_actions(&backend, uri, content, 2, 10);
     let action = find_add_override_action(&actions).expect("should offer action");
 
-    let edits = extract_edits(action);
+    let resolved = resolve_action(&backend, uri, content, action);
+    let edits = extract_edits(&resolved);
 
     // Only one edit (the attribute), no import.
     assert_eq!(edits.len(), 1, "should have only attribute edit, no import");
@@ -697,7 +731,8 @@ class Child extends Base {
     let actions = get_code_actions(&backend, uri, content, 6, 10);
     let action = find_add_override_action(&actions).expect("should offer action");
 
-    let edits = extract_edits(action);
+    let resolved = resolve_action(&backend, uri, content, action);
+    let edits = extract_edits(&resolved);
     let result = apply_edits(content, &edits);
 
     // #[Override] should be inserted before the existing #[Route] attribute.
@@ -736,7 +771,8 @@ class Outer {
     let actions = get_code_actions(&backend, uri, content, 3, 12);
     let action = find_add_override_action(&actions).expect("should offer action");
 
-    let edits = extract_edits(action);
+    let resolved = resolve_action(&backend, uri, content, action);
+    let edits = extract_edits(&resolved);
     let result = apply_edits(content, &edits);
 
     assert!(
@@ -872,7 +908,8 @@ class Foo implements BarInterface {
     let actions = get_code_actions(&backend, uri, content, 2, 10);
     let action = find_add_override_action(&actions).expect("should offer action");
 
-    let edits = extract_edits(action);
+    let resolved = resolve_action(&backend, uri, content, action);
+    let edits = extract_edits(&resolved);
     let result = apply_edits(content, &edits);
 
     assert!(
@@ -908,7 +945,8 @@ class Handler implements HandlerInterface {
     let actions = get_code_actions(&backend, uri, content, 4, 10);
     let action = find_add_override_action(&actions).expect("should offer action");
 
-    let edits = extract_edits(action);
+    let resolved = resolve_action(&backend, uri, content, action);
+    let edits = extract_edits(&resolved);
     let result = apply_edits(content, &edits);
 
     assert!(

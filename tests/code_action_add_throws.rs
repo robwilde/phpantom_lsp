@@ -7,6 +7,8 @@
 
 mod common;
 
+use std::sync::Arc;
+
 use common::create_test_backend;
 use tower_lsp::lsp_types::*;
 
@@ -74,6 +76,27 @@ fn find_add_throws_action(actions: &[CodeActionOrCommand]) -> Option<&CodeAction
         CodeActionOrCommand::CodeAction(ca) if ca.title.starts_with("Add @throws") => Some(ca),
         _ => None,
     })
+}
+
+/// Resolve a deferred code action by storing file content in open_files
+/// and calling resolve_code_action.
+fn resolve_action(
+    backend: &phpantom_lsp::Backend,
+    uri: &str,
+    content: &str,
+    action: &CodeAction,
+) -> CodeAction {
+    backend
+        .open_files()
+        .write()
+        .insert(uri.to_string(), Arc::new(content.to_string()));
+    let (resolved, _) = backend.resolve_code_action(action.clone());
+    assert!(
+        resolved.edit.is_some(),
+        "resolved action should have an edit, title: {}",
+        resolved.title
+    );
+    resolved
 }
 
 /// Extract all text edits from a code action's workspace edit, sorted by
@@ -156,7 +179,8 @@ class FooController {
         action.title
     );
 
-    let edits = extract_edits(action);
+    let resolved = resolve_action(&backend, uri, content, action);
+    let edits = extract_edits(&resolved);
     let result = apply_edits(content, &edits);
 
     assert!(
@@ -202,7 +226,8 @@ class Thrower {
     let actions = get_code_actions(&backend, uri, content, 8, 10);
     let action = find_add_throws_action(&actions).expect("should offer Add @throws action");
 
-    let edits = extract_edits(action);
+    let resolved = resolve_action(&backend, uri, content, action);
+    let edits = extract_edits(&resolved);
     let result = apply_edits(content, &edits);
 
     assert!(
@@ -249,9 +274,10 @@ class FooController {
     );
 
     let actions = get_code_actions(&backend, uri, content, 10, 10);
-    let action = find_add_throws_action(&actions).expect("should offer Add @throws action");
+    let action = find_add_throws_action(&actions).expect("should offer action");
 
-    let edits = extract_edits(action);
+    let resolved = resolve_action(&backend, uri, content, action);
+    let edits = extract_edits(&resolved);
     let result = apply_edits(content, &edits);
 
     assert!(
@@ -294,9 +320,10 @@ class FooController {
     );
 
     let actions = get_code_actions(&backend, uri, content, 5, 10);
-    let action = find_add_throws_action(&actions).expect("should offer Add @throws action");
+    let action = find_add_throws_action(&actions).expect("should offer action");
 
-    let edits = extract_edits(action);
+    let resolved = resolve_action(&backend, uri, content, action);
+    let edits = extract_edits(&resolved);
     let result = apply_edits(content, &edits);
 
     assert!(
@@ -351,9 +378,10 @@ function doThings(): void {
     );
 
     let actions = get_code_actions(&backend, uri, content, 5, 10);
-    let action = find_add_throws_action(&actions).expect("should offer Add @throws action");
+    let action = find_add_throws_action(&actions).expect("should offer action");
 
-    let edits = extract_edits(action);
+    let resolved = resolve_action(&backend, uri, content, action);
+    let edits = extract_edits(&resolved);
     let result = apply_edits(content, &edits);
 
     assert!(
@@ -464,9 +492,10 @@ class FooController {
     );
 
     let actions = get_code_actions(&backend, uri, content, 8, 10);
-    let action = find_add_throws_action(&actions).expect("should offer Add @throws action");
+    let action = find_add_throws_action(&actions).expect("should offer action");
 
-    let edits = extract_edits(action);
+    let resolved = resolve_action(&backend, uri, content, action);
+    let edits = extract_edits(&resolved);
     let result = apply_edits(content, &edits);
 
     assert!(
@@ -516,9 +545,10 @@ class FooController {
     );
 
     let actions = get_code_actions(&backend, uri, content, 14, 10);
-    let action = find_add_throws_action(&actions).expect("should offer Add @throws action");
+    let action = find_add_throws_action(&actions).expect("should offer action");
 
-    let edits = extract_edits(action);
+    let resolved = resolve_action(&backend, uri, content, action);
+    let edits = extract_edits(&resolved);
     let result = apply_edits(content, &edits);
 
     assert!(
@@ -530,5 +560,227 @@ class FooController {
         result.contains("@throws BarException"),
         "should add new @throws:\n{}",
         result
+    );
+}
+
+// ── Sibling diagnostic clearing ─────────────────────────────────────────────
+
+/// When a method throws the same exception on multiple lines, PHPStan
+/// reports a separate `missingType.checkedException` for each `throw`.
+/// Adding `@throws` once fixes all of them, so resolving the action on
+/// any one diagnostic must clear every sibling diagnostic for the same
+/// exception within that method body.
+#[test]
+fn clears_sibling_checked_exception_diags_in_same_method() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+namespace App\Helpers;
+
+use RuntimeException;
+
+class BadgeHelper {
+    /**
+     * Get badge for stock status.
+     */
+    public function getBadgeForStockStatus(): string {
+        if (true) {
+            throw new RuntimeException('first');
+        }
+        throw new RuntimeException('second');
+    }
+}
+"#;
+    backend.update_ast(uri, content);
+
+    // Inject two diagnostics for the same exception, different lines.
+    let msg = "Method App\\Helpers\\BadgeHelper::getBadgeForStockStatus() throws checked exception RuntimeException but it's missing from the PHPDoc @throws tag.";
+    inject_phpstan_diag(&backend, uri, 11, msg, "missingType.checkedException");
+    inject_phpstan_diag(&backend, uri, 13, msg, "missingType.checkedException");
+
+    // Trigger the action on the first diagnostic (line 11).
+    let actions = get_code_actions(&backend, uri, content, 11, 10);
+    let action = find_add_throws_action(&actions).expect("should offer Add @throws action");
+
+    // Resolve — this should clear BOTH diagnostics from the cache.
+    let resolved = resolve_action(&backend, uri, content, action);
+    let edits = extract_edits(&resolved);
+    let result = apply_edits(content, &edits);
+
+    assert!(
+        result.contains("@throws RuntimeException"),
+        "should insert @throws tag:\n{}",
+        result
+    );
+
+    // Both diagnostics must have been removed from the PHPStan cache.
+    let remaining: Vec<_> = {
+        let cache = backend.phpstan_last_diags().lock();
+        cache
+            .get(uri)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|d| {
+                d.code
+                    == Some(NumberOrString::String(
+                        "missingType.checkedException".into(),
+                    ))
+            })
+            .collect()
+    };
+    assert!(
+        remaining.is_empty(),
+        "both sibling diagnostics should be cleared, but {} remain: {:?}",
+        remaining.len(),
+        remaining
+            .iter()
+            .map(|d| d.range.start.line)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Sibling clearing must NOT clear diagnostics for a *different*
+/// exception class, even if they are in the same method.
+#[test]
+fn does_not_clear_sibling_diags_for_different_exception() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+namespace App\Helpers;
+
+use RuntimeException;
+use InvalidArgumentException;
+
+class BadgeHelper {
+    /**
+     * Get badge.
+     */
+    public function getBadge(): string {
+        if (true) {
+            throw new RuntimeException('boom');
+        }
+        throw new InvalidArgumentException('bad');
+    }
+}
+"#;
+    backend.update_ast(uri, content);
+
+    inject_phpstan_diag(
+        &backend,
+        uri,
+        12,
+        "Method App\\Helpers\\BadgeHelper::getBadge() throws checked exception RuntimeException but it's missing from the PHPDoc @throws tag.",
+        "missingType.checkedException",
+    );
+    inject_phpstan_diag(
+        &backend,
+        uri,
+        14,
+        "Method App\\Helpers\\BadgeHelper::getBadge() throws checked exception InvalidArgumentException but it's missing from the PHPDoc @throws tag.",
+        "missingType.checkedException",
+    );
+
+    // Resolve only the RuntimeException action.
+    let actions = get_code_actions(&backend, uri, content, 12, 10);
+    let action = find_add_throws_action(&actions).expect("should offer Add @throws action");
+    let _resolved = resolve_action(&backend, uri, content, action);
+
+    // The InvalidArgumentException diagnostic must still be in the cache.
+    let remaining: Vec<_> = {
+        let cache = backend.phpstan_last_diags().lock();
+        cache
+            .get(uri)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|d| {
+                d.code
+                    == Some(NumberOrString::String(
+                        "missingType.checkedException".into(),
+                    ))
+            })
+            .collect()
+    };
+    assert_eq!(
+        remaining.len(),
+        1,
+        "only the InvalidArgumentException diagnostic should remain"
+    );
+    assert!(
+        remaining[0].message.contains("InvalidArgumentException"),
+        "remaining diagnostic should be for InvalidArgumentException"
+    );
+}
+
+/// Sibling clearing must NOT cross method boundaries: a diagnostic in
+/// a different method for the same exception must not be cleared.
+#[test]
+fn does_not_clear_diags_in_different_method() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+namespace App\Helpers;
+
+use RuntimeException;
+
+class BadgeHelper {
+    /**
+     * First method.
+     */
+    public function first(): void {
+        throw new RuntimeException('a');
+    }
+
+    /**
+     * Second method.
+     */
+    public function second(): void {
+        throw new RuntimeException('b');
+    }
+}
+"#;
+    backend.update_ast(uri, content);
+
+    let msg_first = "Method App\\Helpers\\BadgeHelper::first() throws checked exception RuntimeException but it's missing from the PHPDoc @throws tag.";
+    let msg_second = "Method App\\Helpers\\BadgeHelper::second() throws checked exception RuntimeException but it's missing from the PHPDoc @throws tag.";
+    inject_phpstan_diag(&backend, uri, 10, msg_first, "missingType.checkedException");
+    inject_phpstan_diag(
+        &backend,
+        uri,
+        17,
+        msg_second,
+        "missingType.checkedException",
+    );
+
+    // Resolve the action for first() only.
+    let actions = get_code_actions(&backend, uri, content, 10, 10);
+    let action = find_add_throws_action(&actions).expect("should offer Add @throws action");
+    let _resolved = resolve_action(&backend, uri, content, action);
+
+    // The diagnostic in second() must still be in the cache.
+    let remaining: Vec<_> = {
+        let cache = backend.phpstan_last_diags().lock();
+        cache
+            .get(uri)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|d| {
+                d.code
+                    == Some(NumberOrString::String(
+                        "missingType.checkedException".into(),
+                    ))
+            })
+            .collect()
+    };
+    assert_eq!(
+        remaining.len(),
+        1,
+        "the diagnostic in second() should remain"
+    );
+    assert_eq!(
+        remaining[0].range.start.line, 17,
+        "remaining diagnostic should be on line 17 (second method)"
     );
 }

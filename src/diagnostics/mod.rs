@@ -241,57 +241,22 @@ fn is_stale_phpstan_diagnostic(diag: &Diagnostic, content: &str) -> bool {
         return true;
     }
 
-    let diag_line = diag.range.start.line as usize;
+    // The per-identifier heuristics for `throws.unusedType`,
+    // `missingType.checkedException`, and `method.missingOverride`
+    // have been removed.  These diagnostics are now cleared eagerly
+    // by `codeAction/resolve` when the user picks a PHPStan quickfix
+    // (see `clear_phpstan_diagnostics_after_resolve` in code_actions).
+    // The `@phpstan-ignore` check above still covers manual edits.
 
-    // ── @throws-specific checks ─────────────────────────────────────
-    match identifier {
-        "throws.unusedType" | "throws.notThrowable" => {
-            // The diagnostic references a type in a @throws tag.
-            // If that type no longer appears after `@throws` in the
-            // enclosing docblock, the tag was removed and the
-            // diagnostic is stale.
-            let type_name = extract_throws_diag_type(&diag.message, identifier);
-            match type_name {
-                Some(t) => {
-                    let short = t.rsplit('\\').next().unwrap_or(&t);
-                    let scope = enclosing_docblock_text(content, diag_line);
-                    !scope_has_throws_tag(&scope, short)
-                }
-                None => false,
-            }
-        }
-        "missingType.checkedException" => {
-            // The diagnostic says a @throws tag is missing.  If the
-            // exception short name now appears after `@throws` in the
-            // enclosing docblock, the user added it and the diagnostic
-            // is stale.
-            let fqn = extract_checked_exception_fqn(&diag.message);
-            match fqn {
-                Some(f) => {
-                    let short = f.rsplit('\\').next().unwrap_or(&f);
-                    let scope = enclosing_docblock_text(content, diag_line);
-                    scope_has_throws_tag(&scope, short)
-                }
-                None => false,
-            }
-        }
-        "method.missingOverride" => {
-            // The diagnostic says the method is missing #[Override].
-            // If any line within a few lines above the diagnostic
-            // contains `Override` in a `#[...]` attribute, the user
-            // added it and the diagnostic is stale.
-            let lines: Vec<&str> = content.lines().collect();
-            let start = diag_line.saturating_sub(5);
-            let end = (diag_line + 1).min(lines.len());
-            (start..end).any(|i| {
-                let t = lines[i].trim();
-                t.starts_with("#[") && t.contains("Override")
-            })
-        }
-        _ => false,
-    }
+    false
 }
 
+// The following helpers were used by the per-identifier stale detection
+// branches that have been removed.  They are kept under `#[cfg(test)]`
+// because existing tests exercise them directly.
+
+#[cfg(test)]
+#[allow(dead_code)]
 /// Extract the type name from a `throws.unusedType` or
 /// `throws.notThrowable` message.
 fn extract_throws_diag_type(message: &str, identifier: &str) -> Option<String> {
@@ -308,6 +273,8 @@ fn extract_throws_diag_type(message: &str, identifier: &str) -> Option<String> {
     }
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 /// Extract the exception FQN from a `missingType.checkedException` message.
 fn extract_checked_exception_fqn(message: &str) -> Option<String> {
     let marker = "throws checked exception ";
@@ -368,6 +335,8 @@ fn line_has_ignore_for(content: &str, diag_line: u32, identifier: &str) -> bool 
     false
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 /// Find the docblock text for the function/method enclosing `diag_line`.
 ///
 /// Searches backward from `diag_line` to find the nearest `function`
@@ -473,6 +442,8 @@ fn enclosing_docblock_text(content: &str, diag_line: usize) -> String {
     String::new()
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 /// Check whether `line` contains the `function` keyword (not part of
 /// a larger identifier like `myfunction`).
 fn line_has_function_keyword(line: &str) -> bool {
@@ -488,6 +459,8 @@ fn line_has_function_keyword(line: &str) -> bool {
     before_ok && after_ok
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 /// Check whether `scope` (typically a single docblock) contains
 /// `@throws <short_name>` (case-insensitive).
 fn scope_has_throws_tag(scope: &str, short_name: &str) -> bool {
@@ -570,6 +543,10 @@ impl Backend {
 
         let phase1 = self.merge_fast_with_cached(uri_str, &fast_diagnostics);
 
+        // Filter out any diagnostics that were eagerly suppressed by
+        // a `codeAction/resolve` handler (e.g. unused-import removal).
+        let phase1 = self.filter_suppressed(phase1);
+
         let uri = match uri_str.parse::<Url>() {
             Ok(u) => u,
             Err(_) => return,
@@ -624,6 +601,9 @@ impl Backend {
         };
         full.extend(phpstan_before.iter().cloned());
         deduplicate_diagnostics(&mut full);
+
+        // Filter out any diagnostics suppressed by codeAction/resolve.
+        let full = self.filter_suppressed(full);
 
         // If deduplication suppressed any full-line PHPStan diagnostics
         // (because a precise native diagnostic covers the same line),
@@ -1045,6 +1025,27 @@ impl Backend {
 /// issues on a line, all five are shown; if PHPantom reports two issues
 /// on the same span, both are shown.  Cross-source overlap is handled
 /// by rule 4 above, not by collapsing identical ranges.
+impl Backend {
+    /// Remove diagnostics that were eagerly suppressed by a
+    /// `codeAction/resolve` handler and drain the suppression list.
+    ///
+    /// This is called during `publish_diagnostics_for_file` so that
+    /// the squiggly line disappears before the text edit is applied.
+    fn filter_suppressed(&self, mut diagnostics: Vec<Diagnostic>) -> Vec<Diagnostic> {
+        let mut suppressed = self.diag_suppressed.lock();
+        if suppressed.is_empty() {
+            return diagnostics;
+        }
+        diagnostics.retain(|d| {
+            !suppressed
+                .iter()
+                .any(|s| d.range == s.range && d.message == s.message && d.code == s.code)
+        });
+        suppressed.clear();
+        diagnostics
+    }
+}
+
 fn deduplicate_diagnostics(diagnostics: &mut Vec<Diagnostic>) {
     if diagnostics.is_empty() {
         return;
@@ -1559,8 +1560,19 @@ mod tests {
         }
     }
 
+    // ── Per-identifier heuristics removed ───────────────────────────
+    //
+    // The throws.unusedType, missingType.checkedException, and
+    // method.missingOverride stale-detection branches have been
+    // removed.  These diagnostics are now cleared eagerly by
+    // `codeAction/resolve` (see `clear_phpstan_diagnostics_after_resolve`).
+    // The tests below verify they are no longer considered stale by
+    // `is_stale_phpstan_diagnostic` alone.
+
     #[test]
-    fn stale_throws_unused_type_when_tag_removed() {
+    fn throws_unused_type_not_stale_via_heuristic() {
+        // Previously this was detected as stale because the @throws
+        // tag was removed.  Now only codeAction/resolve clears it.
         let content = "<?php\nclass Foo {\n    public function bar(): void {}\n}\n";
         let diag = make_phpstan_diag(
             2,
@@ -1568,78 +1580,15 @@ mod tests {
             "Method App\\Foo::bar() has App\\Exceptions\\FooException in PHPDoc @throws tag but it's not thrown.",
         );
         assert!(
-            is_stale_phpstan_diagnostic(&diag, content),
-            "should be stale when @throws FooException no longer in file"
-        );
-    }
-
-    #[test]
-    fn not_stale_throws_unused_type_when_tag_still_present() {
-        let content = "<?php\nclass Foo {\n    /**\n     * @throws FooException\n     */\n    public function bar(): void {}\n}\n";
-        let diag = make_phpstan_diag(
-            5,
-            "throws.unusedType",
-            "Method App\\Foo::bar() has App\\Exceptions\\FooException in PHPDoc @throws tag but it's not thrown.",
-        );
-        assert!(
             !is_stale_phpstan_diagnostic(&diag, content),
-            "should NOT be stale when @throws FooException is still in the file"
+            "throws.unusedType should NOT be stale via heuristic (cleared by resolve instead)"
         );
     }
 
     #[test]
-    fn other_diag_on_same_line_not_affected_by_throws_removal() {
-        // After removing @throws Decimal, the file no longer has the tag.
-        // A throws.unusedType diagnostic for Decimal should be stale,
-        // but a different diagnostic (e.g. return.type) on the same
-        // line must NOT be stale.
-        let content = "<?php\nclass Foo {\n    public function bar(): void {}\n}\n";
-        let throws_diag = make_phpstan_diag(
-            2,
-            "throws.unusedType",
-            "Method App\\Foo::bar() has Decimal in PHPDoc @throws tag but it's not thrown.",
-        );
-        let other_diag = make_phpstan_diag(
-            2,
-            "return.type",
-            "Method App\\Foo::bar() should return string but returns void.",
-        );
-        assert!(
-            is_stale_phpstan_diagnostic(&throws_diag, content),
-            "throws.unusedType for Decimal should be stale"
-        );
-        assert!(
-            !is_stale_phpstan_diagnostic(&other_diag, content),
-            "return.type on the same line must NOT be stale"
-        );
-    }
-
-    #[test]
-    fn only_matching_throws_type_is_stale() {
-        // File still has @throws BarException but not FooException.
-        let content = "<?php\nclass Foo {\n    /**\n     * @throws BarException\n     */\n    public function bar(): void {}\n}\n";
-        let foo_diag = make_phpstan_diag(
-            5,
-            "throws.unusedType",
-            "Method App\\Foo::bar() has App\\Exceptions\\FooException in PHPDoc @throws tag but it's not thrown.",
-        );
-        let bar_diag = make_phpstan_diag(
-            5,
-            "throws.unusedType",
-            "Method App\\Foo::bar() has App\\Exceptions\\BarException in PHPDoc @throws tag but it's not thrown.",
-        );
-        assert!(
-            is_stale_phpstan_diagnostic(&foo_diag, content),
-            "FooException diagnostic should be stale (tag removed)"
-        );
-        assert!(
-            !is_stale_phpstan_diagnostic(&bar_diag, content),
-            "BarException diagnostic should NOT be stale (tag still present)"
-        );
-    }
-
-    #[test]
-    fn stale_missing_checked_exception_when_tag_added() {
+    fn missing_checked_exception_not_stale_via_heuristic() {
+        // Previously this was detected as stale because a @throws
+        // tag was added.  Now only codeAction/resolve clears it.
         let content = "<?php\nclass Foo {\n    /**\n     * @throws FooException\n     */\n    public function bar(): void {}\n}\n";
         let diag = make_phpstan_diag(
             5,
@@ -1647,22 +1596,8 @@ mod tests {
             "Method App\\Foo::bar() throws checked exception App\\Exceptions\\FooException but it's missing from the PHPDoc @throws tag.",
         );
         assert!(
-            is_stale_phpstan_diagnostic(&diag, content),
-            "should be stale when @throws FooException was added"
-        );
-    }
-
-    #[test]
-    fn not_stale_missing_checked_exception_when_tag_absent() {
-        let content = "<?php\nclass Foo {\n    /**\n     * Summary.\n     */\n    public function bar(): void {}\n}\n";
-        let diag = make_phpstan_diag(
-            5,
-            "missingType.checkedException",
-            "Method App\\Foo::bar() throws checked exception App\\Exceptions\\FooException but it's missing from the PHPDoc @throws tag.",
-        );
-        assert!(
             !is_stale_phpstan_diagnostic(&diag, content),
-            "should NOT be stale when @throws FooException is still missing"
+            "missingType.checkedException should NOT be stale via heuristic (cleared by resolve instead)"
         );
     }
 
@@ -1713,73 +1648,22 @@ mod tests {
 
     // ── method.missingOverride stale detection ──────────────────────
 
+    // ── method.missingOverride — heuristic removed ──────────────────
+
     #[test]
-    fn stale_missing_override_when_override_added() {
+    fn missing_override_not_stale_via_heuristic() {
+        // Previously this was detected as stale because #[Override]
+        // was found above the method.  Now only codeAction/resolve
+        // clears it.
         let content = "<?php\nclass Foo extends Bar {\n    #[\\Override]\n    public function baz(): void {}\n}\n";
         let diag = make_phpstan_diag(
-            3, // diagnostic on `public function baz()` line
-            "method.missingOverride",
-            "Method Foo::baz() overrides method Bar::baz() but is missing the #[\\Override] attribute.",
-        );
-        assert!(
-            is_stale_phpstan_diagnostic(&diag, content),
-            "should be stale when #[\\Override] was added above the method"
-        );
-    }
-
-    #[test]
-    fn stale_missing_override_when_short_override_added() {
-        let content = "<?php\nclass Foo extends Bar {\n    #[Override]\n    public function baz(): void {}\n}\n";
-        let diag = make_phpstan_diag(
             3,
-            "method.missingOverride",
-            "Method Foo::baz() overrides method Bar::baz() but is missing the #[\\Override] attribute.",
-        );
-        assert!(
-            is_stale_phpstan_diagnostic(&diag, content),
-            "should be stale when #[Override] (short form) was added above the method"
-        );
-    }
-
-    #[test]
-    fn not_stale_missing_override_when_not_added() {
-        let content = "<?php\nclass Foo extends Bar {\n    public function baz(): void {}\n}\n";
-        let diag = make_phpstan_diag(
-            2,
             "method.missingOverride",
             "Method Foo::baz() overrides method Bar::baz() but is missing the #[\\Override] attribute.",
         );
         assert!(
             !is_stale_phpstan_diagnostic(&diag, content),
-            "should NOT be stale when #[Override] is still missing"
-        );
-    }
-
-    #[test]
-    fn stale_missing_override_with_other_attrs() {
-        let content = "<?php\nclass Foo extends Bar {\n    #[Override]\n    #[Route('/baz')]\n    public function baz(): void {}\n}\n";
-        let diag = make_phpstan_diag(
-            4, // diagnostic on `public function baz()` line
-            "method.missingOverride",
-            "Method Foo::baz() overrides method Bar::baz() but is missing the #[\\Override] attribute.",
-        );
-        assert!(
-            is_stale_phpstan_diagnostic(&diag, content),
-            "should be stale when #[Override] exists among other attributes"
-        );
-    }
-
-    #[test]
-    fn stale_missing_override_in_combined_attr_list() {
-        let content = "<?php\nclass Foo extends Bar {\n    #[Override, Deprecated]\n    public function baz(): void {}\n}\n";
-        let diag = make_phpstan_diag(
-            3,
-            "method.missingOverride",
-            "Method Foo::baz() overrides method Bar::baz() but is missing the #[\\Override] attribute.",
-        );
-        assert!(
-            is_stale_phpstan_diagnostic(&diag, content),
-            "should be stale when Override is in a combined attribute list"
+            "method.missingOverride should NOT be stale via heuristic (cleared by resolve instead)"
         );
     }
 
@@ -1873,40 +1757,17 @@ mod tests {
     }
 
     // ── B16: scoped docblock checks ─────────────────────────────────
+    //
+    // The scoped docblock heuristics have been removed alongside the
+    // per-identifier stale detection.  These tests verify the new
+    // behaviour: throws/override diagnostics are never stale via
+    // heuristic (they are cleared by codeAction/resolve instead).
 
     #[test]
-    fn not_stale_when_throws_tag_is_on_different_function() {
-        // Another function has @throws FooException, but the
-        // diagnostic is on `baz()` which has no such tag.  The
-        // old whole-file search would incorrectly mark this stale.
-        let content = concat!(
-            "<?php\nclass Foo {\n",
-            "    /**\n",
-            "     * @throws FooException\n",
-            "     */\n",
-            "    public function bar(): void {\n",
-            "        throw new FooException();\n",
-            "    }\n",
-            "    public function baz(): void {\n",
-            "        throw new FooException();\n", // line 9
-            "    }\n",
-            "}\n",
-        );
-        let diag = make_phpstan_diag(
-            9,
-            "missingType.checkedException",
-            "Method App\\Foo::baz() throws checked exception App\\Exceptions\\FooException but it's missing from the PHPDoc @throws tag.",
-        );
-        assert!(
-            !is_stale_phpstan_diagnostic(&diag, content),
-            "should NOT be stale: @throws FooException is on bar(), not baz()"
-        );
-    }
-
-    #[test]
-    fn stale_when_throws_tag_is_on_same_function() {
-        // The diagnostic is on `baz()` and its own docblock has
-        // @throws FooException — should be stale.
+    fn throws_not_stale_even_when_tag_on_same_function() {
+        // Previously this was stale because @throws FooException was
+        // found on baz()'s own docblock.  Now it's not — resolve
+        // handles clearing.
         let content = concat!(
             "<?php\nclass Foo {\n",
             "    public function bar(): void {}\n",
@@ -1914,7 +1775,7 @@ mod tests {
             "     * @throws FooException\n",
             "     */\n",
             "    public function baz(): void {\n",
-            "        throw new FooException();\n", // line 7
+            "        throw new FooException();\n",
             "    }\n",
             "}\n",
         );
@@ -1924,32 +1785,26 @@ mod tests {
             "Method App\\Foo::baz() throws checked exception App\\Exceptions\\FooException but it's missing from the PHPDoc @throws tag.",
         );
         assert!(
-            is_stale_phpstan_diagnostic(&diag, content),
-            "should be stale: @throws FooException is on baz()'s own docblock"
+            !is_stale_phpstan_diagnostic(&diag, content),
+            "missingType.checkedException should NOT be stale via heuristic"
         );
     }
 
     #[test]
-    fn unused_throws_not_stale_when_different_function_has_same_tag() {
-        // bar() still has @throws FooException.  A throws.unusedType
-        // diagnostic on bar() should NOT be stale just because baz()
-        // also has the tag (the old whole-file scan would keep it
-        // non-stale regardless, but this tests the scoped version).
-        //
-        // Conversely, removing the tag from baz() should make baz()'s
-        // diagnostic stale without affecting bar().
+    fn unused_throws_not_stale_via_heuristic_even_when_tag_removed() {
+        // Previously baz()'s diagnostic was stale because the tag was
+        // removed.  Now neither is stale via heuristic.
         let content = concat!(
             "<?php\nclass Foo {\n",
             "    /**\n",
             "     * @throws FooException\n",
             "     */\n",
-            "    public function bar(): void {\n", // line 5
+            "    public function bar(): void {\n",
             "    }\n",
-            "    public function baz(): void {\n", // line 7
+            "    public function baz(): void {\n",
             "    }\n",
             "}\n",
         );
-        // bar()'s diagnostic — its own docblock still has the tag.
         let bar_diag = make_phpstan_diag(
             5,
             "throws.unusedType",
@@ -1957,18 +1812,17 @@ mod tests {
         );
         assert!(
             !is_stale_phpstan_diagnostic(&bar_diag, content),
-            "bar()'s throws.unusedType should NOT be stale (tag still present on bar())"
+            "bar()'s throws.unusedType should NOT be stale via heuristic"
         );
 
-        // baz()'s diagnostic — its docblock does NOT have the tag.
         let baz_diag = make_phpstan_diag(
             7,
             "throws.unusedType",
             "Method App\\Foo::baz() has App\\Exceptions\\FooException in PHPDoc @throws tag but it's not thrown.",
         );
         assert!(
-            is_stale_phpstan_diagnostic(&baz_diag, content),
-            "baz()'s throws.unusedType should be stale (tag removed from baz())"
+            !is_stale_phpstan_diagnostic(&baz_diag, content),
+            "baz()'s throws.unusedType should NOT be stale via heuristic"
         );
     }
 

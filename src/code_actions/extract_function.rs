@@ -18,6 +18,7 @@ use tower_lsp::lsp_types::*;
 
 use crate::Backend;
 use crate::code_actions::cursor_context::{CursorContext, MemberContext, find_cursor_context};
+use crate::code_actions::{CodeActionData, make_code_action_data};
 use crate::completion::phpdoc::generation::enrichment_plain;
 use crate::completion::resolver::Loaders;
 use crate::scope_collector::{
@@ -2149,6 +2150,11 @@ impl Backend {
     /// This action is offered when the user has a non-empty selection
     /// that covers one or more complete statements inside a function or
     /// method body.
+    ///
+    /// Phase 1 performs lightweight validation only.  The expensive
+    /// work (scope classification, type resolution, PHPDoc generation,
+    /// edit building) is deferred to [`resolve_extract_function`]
+    /// (Phase 2).
     pub(crate) fn collect_extract_function_actions(
         &self,
         uri: &str,
@@ -2175,287 +2181,41 @@ impl Backend {
             return;
         }
 
-        // ── From here the user plausibly intended an extraction ──────
-        // Any rejection below emits a *disabled* code action with a
-        // reason string instead of silently returning.
+        // ── Determine method vs function for the title ──────────────
+        // We only need to know whether `$this`/`self::`/`static::` is
+        // referenced to pick "Extract method" vs "Extract function".
+        // A simple text scan is sufficient for the title — the full
+        // scope analysis happens in Phase 2.
+        let selected_text = &content[start..end];
+        let looks_like_method = selected_text.contains("$this")
+            || selected_text.contains("self::")
+            || selected_text.contains("static::")
+            || selected_text.contains("parent::");
 
-        // Build scope map and classify the selected range.
-        let scope_map = build_scope_map(content, start as u32);
-        let classification = scope_map.classify_range(start as u32, end as u32);
-
-        // Analyse return statements in the selection.  We pass
-        // whether the selection has return values (variables modified
-        // inside and read after) so guard strategies can be rejected
-        // when we'd need to return both a sentinel and modified vars.
-        let return_value_count = classification.return_values.len();
-        let return_strategy = analyse_returns(content, start, end, return_value_count);
-
-        // Reject when the return strategy is Unsafe.
-        if return_strategy == ReturnStrategy::Unsafe {
-            Self::push_disabled_extract(
-                out,
-                "Selection contains return statements that cannot be safely extracted",
-            );
-            return;
-        }
-
-        // For NullGuardWithValue the return values are incorporated into
-        // the extracted function's return (not as separate out-variables),
-        // so we must also resolve the enclosing return type to derive a
-        // nullable hint.
-
-        // Use the scope-level flag as a quick pre-check before the more
-        // granular range classification.  If the *entire* scope has no
-        // $this/self/static/parent usage, the range certainly doesn't
-        // either — skip the detailed per-access scan in that case.
-        let uses_this = if scope_map.has_this_or_self {
-            classification.uses_this
+        let title = if looks_like_method {
+            "Extract method".to_string()
         } else {
-            false
+            "Extract function".to_string()
         };
 
-        // When the scope uses by-reference parameters, extraction could
-        // change semantics (writes through `&$var` would no longer
-        // propagate to the caller).  Reject for safety.
-        if scope_map.uses_reference_params() && !classification.reference_writes.is_empty() {
-            Self::push_disabled_extract(out, "Selection writes to by-reference parameters");
-            return;
-        }
-
-        // Reject if there are too many return values (more than can be
-        // cleanly handled with list() / array destructuring).
-        if classification.return_values.len() > 4 {
-            Self::push_disabled_extract(out, "Too many return values for clean extraction");
-            return;
-        }
-
-        // Determine enclosing context (method vs function) and insertion point.
-        let enclosing = match find_enclosing_context(content, start as u32, uses_this) {
-            Some(ctx) => ctx,
-            None => return,
-        };
-
-        // Generate the function/method name.  We need the return
-        // strategy and body text for contextual naming, so this
-        // happens after strategy analysis.
-        let body_line_start_for_naming = find_line_start(content, start);
-        let body_text_for_naming = &content[body_line_start_for_naming..end];
-        let naming_ctx = NamingContext {
-            enclosing_name: &enclosing.enclosing_name,
-            return_strategy: &return_strategy,
-            body_text: body_text_for_naming,
-            return_var_names: &classification.return_values,
-            trailing_return_type: "",
-        };
-        // We don't have the trailing return type yet (it's resolved
-        // below), but the naming heuristic only uses it for
-        // TrailingReturn, which we can approximate here.
-        let pre_trailing_return_type = if matches!(return_strategy, ReturnStrategy::TrailingReturn)
-        {
-            resolve_enclosing_return_type(content, start as u32)
-        } else {
-            String::new()
-        };
-        let naming_ctx = NamingContext {
-            trailing_return_type: &pre_trailing_return_type,
-            ..naming_ctx
-        };
-        let fn_name = generate_function_name(content, &enclosing, &naming_ctx);
-
-        // Resolve types for parameters and return values.
-        let typed_params =
-            self.resolve_param_types(uri, content, start as u32, &classification.parameters);
-        // Sort parameters: enclosing function's signature params first
-        // (in their original order), then any other variables in the
-        // order they were classified.
-        let enclosing_param_order = resolve_enclosing_param_order(content, start as u32);
-        let typed_params = sort_params_by_enclosing_order(typed_params, &enclosing_param_order);
-        let typed_returns =
-            self.resolve_param_types(uri, content, start as u32, &classification.return_values);
-
-        // Determine indentation.
-        let call_indent = indent_at(content, start);
-        let (member_indent, body_indent) = match enclosing.target {
-            ExtractionTarget::Method => {
-                // The member indent is the same level as the enclosing
-                // method's signature line (sibling methods share this
-                // indentation).  `body_start` points at the `{` which
-                // sits on the same line as the method signature.
-                let member = detect_line_indent(content, enclosing.body_start);
-                let unit = detect_indent_unit(content);
-                let body = format!("{}{}", member, unit);
-                (member, body)
-            }
-            ExtractionTarget::Function => {
-                let member = String::new();
-                let unit = detect_indent_unit(content);
-                (member, unit.to_string())
-            }
-        };
-
-        // Extract the selected text (the body of the new function).
-        // Start from the beginning of the first line so that the
-        // leading whitespace is included — this ensures all lines
-        // have consistent indentation for the re-indent pass.
-        let body_line_start = find_line_start(content, start);
-        let body_text = content[body_line_start..end].to_string();
-
-        // When the selection ends with `return`, uses sentinel-null,
-        // or uses null-guard-with-value, resolve the enclosing
-        // function's return type.
-        let trailing_return_type = if matches!(
-            return_strategy,
-            ReturnStrategy::TrailingReturn
-                | ReturnStrategy::SentinelNull
-                | ReturnStrategy::NullGuardWithValue(_)
-        ) {
-            resolve_enclosing_return_type(content, start as u32)
-        } else {
-            String::new()
-        };
-
-        // Also resolve the docblock @return type of the enclosing
-        // function — it may carry concrete generic arguments (e.g.
-        // `Collection<User>`) that the native hint lacks.
-        let enclosing_docblock_return = if matches!(
-            return_strategy,
-            ReturnStrategy::TrailingReturn | ReturnStrategy::SentinelNull
-        ) {
-            crate::docblock::find_enclosing_return_type(content, start).unwrap_or_default()
-        } else {
-            String::new()
-        };
-
-        // ── PHPDoc generation ───────────────────────────────────────
-        // Build a docblock when parameter or return types benefit from
-        // enrichment (generics, array<K,V>, callable signatures, etc.).
-        let return_type_for_docblock = build_return_type_hint_for_docblock(
-            &return_strategy,
-            &trailing_return_type,
-            &typed_returns,
-        );
-        let raw_return_type_for_docblock = build_raw_return_type_for_docblock(
-            &return_strategy,
-            &trailing_return_type,
-            &enclosing_docblock_return,
-            &typed_returns,
-        );
-        let ctx = self.file_context(uri);
-        let class_loader = self.class_loader(&ctx);
-        let docblock = build_docblock_for_extraction(
-            &typed_params,
-            &return_type_for_docblock,
-            &raw_return_type_for_docblock,
-            &member_indent,
-            &class_loader,
-        );
-
-        // Strip raw types for ExtractionInfo (only cleaned hints
-        // are needed for code generation).
-        let params_for_info: Vec<(String, String)> = typed_params
-            .iter()
-            .map(|(name, cleaned, _)| (name.clone(), cleaned.clone()))
-            .collect();
-        let returns_for_info: Vec<(String, String)> = typed_returns
-            .iter()
-            .map(|(name, cleaned, _)| (name.clone(), cleaned.clone()))
-            .collect();
-
-        let info = ExtractionInfo {
-            name: fn_name.clone(),
-            params: params_for_info,
-            returns: returns_for_info,
-            body: body_text,
-            target: enclosing.target,
-            is_static: enclosing.is_static,
-            member_indent,
-            body_indent,
-            return_strategy,
-            trailing_return_type,
-            docblock,
-        };
-
-        // Build the definition text.
-        let definition = build_extracted_definition(&info);
-
-        // Build the call-site text.
-        let call_site = build_call_site(&info, &call_indent);
-
-        // Build workspace edits.
-        let doc_uri: Url = match uri.parse() {
-            Ok(u) => u,
-            Err(_) => return,
-        };
-
-        // Expand the replacement range to cover the full lines of the selection.
-        let replace_start = find_line_start(content, start);
-        let replace_end = find_line_end(content, end.saturating_sub(1).max(start));
-
-        let replace_start_pos = offset_to_position(content, replace_start);
-        let replace_end_pos = offset_to_position(content, replace_end);
-
-        // Insertion point for the new definition.
-        let insert_pos = offset_to_position(content, enclosing.insert_offset);
-
-        let edits = vec![
-            // Edit 1: Replace the selected statements with the call site.
-            TextEdit {
-                range: Range {
-                    start: replace_start_pos,
-                    end: replace_end_pos,
-                },
-                new_text: call_site,
-            },
-            // Edit 2: Insert the new function/method definition.
-            TextEdit {
-                range: Range {
-                    start: insert_pos,
-                    end: insert_pos,
-                },
-                new_text: definition,
-            },
-        ];
-
-        let mut changes = HashMap::new();
-        changes.insert(doc_uri, edits);
-
-        let title = match enclosing.target {
-            ExtractionTarget::Method => format!("Extract method '{}'", fn_name),
-            ExtractionTarget::Function => format!("Extract function '{}'", fn_name),
-        };
-
+        // Phase 1: emit a lightweight code action with no edit.
+        // The full workspace edit is computed lazily in
+        // `resolve_extract_function` (Phase 2) when the user picks
+        // this action.
         out.push(CodeActionOrCommand::CodeAction(CodeAction {
             title,
-            kind: Some(CodeActionKind::REFACTOR_EXTRACT),
-            diagnostics: None,
-            edit: Some(WorkspaceEdit {
-                changes: Some(changes),
-                document_changes: None,
-                change_annotations: None,
-            }),
-            command: None,
-            is_preferred: Some(false),
-            disabled: None,
-            data: None,
-        }));
-    }
-
-    /// Push a disabled "Extract function/method" code action with a
-    /// human-readable reason string.  Editors show this greyed-out in
-    /// the refactor menu so the user knows *why* extraction is
-    /// unavailable for their selection.
-    fn push_disabled_extract(out: &mut Vec<CodeActionOrCommand>, reason: &str) {
-        out.push(CodeActionOrCommand::CodeAction(CodeAction {
-            title: "Extract function/method".to_string(),
             kind: Some(CodeActionKind::REFACTOR_EXTRACT),
             diagnostics: None,
             edit: None,
             command: None,
             is_preferred: Some(false),
-            disabled: Some(CodeActionDisabled {
-                reason: reason.to_string(),
-            }),
-            data: None,
+            disabled: None,
+            data: Some(make_code_action_data(
+                "refactor.extractFunction",
+                uri,
+                &params.range,
+                serde_json::json!({}),
+            )),
         }));
     }
 
@@ -2487,6 +2247,213 @@ impl Backend {
                 (dollar_name, cleaned, type_hint)
             })
             .collect()
+    }
+
+    /// Resolve a deferred "Extract Function/Method" code action.
+    ///
+    /// This is **Phase 2** of the two-phase code-action model.  Phase 1
+    /// (`collect_extract_function_actions`) already validated the
+    /// selection and emitted a lightweight `CodeAction` with a title
+    /// but no edit.  Here we re-run the full extraction logic from the
+    /// selection range stored in `data` and produce the workspace edit.
+    pub(crate) fn resolve_extract_function(
+        &self,
+        data: &CodeActionData,
+        content: &str,
+    ) -> Option<WorkspaceEdit> {
+        let uri = &data.uri;
+        let range = &data.range;
+
+        // ── Re-validate the selection (content may have changed) ────
+        let start_offset = position_to_byte_offset(content, range.start);
+        let end_offset = position_to_byte_offset(content, range.end);
+
+        let (start, end) = trim_selection(content, start_offset, end_offset)?;
+
+        if !selection_covers_complete_statements(content, start, end) {
+            return None;
+        }
+
+        // ── Scope map & classification ──────────────────────────────
+        let scope_map = build_scope_map(content, start as u32);
+        let classification = scope_map.classify_range(start as u32, end as u32);
+
+        let return_value_count = classification.return_values.len();
+        let return_strategy = analyse_returns(content, start, end, return_value_count);
+
+        if return_strategy == ReturnStrategy::Unsafe {
+            return None;
+        }
+
+        let uses_this = if scope_map.has_this_or_self {
+            classification.uses_this
+        } else {
+            false
+        };
+
+        if scope_map.uses_reference_params() && !classification.reference_writes.is_empty() {
+            return None;
+        }
+
+        if classification.return_values.len() > 4 {
+            return None;
+        }
+
+        // ── Enclosing context ───────────────────────────────────────
+        let enclosing = find_enclosing_context(content, start as u32, uses_this)?;
+
+        // ── Naming ──────────────────────────────────────────────────
+        let body_line_start_for_naming = find_line_start(content, start);
+        let body_text_for_naming = &content[body_line_start_for_naming..end];
+        let pre_trailing_return_type = if matches!(return_strategy, ReturnStrategy::TrailingReturn)
+        {
+            resolve_enclosing_return_type(content, start as u32)
+        } else {
+            String::new()
+        };
+        let naming_ctx = NamingContext {
+            enclosing_name: &enclosing.enclosing_name,
+            return_strategy: &return_strategy,
+            body_text: body_text_for_naming,
+            return_var_names: &classification.return_values,
+            trailing_return_type: &pre_trailing_return_type,
+        };
+        let fn_name = generate_function_name(content, &enclosing, &naming_ctx);
+
+        // ── Type resolution ─────────────────────────────────────────
+        let typed_params =
+            self.resolve_param_types(uri, content, start as u32, &classification.parameters);
+        let enclosing_param_order = resolve_enclosing_param_order(content, start as u32);
+        let typed_params = sort_params_by_enclosing_order(typed_params, &enclosing_param_order);
+        let typed_returns =
+            self.resolve_param_types(uri, content, start as u32, &classification.return_values);
+
+        // ── Indentation ─────────────────────────────────────────────
+        let call_indent = indent_at(content, start);
+        let (member_indent, body_indent) = match enclosing.target {
+            ExtractionTarget::Method => {
+                let member = detect_line_indent(content, enclosing.body_start);
+                let unit = detect_indent_unit(content);
+                let body = format!("{}{}", member, unit);
+                (member, body)
+            }
+            ExtractionTarget::Function => {
+                let member = String::new();
+                let unit = detect_indent_unit(content);
+                (member, unit.to_string())
+            }
+        };
+
+        // ── Body text ───────────────────────────────────────────────
+        let body_line_start = find_line_start(content, start);
+        let body_text = content[body_line_start..end].to_string();
+
+        // ── Return type resolution ──────────────────────────────────
+        let trailing_return_type = if matches!(
+            return_strategy,
+            ReturnStrategy::TrailingReturn
+                | ReturnStrategy::SentinelNull
+                | ReturnStrategy::NullGuardWithValue(_)
+        ) {
+            resolve_enclosing_return_type(content, start as u32)
+        } else {
+            String::new()
+        };
+
+        let enclosing_docblock_return = if matches!(
+            return_strategy,
+            ReturnStrategy::TrailingReturn | ReturnStrategy::SentinelNull
+        ) {
+            crate::docblock::find_enclosing_return_type(content, start).unwrap_or_default()
+        } else {
+            String::new()
+        };
+
+        // ── PHPDoc generation ───────────────────────────────────────
+        let return_type_for_docblock = build_return_type_hint_for_docblock(
+            &return_strategy,
+            &trailing_return_type,
+            &typed_returns,
+        );
+        let raw_return_type_for_docblock = build_raw_return_type_for_docblock(
+            &return_strategy,
+            &trailing_return_type,
+            &enclosing_docblock_return,
+            &typed_returns,
+        );
+        let ctx = self.file_context(uri);
+        let class_loader = self.class_loader(&ctx);
+        let docblock = build_docblock_for_extraction(
+            &typed_params,
+            &return_type_for_docblock,
+            &raw_return_type_for_docblock,
+            &member_indent,
+            &class_loader,
+        );
+
+        // ── Build ExtractionInfo ────────────────────────────────────
+        let params_for_info: Vec<(String, String)> = typed_params
+            .iter()
+            .map(|(name, cleaned, _)| (name.clone(), cleaned.clone()))
+            .collect();
+        let returns_for_info: Vec<(String, String)> = typed_returns
+            .iter()
+            .map(|(name, cleaned, _)| (name.clone(), cleaned.clone()))
+            .collect();
+
+        let info = ExtractionInfo {
+            name: fn_name,
+            params: params_for_info,
+            returns: returns_for_info,
+            body: body_text,
+            target: enclosing.target,
+            is_static: enclosing.is_static,
+            member_indent,
+            body_indent,
+            return_strategy,
+            trailing_return_type,
+            docblock,
+        };
+
+        // ── Build edits ─────────────────────────────────────────────
+        let definition = build_extracted_definition(&info);
+        let call_site = build_call_site(&info, &call_indent);
+
+        let doc_uri: Url = uri.parse().ok()?;
+
+        let replace_start = find_line_start(content, start);
+        let replace_end = find_line_end(content, end.saturating_sub(1).max(start));
+
+        let replace_start_pos = offset_to_position(content, replace_start);
+        let replace_end_pos = offset_to_position(content, replace_end);
+
+        let insert_pos = offset_to_position(content, enclosing.insert_offset);
+
+        let edits = vec![
+            TextEdit {
+                range: Range {
+                    start: replace_start_pos,
+                    end: replace_end_pos,
+                },
+                new_text: call_site,
+            },
+            TextEdit {
+                range: Range {
+                    start: insert_pos,
+                    end: insert_pos,
+                },
+                new_text: definition,
+            },
+        ];
+
+        let mut changes = HashMap::new();
+        changes.insert(doc_uri, edits);
+
+        Some(WorkspaceEdit {
+            changes: Some(changes),
+            document_changes: None,
+            change_annotations: None,
+        })
     }
 }
 
@@ -4803,7 +4770,10 @@ function foo($x) {
     // ── Disabled code action with rejection reason ──────────────────
 
     #[test]
-    fn disabled_action_for_unsafe_returns() {
+    fn unsafe_returns_resolve_produces_no_edit() {
+        // Phase 1 no longer emits disabled actions (validation is
+        // deferred to resolve).  Instead it offers a normal action
+        // and resolve returns None when the return strategy is unsafe.
         let backend = crate::Backend::new_test();
         let uri = "file:///test.php";
         let content = "\
@@ -4814,6 +4784,11 @@ function foo() {
     echo 'done';
 }
 ";
+        backend
+            .open_files
+            .write()
+            .insert(uri.to_string(), std::sync::Arc::new(content.to_string()));
+
         // Select the three statements (mixed return values including
         // null → Unsafe strategy).
         let params = CodeActionParams {
@@ -4838,32 +4813,34 @@ function foo() {
         };
 
         let actions = backend.handle_code_action(uri, content, &params);
-        let disabled = actions
-            .iter()
-            .find(|a| matches!(a, CodeActionOrCommand::CodeAction(ca) if ca.disabled.is_some()));
+        let extract = actions.iter().find_map(|a| match a {
+            CodeActionOrCommand::CodeAction(ca)
+                if ca.kind == Some(CodeActionKind::REFACTOR_EXTRACT)
+                    && ca.title.contains("Extract") =>
+            {
+                Some(ca)
+            }
+            _ => None,
+        });
         assert!(
-            disabled.is_some(),
-            "should emit a disabled code action for unsafe returns, got: {:?}",
-            actions
-                .iter()
-                .map(|a| match a {
-                    CodeActionOrCommand::CodeAction(ca) => format!(
-                        "{} (disabled: {:?})",
-                        ca.title,
-                        ca.disabled.as_ref().map(|d| &d.reason)
-                    ),
-                    CodeActionOrCommand::Command(cmd) => cmd.title.clone(),
-                })
-                .collect::<Vec<_>>()
+            extract.is_some(),
+            "Phase 1 should still offer the action (validation deferred to resolve)"
         );
-        if let Some(CodeActionOrCommand::CodeAction(ca)) = disabled {
-            assert!(
-                ca.disabled.as_ref().unwrap().reason.contains("return"),
-                "reason should mention returns, got: {}",
-                ca.disabled.as_ref().unwrap().reason
-            );
-            assert!(ca.edit.is_none(), "disabled action should have no edit");
-        }
+
+        let action = extract.unwrap();
+        assert!(action.edit.is_none(), "Phase 1 should not have an edit");
+        assert!(
+            action.data.is_some(),
+            "Phase 1 should have data for resolve"
+        );
+
+        // Phase 2: resolve should produce no edit because the return
+        // strategy is unsafe.
+        let (resolved, _) = backend.resolve_code_action(action.clone());
+        assert!(
+            resolved.edit.is_none(),
+            "resolve should produce no edit for unsafe returns"
+        );
     }
 
     #[test]

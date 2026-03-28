@@ -13,13 +13,27 @@
 //! `missingType.checkedException` overlaps the cursor.
 //!
 //! **Code action kind:** `quickfix`.
+//!
+//! ## Two-phase resolve
+//!
+//! Phase 1 (`collect_add_throws_actions`) performs all validation and
+//! emits a lightweight `CodeAction` with a `data` payload but no `edit`.
+//! Phase 2 (`resolve_add_throws`) recomputes the workspace edit on
+//! demand when the user picks the action.
 
 use std::collections::HashMap;
 
+use mago_syntax::ast::class_like::member::ClassLikeMember;
+use mago_syntax::ast::class_like::method::MethodBody;
+use mago_syntax::ast::*;
 use tower_lsp::lsp_types::*;
 
 use crate::Backend;
+use crate::code_actions::CodeActionData;
+use crate::code_actions::make_code_action_data;
 use crate::completion::use_edit::{analyze_use_block, build_use_edit, use_import_conflicts};
+use crate::parser::with_parsed_program;
+use crate::util::offset_to_position;
 
 /// The PHPStan identifier we match on.
 const CHECKED_EXCEPTION_ID: &str = "missingType.checkedException";
@@ -27,6 +41,10 @@ const CHECKED_EXCEPTION_ID: &str = "missingType.checkedException";
 impl Backend {
     /// Collect "Add @throws" code actions for PHPStan
     /// `missingType.checkedException` diagnostics.
+    ///
+    /// **Phase 1**: validates the action is applicable and emits a
+    /// lightweight `CodeAction` with a `data` payload but **no `edit`**.
+    /// The edit is computed lazily in [`resolve_add_throws`](Self::resolve_add_throws).
     pub(crate) fn collect_add_throws_actions(
         &self,
         uri: &str,
@@ -34,11 +52,6 @@ impl Backend {
         params: &CodeActionParams,
         out: &mut Vec<CodeActionOrCommand>,
     ) {
-        let doc_uri: Url = match uri.parse() {
-            Ok(u) => u,
-            Err(_) => return,
-        };
-
         let phpstan_diags: Vec<Diagnostic> = {
             let cache = self.phpstan_last_diags.lock();
             cache.get(uri).cloned().unwrap_or_default()
@@ -108,43 +121,101 @@ impl Backend {
                 continue;
             }
 
-            // Build edits.
-            let mut edits = Vec::new();
-
-            // 1. Docblock edit: insert @throws tag.
-            let throws_edit = build_throws_edit(content, &docblock_info, short_name);
-            edits.push(throws_edit);
-
-            // 2. Import edit (if needed).
-            if needs_import {
-                let use_block = analyze_use_block(content);
-                if let Some(import_edits) =
-                    build_use_edit(&exception_fqn, &use_block, &file_namespace)
-                {
-                    edits.extend(import_edits);
-                }
-            }
-
-            let mut changes = HashMap::new();
-            changes.insert(doc_uri.clone(), edits);
-
+            // ── Phase 1: emit lightweight action with data ──────────
             let title = format!("Add @throws {}", short_name);
+
+            let extra = serde_json::json!({
+                "diagnostic_message": diag.message,
+                "diagnostic_line": diag.range.start.line,
+                "diagnostic_code": CHECKED_EXCEPTION_ID,
+            });
+
+            let data = make_code_action_data("phpstan.addThrows", uri, &params.range, extra);
 
             out.push(CodeActionOrCommand::CodeAction(CodeAction {
                 title,
                 kind: Some(CodeActionKind::QUICKFIX),
                 diagnostics: Some(vec![diag.clone()]),
-                edit: Some(WorkspaceEdit {
-                    changes: Some(changes),
-                    document_changes: None,
-                    change_annotations: None,
-                }),
+                edit: None,
                 command: None,
                 is_preferred: Some(true),
                 disabled: None,
-                data: None,
+                data: Some(data),
             }));
         }
+    }
+
+    /// Resolve the "Add @throws" code action by computing the full
+    /// workspace edit.
+    ///
+    /// **Phase 2**: called from
+    /// [`resolve_code_action`](Self::resolve_code_action) when the user
+    /// picks this action.  Recomputes the docblock edit and (optionally)
+    /// the import edit from the data payload.
+    pub(crate) fn resolve_add_throws(
+        &self,
+        data: &CodeActionData,
+        content: &str,
+    ) -> Option<WorkspaceEdit> {
+        let uri = &data.uri;
+
+        // Parse the extra data to recover the diagnostic message.
+        let diagnostic_message = data.extra.get("diagnostic_message")?.as_str()?;
+        let diagnostic_line = data.extra.get("diagnostic_line")?.as_u64()? as usize;
+
+        // Extract the exception FQN from the message.
+        let exception_fqn = extract_exception_fqn(diagnostic_message)?;
+        let short_name = crate::util::short_name(&exception_fqn);
+
+        // Look up the use_map and namespace_map for the URI.
+        let file_use_map: HashMap<String, String> =
+            self.use_map.read().get(uri).cloned().unwrap_or_default();
+        let file_namespace: Option<String> = self.namespace_map.read().get(uri).cloned().flatten();
+
+        // Determine if an import is needed.
+        let already_imported = file_use_map.iter().any(|(alias, fqn)| {
+            alias.eq_ignore_ascii_case(short_name) && fqn.eq_ignore_ascii_case(&exception_fqn)
+        });
+
+        let same_namespace = match &file_namespace {
+            Some(ns) => {
+                let ns_prefix = format!("{}\\", ns);
+                let stripped = exception_fqn.strip_prefix(&ns_prefix);
+                stripped.is_some_and(|rest| !rest.contains('\\'))
+            }
+            None => !exception_fqn.contains('\\'),
+        };
+
+        let needs_import = !already_imported && !same_namespace;
+
+        // Find the enclosing docblock.
+        let docblock_info = find_enclosing_docblock(content, diagnostic_line)?;
+
+        // Build edits.
+        let mut edits = Vec::new();
+
+        // 1. Docblock edit: insert @throws tag.
+        let throws_edit = build_throws_edit(content, &docblock_info, short_name);
+        edits.push(throws_edit);
+
+        // 2. Import edit (if needed).
+        if needs_import {
+            let use_block = analyze_use_block(content);
+            if let Some(import_edits) = build_use_edit(&exception_fqn, &use_block, &file_namespace)
+            {
+                edits.extend(import_edits);
+            }
+        }
+
+        let doc_uri: Url = uri.parse().ok()?;
+        let mut changes = HashMap::new();
+        changes.insert(doc_uri, edits);
+
+        Some(WorkspaceEdit {
+            changes: Some(changes),
+            document_changes: None,
+            change_annotations: None,
+        })
     }
 }
 
@@ -157,7 +228,7 @@ impl Backend {
 /// - `"Method Ns\Cls::method() throws checked exception Ns\Ex but ..."`
 /// - `"Function foo() throws checked exception Ns\Ex but ..."`
 /// - `"Get hook for property Ns\Cls::$prop throws checked exception Ns\Ex but ..."`
-fn extract_exception_fqn(message: &str) -> Option<String> {
+pub(crate) fn extract_exception_fqn(message: &str) -> Option<String> {
     let marker = "throws checked exception ";
     let start = message.find(marker)? + marker.len();
     let rest = &message[start..];
@@ -499,6 +570,127 @@ fn byte_range_to_lsp(content: &str, start: usize, end: usize) -> Range {
 
 fn ranges_overlap(a: &Range, b: &Range) -> bool {
     a.start.line <= b.end.line && b.start.line <= a.end.line
+}
+
+/// Find the line range (start, end) of the enclosing function/method body
+/// for the given diagnostic line.
+///
+/// Returns `(opening_brace_line, closing_brace_line)` so callers can
+/// check whether two diagnostics fall within the same function body.
+/// This is used to batch-clear all `missingType.checkedException`
+/// diagnostics for the same exception class when the user applies the
+/// "Add @throws" quick fix on any one of them.
+///
+/// Uses the mago AST parser to find the enclosing function or method,
+/// which correctly handles braces inside strings, comments, and heredocs.
+pub(crate) fn find_enclosing_function_line_range(
+    content: &str,
+    diag_line: usize,
+) -> Option<(usize, usize)> {
+    // Convert the diagnostic line to a byte offset (start of line is enough).
+    let mut cursor_offset = 0usize;
+    let mut found = false;
+    for (i, line) in content.lines().enumerate() {
+        if i == diag_line {
+            found = true;
+            break;
+        }
+        cursor_offset += line.len() + 1;
+    }
+    if !found {
+        return None;
+    }
+    let cursor_offset = cursor_offset as u32;
+
+    with_parsed_program(
+        content,
+        "find_enclosing_function_line_range",
+        |program, content| {
+            find_function_range_in_statements(&program.statements, cursor_offset, content)
+        },
+    )
+}
+
+/// Walk top-level statements (and namespace children) looking for the
+/// function or method whose body contains `cursor`.
+fn find_function_range_in_statements(
+    statements: &Sequence<'_, Statement<'_>>,
+    cursor: u32,
+    content: &str,
+) -> Option<(usize, usize)> {
+    for stmt in statements.iter() {
+        match stmt {
+            Statement::Namespace(ns) => {
+                if let Some(range) =
+                    find_function_range_in_statements(ns.statements(), cursor, content)
+                {
+                    return Some(range);
+                }
+            }
+            Statement::Function(func) => {
+                let open = func.body.left_brace.start.offset;
+                let close = func.body.right_brace.start.offset;
+                if cursor >= open && cursor <= close {
+                    let open_line = offset_to_position(content, open as usize).line as usize;
+                    let close_line = offset_to_position(content, close as usize).line as usize;
+                    return Some((open_line, close_line));
+                }
+            }
+            Statement::Class(class) => {
+                if let Some(range) =
+                    find_method_range_in_members(class.members.iter(), cursor, content)
+                {
+                    return Some(range);
+                }
+            }
+            Statement::Interface(iface) => {
+                if let Some(range) =
+                    find_method_range_in_members(iface.members.iter(), cursor, content)
+                {
+                    return Some(range);
+                }
+            }
+            Statement::Trait(tr) => {
+                if let Some(range) =
+                    find_method_range_in_members(tr.members.iter(), cursor, content)
+                {
+                    return Some(range);
+                }
+            }
+            Statement::Enum(en) => {
+                if let Some(range) =
+                    find_method_range_in_members(en.members.iter(), cursor, content)
+                {
+                    return Some(range);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Check each method in a class-like's members for a concrete body
+/// containing `cursor`.
+fn find_method_range_in_members<'a>(
+    members: impl Iterator<Item = &'a ClassLikeMember<'a>>,
+    cursor: u32,
+    content: &str,
+) -> Option<(usize, usize)> {
+    for member in members {
+        if let ClassLikeMember::Method(method) = member
+            && let MethodBody::Concrete(block) = &method.body
+        {
+            let open = block.left_brace.start.offset;
+            let close = block.right_brace.start.offset;
+            if cursor >= open && cursor <= close {
+                let open_line = offset_to_position(content, open as usize).line as usize;
+                let close_line = offset_to_position(content, close as usize).line as usize;
+                return Some((open_line, close_line));
+            }
+        }
+    }
+    None
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -860,5 +1052,102 @@ mod tests {
             "should add @throws: {:?}",
             edit.new_text
         );
+    }
+
+    // ── find_enclosing_function_line_range ───────────────────────────
+
+    #[test]
+    fn function_line_range_simple_method() {
+        let php = concat!(
+            "<?php\n",                                   // 0
+            "class Foo {\n",                             // 1
+            "    public function bar(): void {\n",       // 2
+            "        throw new \\RuntimeException();\n", // 3
+            "        throw new \\RuntimeException();\n", // 4
+            "    }\n",                                   // 5
+            "}\n",                                       // 6
+        );
+        // Diagnostic on line 3 should find body from line 2 to line 5.
+        let (start, end) = find_enclosing_function_line_range(php, 3).unwrap();
+        assert_eq!(start, 2, "opening brace line");
+        assert_eq!(end, 5, "closing brace line");
+
+        // Diagnostic on line 4 should find the same range.
+        let (start2, end2) = find_enclosing_function_line_range(php, 4).unwrap();
+        assert_eq!((start2, end2), (start, end));
+    }
+
+    #[test]
+    fn function_line_range_standalone_function() {
+        let php = concat!(
+            "<?php\n",                               // 0
+            "function doStuff(): void {\n",          // 1
+            "    throw new \\RuntimeException();\n", // 2
+            "}\n",                                   // 3
+        );
+        let (start, end) = find_enclosing_function_line_range(php, 2).unwrap();
+        assert_eq!(start, 1);
+        assert_eq!(end, 3);
+    }
+
+    #[test]
+    fn function_line_range_nested_braces() {
+        let php = concat!(
+            "<?php\n",                                       // 0
+            "class Foo {\n",                                 // 1
+            "    public function bar(): void {\n",           // 2
+            "        if (true) {\n",                         // 3
+            "            throw new \\RuntimeException();\n", // 4
+            "        }\n",                                   // 5
+            "        throw new \\RuntimeException();\n",     // 6
+            "    }\n",                                       // 7
+            "}\n",                                           // 8
+        );
+        // Diagnostic inside the if block should still find the method body.
+        let (start, end) = find_enclosing_function_line_range(php, 4).unwrap();
+        assert_eq!(start, 2, "opening brace line");
+        assert_eq!(end, 7, "closing brace line");
+
+        // Diagnostic on line 6 (outside if, inside method) gives same range.
+        let (start2, end2) = find_enclosing_function_line_range(php, 6).unwrap();
+        assert_eq!((start2, end2), (start, end));
+    }
+
+    #[test]
+    fn function_line_range_two_methods() {
+        let php = concat!(
+            "<?php\n",                                   // 0
+            "class Foo {\n",                             // 1
+            "    public function first(): void {\n",     // 2
+            "        throw new \\RuntimeException();\n", // 3
+            "    }\n",                                   // 4
+            "    public function second(): void {\n",    // 5
+            "        throw new \\RuntimeException();\n", // 6
+            "    }\n",                                   // 7
+            "}\n",                                       // 8
+        );
+        // Line 3 should be in `first()`.
+        let (s1, e1) = find_enclosing_function_line_range(php, 3).unwrap();
+        assert_eq!((s1, e1), (2, 4));
+
+        // Line 6 should be in `second()`.
+        let (s2, e2) = find_enclosing_function_line_range(php, 6).unwrap();
+        assert_eq!((s2, e2), (5, 7));
+    }
+
+    #[test]
+    fn function_line_range_returns_none_for_out_of_range() {
+        let php = "<?php\necho 'hi';\n";
+        assert!(find_enclosing_function_line_range(php, 99).is_none());
+    }
+
+    #[test]
+    fn function_line_range_returns_none_outside_function() {
+        // Line 1 is at the top level, not inside any function body.
+        let php = concat!(
+            "<?php\n",      // 0
+            "echo 'hi';\n", // 1
+        );
+        assert!(find_enclosing_function_line_range(php, 1).is_none());
     }
 }

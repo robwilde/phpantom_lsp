@@ -9,12 +9,20 @@
 //! `method.missingOverride` overlaps the cursor.
 //!
 //! **Code action kind:** `quickfix`.
+//!
+//! ## Two-phase resolve
+//!
+//! Phase 1 (`collect_add_override_actions`) performs all validation and
+//! emits a lightweight `CodeAction` with a `data` payload but no `edit`.
+//! Phase 2 (`resolve_add_override`) recomputes the workspace edit on
+//! demand when the user picks the action.
 
 use std::collections::HashMap;
 
 use tower_lsp::lsp_types::*;
 
 use crate::Backend;
+use crate::code_actions::{CodeActionData, make_code_action_data};
 use crate::completion::use_edit::{analyze_use_block, build_use_edit, use_import_conflicts};
 
 /// The PHPStan identifier we match on.
@@ -23,6 +31,10 @@ const MISSING_OVERRIDE_ID: &str = "method.missingOverride";
 impl Backend {
     /// Collect "Add `#[Override]`" code actions for PHPStan
     /// `method.missingOverride` diagnostics.
+    ///
+    /// **Phase 1**: validates the action is applicable and emits a
+    /// lightweight `CodeAction` with a `data` payload but **no `edit`**.
+    /// The edit is computed lazily in [`resolve_add_override`](Self::resolve_add_override).
     pub(crate) fn collect_add_override_actions(
         &self,
         uri: &str,
@@ -30,19 +42,10 @@ impl Backend {
         params: &CodeActionParams,
         out: &mut Vec<CodeActionOrCommand>,
     ) {
-        let doc_uri: Url = match uri.parse() {
-            Ok(u) => u,
-            Err(_) => return,
-        };
-
         let phpstan_diags: Vec<Diagnostic> = {
             let cache = self.phpstan_last_diags.lock();
             cache.get(uri).cloned().unwrap_or_default()
         };
-
-        let file_use_map: HashMap<String, String> =
-            self.use_map.read().get(uri).cloned().unwrap_or_default();
-        let file_namespace: Option<String> = self.namespace_map.read().get(uri).cloned().flatten();
 
         for diag in &phpstan_diags {
             if !ranges_overlap(&diag.range, &params.range) {
@@ -75,80 +78,118 @@ impl Backend {
                 continue;
             }
 
-            // Decide whether to use the short form `#[Override]` with a
-            // `use Override;` import, or the FQN `#[\Override]`.
-            //
-            // `Override` lives in the global namespace.  When the file
-            // declares a namespace we need a `use Override;` import
-            // (just like any other global class).  When the file has no
-            // namespace, no import is needed.
-            let already_imported = file_use_map.iter().any(|(alias, fqn)| {
-                alias.eq_ignore_ascii_case("Override") && fqn.eq_ignore_ascii_case("Override")
-            });
-
-            let same_namespace = file_namespace.is_none();
-
-            let needs_import = !already_imported && !same_namespace;
-
-            // Check for import conflicts (e.g. a different class named
-            // `Override` is already imported).
-            if needs_import && use_import_conflicts("Override", &file_use_map) {
-                // Fall back to FQN form — no import possible.
-            }
-
-            let use_fqn = needs_import && use_import_conflicts("Override", &file_use_map);
-
-            let attr_text = if use_fqn {
-                "#[\\Override]"
-            } else {
-                "#[Override]"
-            };
-
-            // Build the text edit: insert `#[Override]\n<indent>` at the
-            // start of the method declaration line (before any existing
-            // attributes or modifiers).
-            let insert_text = format!("{}{}\n", insertion.indent, attr_text);
-
-            let insert_pos = byte_offset_to_lsp(content, insertion.insert_offset);
-
-            let mut edits = vec![TextEdit {
-                range: Range {
-                    start: insert_pos,
-                    end: insert_pos,
-                },
-                new_text: insert_text,
-            }];
-
-            // Add `use Override;` import when needed and possible.
-            if needs_import && !use_fqn {
-                let use_block = analyze_use_block(content);
-                if let Some(import_edits) = build_use_edit("Override", &use_block, &file_namespace)
-                {
-                    edits.extend(import_edits);
-                }
-            }
-
-            let mut changes = HashMap::new();
-            changes.insert(doc_uri.clone(), edits);
-
+            // ── Phase 1: emit lightweight action with data ──────────
             let method_name = extract_method_name(&diag.message).unwrap_or("method");
             let title = format!("Add #[Override] to {}", method_name);
+
+            let extra = serde_json::json!({
+                "diagnostic_message": diag.message,
+                "diagnostic_line": diag.range.start.line,
+                "diagnostic_code": MISSING_OVERRIDE_ID,
+            });
+
+            let data = make_code_action_data("phpstan.addOverride", uri, &params.range, extra);
 
             out.push(CodeActionOrCommand::CodeAction(CodeAction {
                 title,
                 kind: Some(CodeActionKind::QUICKFIX),
                 diagnostics: Some(vec![diag.clone()]),
-                edit: Some(WorkspaceEdit {
-                    changes: Some(changes),
-                    document_changes: None,
-                    change_annotations: None,
-                }),
+                edit: None,
                 command: None,
                 is_preferred: Some(true),
                 disabled: None,
-                data: None,
+                data: Some(data),
             }));
         }
+    }
+
+    /// Resolve the "Add `#[Override]`" code action by computing the full
+    /// workspace edit.
+    ///
+    /// **Phase 2**: called from
+    /// [`resolve_code_action`](Self::resolve_code_action) when the user
+    /// picks this action.  Recomputes the attribute insertion edit and
+    /// (optionally) the import edit from the data payload.
+    pub(crate) fn resolve_add_override(
+        &self,
+        data: &CodeActionData,
+        content: &str,
+    ) -> Option<WorkspaceEdit> {
+        let uri = &data.uri;
+
+        // Parse the extra data to recover the diagnostic line.
+        let diag_line = data.extra.get("diagnostic_line")?.as_u64()? as usize;
+
+        // Find the insertion point for the attribute.
+        let insertion = find_method_insertion_point(content, diag_line)?;
+
+        // If Override was added since the action was offered, bail out.
+        if already_has_override(content, &insertion) {
+            return None;
+        }
+
+        // Look up the use_map and namespace_map for the URI.
+        let file_use_map: HashMap<String, String> =
+            self.use_map.read().get(uri).cloned().unwrap_or_default();
+        let file_namespace: Option<String> = self.namespace_map.read().get(uri).cloned().flatten();
+
+        // Decide whether to use the short form `#[Override]` with a
+        // `use Override;` import, or the FQN `#[\Override]`.
+        //
+        // `Override` lives in the global namespace.  When the file
+        // declares a namespace we need a `use Override;` import
+        // (just like any other global class).  When the file has no
+        // namespace, no import is needed.
+        let already_imported = file_use_map.iter().any(|(alias, fqn)| {
+            alias.eq_ignore_ascii_case("Override") && fqn.eq_ignore_ascii_case("Override")
+        });
+
+        let same_namespace = file_namespace.is_none();
+
+        let needs_import = !already_imported && !same_namespace;
+
+        // Check for import conflicts (e.g. a different class named
+        // `Override` is already imported).
+        let use_fqn = needs_import && use_import_conflicts("Override", &file_use_map);
+
+        let attr_text = if use_fqn {
+            "#[\\Override]"
+        } else {
+            "#[Override]"
+        };
+
+        // Build the text edit: insert `#[Override]\n<indent>` at the
+        // start of the method declaration line (before any existing
+        // attributes or modifiers).
+        let insert_text = format!("{}{}\n", insertion.indent, attr_text);
+
+        let insert_pos = byte_offset_to_lsp(content, insertion.insert_offset);
+
+        let mut edits = vec![TextEdit {
+            range: Range {
+                start: insert_pos,
+                end: insert_pos,
+            },
+            new_text: insert_text,
+        }];
+
+        // Add `use Override;` import when needed and possible.
+        if needs_import && !use_fqn {
+            let use_block = analyze_use_block(content);
+            if let Some(import_edits) = build_use_edit("Override", &use_block, &file_namespace) {
+                edits.extend(import_edits);
+            }
+        }
+
+        let doc_uri: Url = uri.parse().ok()?;
+        let mut changes = HashMap::new();
+        changes.insert(doc_uri, edits);
+
+        Some(WorkspaceEdit {
+            changes: Some(changes),
+            document_changes: None,
+            change_annotations: None,
+        })
     }
 }
 
@@ -654,6 +695,10 @@ class Child extends Base {
 }
 "#;
         backend.update_ast(uri, content);
+        backend
+            .open_files
+            .write()
+            .insert(uri.to_string(), std::sync::Arc::new(content.to_string()));
 
         let diag = Diagnostic {
             range: Range {
@@ -712,9 +757,19 @@ class Child extends Base {
             action.title
         );
 
-        // Verify the edit inserts `#[Override]` before the method.
-        // No namespace → no import needed, just the attribute edit.
-        let edit = action.edit.as_ref().unwrap();
+        // Phase 1: edit should be None, data should be Some.
+        assert!(action.edit.is_none(), "Phase 1 should not compute the edit");
+        assert!(
+            action.data.is_some(),
+            "Phase 1 should set data for deferred resolve"
+        );
+
+        // Phase 2: resolve the action to get the edit.
+        let (resolved, _republish) = backend.resolve_code_action(action.clone());
+        let edit = resolved
+            .edit
+            .as_ref()
+            .expect("resolve should produce an edit");
         let changes = edit.changes.as_ref().unwrap();
         let edits: Vec<&TextEdit> = changes.values().flat_map(|v| v.iter()).collect();
         assert_eq!(edits.len(), 1);
@@ -858,6 +913,10 @@ class Child extends Base {
 }
 "#;
         backend.update_ast(uri, content);
+        backend
+            .open_files
+            .write()
+            .insert(uri.to_string(), std::sync::Arc::new(content.to_string()));
 
         let diag = Diagnostic {
             range: Range {
@@ -905,7 +964,12 @@ class Child extends Base {
             })
             .expect("should offer action");
 
-        let edit = action.edit.as_ref().unwrap();
+        // Phase 1: no edit yet.
+        assert!(action.edit.is_none(), "Phase 1 should not have edit");
+
+        // Phase 2: resolve to get the edit.
+        let (resolved, _) = backend.resolve_code_action(action.clone());
+        let edit = resolved.edit.as_ref().expect("resolve should produce edit");
         let changes = edit.changes.as_ref().unwrap();
         let edits: Vec<&TextEdit> = changes.values().flat_map(|v| v.iter()).collect();
 
@@ -931,6 +995,10 @@ class Child extends Base {
 }
 "#;
         backend.update_ast(uri, content);
+        backend
+            .open_files
+            .write()
+            .insert(uri.to_string(), std::sync::Arc::new(content.to_string()));
 
         let diag = Diagnostic {
             range: Range {
@@ -978,7 +1046,12 @@ class Child extends Base {
             })
             .expect("should offer action");
 
-        let edit = action.edit.as_ref().unwrap();
+        // Phase 1: no edit yet.
+        assert!(action.edit.is_none(), "Phase 1 should not have edit");
+
+        // Phase 2: resolve to get the edit.
+        let (resolved, _) = backend.resolve_code_action(action.clone());
+        let edit = resolved.edit.as_ref().expect("resolve should produce edit");
         let changes = edit.changes.as_ref().unwrap();
         let edits: Vec<&TextEdit> = changes.values().flat_map(|v| v.iter()).collect();
 
@@ -1008,6 +1081,10 @@ class Child extends Base {
 }
 "#;
         backend.update_ast(uri, content);
+        backend
+            .open_files
+            .write()
+            .insert(uri.to_string(), std::sync::Arc::new(content.to_string()));
 
         let diag = Diagnostic {
             range: Range {
@@ -1055,7 +1132,12 @@ class Child extends Base {
             })
             .expect("should offer action");
 
-        let edit = action.edit.as_ref().unwrap();
+        // Phase 1: no edit yet.
+        assert!(action.edit.is_none(), "Phase 1 should not have edit");
+
+        // Phase 2: resolve to get the edit.
+        let (resolved, _) = backend.resolve_code_action(action.clone());
+        let edit = resolved.edit.as_ref().expect("resolve should produce edit");
         let changes = edit.changes.as_ref().unwrap();
         let edits: Vec<&TextEdit> = changes.values().flat_map(|v| v.iter()).collect();
 
@@ -1082,6 +1164,10 @@ class Child extends Base {
 }
 "#;
         backend.update_ast(uri, content);
+        backend
+            .open_files
+            .write()
+            .insert(uri.to_string(), std::sync::Arc::new(content.to_string()));
 
         let diag = Diagnostic {
             range: Range {
@@ -1129,7 +1215,12 @@ class Child extends Base {
             })
             .expect("should offer action");
 
-        let edit = action.edit.as_ref().unwrap();
+        // Phase 1: no edit yet.
+        assert!(action.edit.is_none(), "Phase 1 should not have edit");
+
+        // Phase 2: resolve to get the edit.
+        let (resolved, _) = backend.resolve_code_action(action.clone());
+        let edit = resolved.edit.as_ref().expect("resolve should produce edit");
         let changes = edit.changes.as_ref().unwrap();
         let edits: Vec<&TextEdit> = changes.values().flat_map(|v| v.iter()).collect();
 

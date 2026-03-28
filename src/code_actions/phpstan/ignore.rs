@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use tower_lsp::lsp_types::*;
 
 use crate::Backend;
+use crate::code_actions::{CodeActionData, make_code_action_data};
 
 /// PHPStan identifier prefix for unmatched ignore errors.
 ///
@@ -35,15 +36,10 @@ impl Backend {
     pub(crate) fn collect_phpstan_ignore_actions(
         &self,
         uri: &str,
-        content: &str,
+        _content: &str,
         params: &CodeActionParams,
         out: &mut Vec<CodeActionOrCommand>,
     ) {
-        let doc_uri: Url = match uri.parse() {
-            Ok(u) => u,
-            Err(_) => return,
-        };
-
         // Look at the diagnostics attached to this code action request
         // and also at all cached PHPStan diagnostics for the file.
         let phpstan_diags: Vec<Diagnostic> = {
@@ -94,29 +90,25 @@ impl Backend {
         }
 
         for ((line, identifier), diags) in &ignore_groups {
-            let line_text = match content.lines().nth(*line as usize) {
-                Some(l) => l,
-                None => continue,
-            };
-
-            let edit = build_add_ignore_edit(content, *line, line_text, identifier);
-
-            let mut changes = HashMap::new();
-            changes.insert(doc_uri.clone(), vec![edit]);
+            let extra = serde_json::json!({
+                "identifier": identifier,
+                "line": line,
+            });
 
             out.push(CodeActionOrCommand::CodeAction(CodeAction {
                 title: format!("Ignore PHPStan error ({})", identifier),
                 kind: Some(CodeActionKind::QUICKFIX),
                 diagnostics: Some(diags.clone()),
-                edit: Some(WorkspaceEdit {
-                    changes: Some(changes),
-                    document_changes: None,
-                    change_annotations: None,
-                }),
+                edit: None,
                 command: None,
                 is_preferred: None,
                 disabled: None,
-                data: None,
+                data: Some(make_code_action_data(
+                    "phpstan.addIgnore",
+                    uri,
+                    &params.range,
+                    extra,
+                )),
             }));
         }
 
@@ -140,27 +132,11 @@ impl Backend {
             // PHPStan message format:
             //   "No error with identifier <id> is reported on line <N>."
             let ignore_id = parse_unmatched_identifier(&diag.message);
-            let ignore_line = parse_unmatched_line(&diag.message);
-
-            // The actual @phpstan-ignore comment can be:
-            //   - On the diagnostic's own line (inline comment)
-            //   - On the line the message references (same-line style)
-            //   - On the line before the referenced line (previous-line style)
-            // We pass both the diagnostic line and the message line so
-            // the search covers all three locations.
-            let diag_line = diag.range.start.line;
-            let message_line = ignore_line.unwrap_or(diag_line);
-
-            let edit =
-                build_remove_ignore_edit(content, message_line, diag_line, ignore_id.as_deref());
-
-            let edit = match edit {
-                Some(e) => e,
-                None => continue,
-            };
-
-            let mut changes = HashMap::new();
-            changes.insert(doc_uri.clone(), vec![edit]);
+            let extra = serde_json::json!({
+                "diagnostic_message": diag.message,
+                "diagnostic_line": diag.range.start.line,
+                "diagnostic_code": identifier,
+            });
 
             out.push(CodeActionOrCommand::CodeAction(CodeAction {
                 title: match ignore_id {
@@ -169,17 +145,72 @@ impl Backend {
                 },
                 kind: Some(CodeActionKind::QUICKFIX),
                 diagnostics: Some(vec![diag.clone()]),
-                edit: Some(WorkspaceEdit {
-                    changes: Some(changes),
-                    document_changes: None,
-                    change_annotations: None,
-                }),
+                edit: None,
                 command: None,
                 is_preferred: Some(true),
                 disabled: None,
-                data: None,
+                data: Some(make_code_action_data(
+                    "phpstan.removeIgnore",
+                    uri,
+                    &params.range,
+                    extra,
+                )),
             }));
         }
+    }
+
+    /// Resolve a deferred "Add @phpstan-ignore" code action by computing
+    /// the workspace edit.
+    pub(crate) fn resolve_add_ignore(
+        &self,
+        data: &CodeActionData,
+        content: &str,
+    ) -> Option<WorkspaceEdit> {
+        let identifier = data.extra.get("identifier")?.as_str()?;
+        let line = data.extra.get("line")?.as_u64()? as u32;
+
+        let line_text = content.lines().nth(line as usize)?;
+
+        let edit = build_add_ignore_edit(content, line, line_text, identifier);
+
+        let doc_uri: Url = data.uri.parse().ok()?;
+        let mut changes = HashMap::new();
+        changes.insert(doc_uri, vec![edit]);
+
+        Some(WorkspaceEdit {
+            changes: Some(changes),
+            document_changes: None,
+            change_annotations: None,
+        })
+    }
+
+    /// Resolve a deferred "Remove unnecessary @phpstan-ignore" code action
+    /// by computing the workspace edit.
+    pub(crate) fn resolve_remove_ignore(
+        &self,
+        data: &CodeActionData,
+        content: &str,
+    ) -> Option<WorkspaceEdit> {
+        let diagnostic_message = data.extra.get("diagnostic_message")?.as_str()?;
+        let diagnostic_line = data.extra.get("diagnostic_line")?.as_u64()? as u32;
+
+        let ignore_id = parse_unmatched_identifier(diagnostic_message);
+        let ignore_line = parse_unmatched_line(diagnostic_message);
+
+        let message_line = ignore_line.unwrap_or(diagnostic_line);
+
+        let edit =
+            build_remove_ignore_edit(content, message_line, diagnostic_line, ignore_id.as_deref())?;
+
+        let doc_uri: Url = data.uri.parse().ok()?;
+        let mut changes = HashMap::new();
+        changes.insert(doc_uri, vec![edit]);
+
+        Some(WorkspaceEdit {
+            changes: Some(changes),
+            document_changes: None,
+            change_annotations: None,
+        })
     }
 }
 

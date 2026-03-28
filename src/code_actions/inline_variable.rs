@@ -25,6 +25,7 @@ use mago_syntax::ast::*;
 use tower_lsp::lsp_types::*;
 
 use crate::Backend;
+use crate::code_actions::{CodeActionData, make_code_action_data};
 use crate::parser::with_parsed_program;
 use crate::scope_collector::{AccessKind, ScopeMap, collect_function_scope, collect_scope};
 use crate::util::{offset_to_position, position_to_byte_offset};
@@ -591,6 +592,57 @@ fn try_build_scope_from_statement(stmt: &Statement<'_>, offset: u32) -> Option<S
 /// Extends the statement span to include leading whitespace and the
 /// trailing newline (if present), so that removing the statement doesn't
 /// leave a blank line.
+/// Check whether inlining the given assignment is safe, based on scope
+/// analysis.
+///
+/// A simple assignment `$var = expr;` completely overwrites the variable,
+/// so earlier writes and read-writes (e.g. `$arr[] = …` building up an
+/// array) are irrelevant to the inline.  Only occurrences **after** the
+/// assignment matter:
+///
+/// - There must be at least one read after the assignment.
+/// - There must be no writes or read-writes after the assignment (which
+///   would mean the variable is reassigned or mutated later).
+/// - When the RHS has side effects, there must be at most one read.
+fn is_inline_safe(info: &AssignmentInfo, content: &str, cursor_offset: u32) -> bool {
+    let scope_map = build_scope_map(content, cursor_offset);
+    let occurrences = scope_map.all_occurrences(&info.var_name, info.var_offset);
+
+    if occurrences.is_empty() {
+        return false;
+    }
+
+    // Only consider occurrences after the assignment statement.
+    // The RHS may read the variable (e.g. `$x = foo($x)`), but that
+    // read consumes the *old* value and is part of the statement being
+    // deleted, so it must not count as a post-assignment read.
+    let after_stmt = occurrences
+        .iter()
+        .filter(|(offset, _)| (*offset as usize) >= info.stmt_end);
+
+    let read_count = after_stmt
+        .clone()
+        .filter(|(_, kind)| matches!(kind, AccessKind::Read))
+        .count();
+    let write_count = after_stmt
+        .clone()
+        .filter(|(_, kind)| matches!(kind, AccessKind::Write))
+        .count();
+    let read_write_count = after_stmt
+        .filter(|(_, kind)| matches!(kind, AccessKind::ReadWrite))
+        .count();
+
+    if read_count == 0 || write_count > 0 || read_write_count > 0 {
+        return false;
+    }
+
+    if info.has_side_effects && read_count > 1 {
+        return false;
+    }
+
+    true
+}
+
 fn deletion_range(content: &str, stmt_start: usize, stmt_end: usize) -> (usize, usize) {
     // Extend backward to the start of the line (include leading whitespace).
     let line_start = content[..stmt_start]
@@ -629,6 +681,10 @@ impl Backend {
     /// This action is offered when the cursor is on a simple variable
     /// assignment statement (`$var = expr;`).  It replaces every read of
     /// the variable with the RHS expression and deletes the assignment.
+    ///
+    /// Phase 1 only parses the AST to verify the cursor is on an
+    /// assignment.  The expensive scope analysis and safety checks are
+    /// deferred to [`resolve_inline_variable`] (Phase 2).
     pub(crate) fn collect_inline_variable_actions(
         &self,
         uri: &str,
@@ -639,6 +695,8 @@ impl Backend {
         let cursor_offset = position_to_byte_offset(content, params.range.start) as u32;
 
         // ── 1. Find the assignment at the cursor ────────────────────
+        // If the cursor is not on a simple `$var = expr;` assignment,
+        // no action is offered.
         let info = with_parsed_program(content, "inline_variable", |program, content| {
             find_assignment_at_cursor(program.statements.as_slice(), cursor_offset, content)
         });
@@ -648,57 +706,92 @@ impl Backend {
             None => return,
         };
 
+        // ── 2. Scope analysis and safety checks ─────────────────────
+        // Run the same checks that Phase 2 uses so the action is only
+        // offered when it can actually be applied.  The parse is cached
+        // by `with_parsed_program`, so there is no extra parse cost.
+        if !is_inline_safe(&info, content, cursor_offset) {
+            return;
+        }
+
+        out.push(CodeActionOrCommand::CodeAction(CodeAction {
+            title: format!("Inline variable {}", info.var_name),
+            kind: Some(CodeActionKind::REFACTOR_INLINE),
+            diagnostics: None,
+            edit: None,
+            command: None,
+            is_preferred: Some(false),
+            disabled: None,
+            data: Some(make_code_action_data(
+                "refactor.inlineVariable",
+                uri,
+                &params.range,
+                serde_json::json!({}),
+            )),
+        }));
+    }
+
+    /// Resolve a deferred "Inline Variable" code action.
+    ///
+    /// Re-runs the full analysis using the cursor range from `data` to
+    /// find the assignment, build the scope, locate all usages, and
+    /// construct the workspace edit with deletion + replacements.
+    ///
+    /// The safety checks are also performed in Phase 1 (so the action
+    /// is not offered when unsafe), but they are repeated here because
+    /// the file content may have changed between phases.
+    pub(crate) fn resolve_inline_variable(
+        &self,
+        data: &CodeActionData,
+        content: &str,
+    ) -> Option<WorkspaceEdit> {
+        let cursor_offset = position_to_byte_offset(content, data.range.start) as u32;
+
+        // ── 1. Find the assignment at the cursor ────────────────────
+        let info = with_parsed_program(content, "inline_variable", |program, content| {
+            find_assignment_at_cursor(program.statements.as_slice(), cursor_offset, content)
+        })?;
+
         // ── 2. Build scope map and check safety ─────────────────────
         let scope_map = build_scope_map(content, cursor_offset);
         let occurrences = scope_map.all_occurrences(&info.var_name, info.var_offset);
 
         if occurrences.is_empty() {
-            return;
+            return None;
         }
 
-        // Count writes and reads.
-        let write_count = occurrences
+        // Only consider occurrences after the assignment statement.
+        let after_stmt = occurrences
             .iter()
-            .filter(|(_, kind)| matches!(kind, AccessKind::Write))
-            .count();
-        let read_count = occurrences
-            .iter()
+            .filter(|(offset, _)| (*offset as usize) >= info.stmt_end);
+
+        let read_count = after_stmt
+            .clone()
             .filter(|(_, kind)| matches!(kind, AccessKind::Read))
             .count();
-        let read_write_count = occurrences
-            .iter()
+        let write_count = after_stmt
+            .clone()
+            .filter(|(_, kind)| matches!(kind, AccessKind::Write))
+            .count();
+        let read_write_count = after_stmt
             .filter(|(_, kind)| matches!(kind, AccessKind::ReadWrite))
             .count();
 
-        // Safety check 1: exactly one write (the assignment we're inlining).
-        if write_count != 1 {
-            return;
+        if read_count == 0 || write_count > 0 || read_write_count > 0 {
+            return None;
         }
 
-        // Compound assignments (+=, etc.) or unset/increment references
-        // make inlining unsafe.
-        if read_write_count > 0 {
-            return;
-        }
-
-        // Must have at least one read to inline into.
-        if read_count == 0 {
-            return;
-        }
-
-        // Safety check 2: if the RHS has side effects and there are
-        // multiple reads, reject (would duplicate side effects).
         if info.has_side_effects && read_count > 1 {
-            return;
+            return None;
         }
 
         // ── 3. Extract the RHS text ─────────────────────────────────
         let rhs_text = &content[info.rhs_start..info.rhs_end];
 
         // ── 4. Build the workspace edit ─────────────────────────────
-        let doc_uri: Url = match uri.parse() {
+        let doc_uri: Url = match data.uri.parse() {
             Ok(u) => u,
-            Err(_) => return,
+            Err(_) => return None,
         };
 
         let mut edits: Vec<TextEdit> = Vec::new();
@@ -724,6 +817,13 @@ impl Backend {
 
         for (offset, kind) in &occurrences {
             if !matches!(kind, AccessKind::Read) {
+                continue;
+            }
+            // Only replace reads after the assignment statement.
+            // Reads within the RHS (e.g. `$badges` in
+            // `$badges = self::computeBadges($model, $badges)`)
+            // must not be touched.
+            if (*offset as usize) < info.stmt_end {
                 continue;
             }
             let start = *offset as usize;
@@ -757,22 +857,11 @@ impl Backend {
         let mut changes = HashMap::new();
         changes.insert(doc_uri, edits);
 
-        let title = format!("Inline variable {}", info.var_name);
-
-        out.push(CodeActionOrCommand::CodeAction(CodeAction {
-            title,
-            kind: Some(CodeActionKind::REFACTOR_INLINE),
-            diagnostics: None,
-            edit: Some(WorkspaceEdit {
-                changes: Some(changes),
-                document_changes: None,
-                change_annotations: None,
-            }),
-            command: None,
-            is_preferred: Some(false),
-            disabled: None,
-            data: None,
-        }));
+        Some(WorkspaceEdit {
+            changes: Some(changes),
+            document_changes: None,
+            change_annotations: None,
+        })
     }
 }
 
@@ -789,11 +878,12 @@ mod tests {
         let marker_pos = php.find(marker)?;
         let content = php.replace(marker, "");
 
+        let uri = "file:///test.php";
         let cursor_offset = marker_pos;
         let position = offset_to_position(&content, cursor_offset);
         let params = CodeActionParams {
             text_document: TextDocumentIdentifier {
-                uri: Url::parse("file:///test.php").unwrap(),
+                uri: Url::parse(uri).unwrap(),
             },
             range: Range {
                 start: position,
@@ -813,27 +903,34 @@ mod tests {
         };
 
         let backend = Backend::new_test();
+        // Store file content so resolve_code_action can retrieve it.
+        backend
+            .open_files
+            .write()
+            .insert(uri.to_string(), std::sync::Arc::new(content.clone()));
+
         let mut actions = Vec::new();
-        backend.collect_inline_variable_actions(
-            "file:///test.php",
-            &content,
-            &params,
-            &mut actions,
-        );
+        backend.collect_inline_variable_actions(uri, &content, &params, &mut actions);
 
         if actions.is_empty() {
             return None;
         }
 
         let action = match &actions[0] {
-            CodeActionOrCommand::CodeAction(a) => a,
+            CodeActionOrCommand::CodeAction(a) => a.clone(),
             _ => return None,
         };
 
-        let edit = action.edit.as_ref()?;
+        // Phase 1 should have data but no edit.
+        assert!(action.edit.is_none(), "Phase 1 should not compute edits");
+        assert!(action.data.is_some(), "Phase 1 should attach resolve data");
+
+        // Phase 2: resolve the action to get the workspace edit.
+        let (resolved, _) = backend.resolve_code_action(action);
+        let edit = resolved.edit.as_ref()?;
         let changes = edit.changes.as_ref()?;
-        let uri = Url::parse("file:///test.php").unwrap();
-        let edits = changes.get(&uri)?;
+        let parsed_uri = Url::parse(uri).unwrap();
+        let edits = changes.get(&parsed_uri)?;
         Some(edits.clone())
     }
 
@@ -1070,9 +1167,10 @@ function foo() {
         let content = php.replace("/*|*/", "");
         let marker_pos = php.find("/*|*/").unwrap();
         let position = offset_to_position(&content, marker_pos);
+        let uri = "file:///test.php";
         let params = CodeActionParams {
             text_document: TextDocumentIdentifier {
-                uri: Url::parse("file:///test.php").unwrap(),
+                uri: Url::parse(uri).unwrap(),
             },
             range: Range {
                 start: position,
@@ -1093,17 +1191,15 @@ function foo() {
 
         let backend = Backend::new_test();
         let mut actions = Vec::new();
-        backend.collect_inline_variable_actions(
-            "file:///test.php",
-            &content,
-            &params,
-            &mut actions,
-        );
+        backend.collect_inline_variable_actions(uri, &content, &params, &mut actions);
 
         assert!(!actions.is_empty(), "action should be offered");
         match &actions[0] {
             CodeActionOrCommand::CodeAction(a) => {
                 assert_eq!(a.kind, Some(CodeActionKind::REFACTOR_INLINE));
+                // Phase 1: no edit, has data.
+                assert!(a.edit.is_none(), "Phase 1 should not compute edits");
+                assert!(a.data.is_some(), "Phase 1 should attach resolve data");
             }
             _ => panic!("expected CodeAction"),
         }
@@ -1122,9 +1218,10 @@ function foo() {
         let content = php.replace("/*|*/", "");
         let marker_pos = php.find("/*|*/").unwrap();
         let position = offset_to_position(&content, marker_pos);
+        let uri = "file:///test.php";
         let params = CodeActionParams {
             text_document: TextDocumentIdentifier {
-                uri: Url::parse("file:///test.php").unwrap(),
+                uri: Url::parse(uri).unwrap(),
             },
             range: Range {
                 start: position,
@@ -1145,12 +1242,7 @@ function foo() {
 
         let backend = Backend::new_test();
         let mut actions = Vec::new();
-        backend.collect_inline_variable_actions(
-            "file:///test.php",
-            &content,
-            &params,
-            &mut actions,
-        );
+        backend.collect_inline_variable_actions(uri, &content, &params, &mut actions);
 
         assert!(!actions.is_empty());
         match &actions[0] {
@@ -1315,6 +1407,85 @@ class OrderProcessor {
         assert!(
             run_inline(php).is_some(),
             "should offer inline for variable read inside string interpolation"
+        );
+    }
+
+    // ── Reassigned variable after earlier writes/read-writes ────────
+
+    #[test]
+    fn inline_reassigned_variable_after_array_appends() {
+        // The variable has earlier writes ($badges = []) and read-writes
+        // ($badges[] = ...), but the cursor is on a later reassignment
+        // that overwrites the variable.  After that reassignment there is
+        // only a single read (return $badges), so the inline is safe:
+        // `return self::computeBadges($model, $badges);`
+        let php = r#"<?php
+class BadgeHelper {
+    public static function getBadges($model, $lang): array {
+        $badges = [];
+
+        if ($model->isDerma()) {
+            $badges[] = new BadgeViewModel('derma');
+        }
+
+        if ($model->isProHairCare()) {
+            $badges[] = new BadgeViewModel('pro-hair');
+        }
+
+        /*|*/$badges = self::computeBadges($model, $badges);
+
+        return $badges;
+    }
+}
+"#;
+        let content_without_marker = php.replace("/*|*/", "");
+        let edits = run_inline(php).expect("action should be offered for reassigned variable");
+        let result = apply_edits(&content_without_marker, &edits);
+        assert!(
+            !result.contains("$badges = self::computeBadges"),
+            "assignment should be removed:\n{}",
+            result
+        );
+        assert!(
+            result.contains("return self::computeBadges($model, $badges);"),
+            "return should inline the RHS:\n{}",
+            result
+        );
+    }
+
+    #[test]
+    fn reject_reassigned_variable_with_later_mutation() {
+        // After the reassignment there is a read-write ($badges[] = ...),
+        // so inlining is NOT safe.
+        let php = r#"<?php
+function getBadges($model) {
+    $badges = [];
+    /*|*/$badges = self::computeBadges($model, $badges);
+    $badges[] = new BadgeViewModel('extra');
+    return $badges;
+}
+"#;
+        assert!(
+            run_inline(php).is_none(),
+            "should reject: variable has read-write access after the assignment"
+        );
+    }
+
+    #[test]
+    fn reject_reassigned_variable_with_later_overwrite() {
+        // After the reassignment there is another write, so inlining
+        // would lose that overwrite.
+        let php = r#"<?php
+function getBadges($model) {
+    $badges = [];
+    /*|*/$badges = self::computeBadges($model, $badges);
+    $badges = array_unique($badges);
+    return $badges;
+}
+"#;
+        assert!(
+            run_inline(php).is_none(),
+            "should reject: variable has another write after the assignment"
         );
     }
 }

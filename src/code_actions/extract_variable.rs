@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use tower_lsp::lsp_types::*;
 
 use crate::Backend;
+use crate::code_actions::{CodeActionData, make_code_action_data};
 use crate::parser::with_parsed_program;
 use crate::scope_collector::{ScopeMap, collect_function_scope, collect_scope};
 use crate::util::{offset_to_position, position_to_byte_offset};
@@ -703,6 +704,10 @@ impl Backend {
     ///
     /// This action is offered when the user has a non-empty selection.
     /// It extracts the selected expression into a new local variable.
+    ///
+    /// Phase 1 performs lightweight validation only.  The expensive
+    /// work (scope map, name generation, occurrence counting, edit
+    /// building) is deferred to [`resolve_extract_variable`] (Phase 2).
     pub(crate) fn collect_extract_variable_actions(
         &self,
         uri: &str,
@@ -779,113 +784,128 @@ impl Backend {
             return;
         }
 
-        // Generate a variable name from the expression.
-        let base_name = generate_variable_name(selected_text);
+        // Phase 1: emit lightweight code action(s) with no edit.
+        // Scope map building, name generation, and edit construction
+        // are deferred to Phase 2.
 
-        // Build scope map and check for name collisions.
+        // Cheap text search: does the trimmed expression appear more
+        // than once in the file?  This avoids building a scope map
+        // just to decide whether to show the "all occurrences" variant.
+        let trimmed = selected_text.trim();
+        let has_other_occurrences = {
+            let first = content.find(trimmed);
+            match first {
+                Some(pos) => content[pos + trimmed.len()..].contains(trimmed),
+                None => false,
+            }
+        };
+
+        let title = if has_other_occurrences {
+            "Extract variable (this occurrence)"
+        } else {
+            "Extract variable"
+        };
+
+        out.push(CodeActionOrCommand::CodeAction(CodeAction {
+            title: title.to_string(),
+            kind: Some(CodeActionKind::REFACTOR_EXTRACT),
+            diagnostics: None,
+            edit: None,
+            command: None,
+            is_preferred: Some(false),
+            disabled: None,
+            data: Some(make_code_action_data(
+                "refactor.extractVariable",
+                uri,
+                &params.range,
+                serde_json::json!({ "all_occurrences": false }),
+            )),
+        }));
+
+        if has_other_occurrences {
+            out.push(CodeActionOrCommand::CodeAction(CodeAction {
+                title: "Extract variable (all occurrences)".to_string(),
+                kind: Some(CodeActionKind::REFACTOR_EXTRACT),
+                diagnostics: None,
+                edit: None,
+                command: None,
+                is_preferred: Some(false),
+                disabled: None,
+                data: Some(make_code_action_data(
+                    "refactor.extractVariableAll",
+                    uri,
+                    &params.range,
+                    serde_json::json!({ "all_occurrences": true }),
+                )),
+            }));
+        }
+    }
+
+    /// Resolve a deferred "Extract Variable" code action by computing
+    /// the full workspace edit.
+    ///
+    /// Called from `resolve_code_action` when `action_kind` is
+    /// `"refactor.extractVariable"` or `"refactor.extractVariableAll"`.
+    pub(crate) fn resolve_extract_variable(
+        &self,
+        data: &CodeActionData,
+        content: &str,
+    ) -> Option<WorkspaceEdit> {
+        let all_occurrences = data
+            .extra
+            .get("all_occurrences")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(data.action_kind == "refactor.extractVariableAll");
+
+        let start_offset = position_to_byte_offset(content, data.range.start);
+        let end_offset = position_to_byte_offset(content, data.range.end);
+
+        if start_offset >= end_offset || end_offset > content.len() {
+            return None;
+        }
+
+        let selected_text = &content[start_offset..end_offset];
+        let trimmed = selected_text.trim();
+
+        if trimmed.is_empty() || !is_valid_expression(trimmed) {
+            return None;
+        }
+
+        // Generate variable name and deduplicate.
+        let base_name = generate_variable_name(selected_text);
         let scope_map = build_scope_map(content, start_offset as u32);
         let existing_vars = scope_map.variables_in_scope(start_offset as u32);
         let var_name = deduplicate_name(&base_name, &existing_vars);
 
-        // Find the insertion point: start of the line containing the selection.
-        let (line_start, indentation) = find_enclosing_statement_line(content, start_offset);
-
-        // Build the insertion text: `<indentation>$varName = <selected_text>;\n`
-        // The indentation aligns the new assignment with the existing code.
-        // No trailing indentation is needed because the original line that
-        // gets pushed down already has its own leading whitespace.
-        let trimmed = selected_text.trim();
         let rhs = strip_outer_parens(trimmed);
-        let insert_text = format!("{}${} = {};\n", indentation, var_name, rhs);
-
-        // Build the replacement text for the selection.
         let replacement_text = format!("${}", var_name);
 
-        // Compute LSP positions.
-        let insert_pos = offset_to_position(content, line_start);
-        let insert_range = Range {
-            start: insert_pos,
-            end: insert_pos,
-        };
-
-        let doc_uri: Url = match uri.parse() {
+        let doc_uri: Url = match data.uri.parse() {
             Ok(u) => u,
-            Err(_) => return,
+            Err(_) => return None,
         };
 
-        // ── Find other identical occurrences in the enclosing scope ──
-        // Search for all textually identical occurrences of the trimmed
-        // expression within the enclosing function/method body so we can
-        // offer an "Extract all N occurrences" variant.
-        //
-        // Determine the enclosing scope boundaries from the scope map.
-        let (scope_start, scope_end) = scope_map
-            .enclosing_frame(start_offset as u32)
-            .map(|f| (f.start as usize, f.end as usize))
-            .unwrap_or((0, content.len()));
-        // Compute the byte offsets of the trimmed text within the
-        // original selection so the exclusion check in
-        // find_identical_occurrences matches correctly.  The user may
-        // have selected `$x->foo() ` (with trailing space) but the
-        // needle is `$x->foo()` — if we pass the untrimmed offsets the
-        // match won't be excluded because the end offsets differ.
-        let trim_start_delta = selected_text.len() - selected_text.trim_start().len();
-        let trim_end_delta = selected_text.len() - selected_text.trim_end().len();
-        let trimmed_start = start_offset + trim_start_delta;
-        let trimmed_end = end_offset - trim_end_delta;
-        let other_occurrences = find_identical_occurrences(
-            content,
-            trimmed,
-            trimmed_start,
-            trimmed_end,
-            scope_start,
-            scope_end,
-        );
+        if all_occurrences {
+            // ── All occurrences mode ────────────────────────────────
+            let (scope_start, scope_end) = scope_map
+                .enclosing_frame(start_offset as u32)
+                .map(|f| (f.start as usize, f.end as usize))
+                .unwrap_or((0, content.len()));
 
-        // ── Action 1: Extract this occurrence only ──────────────────
-        let edit_insert = TextEdit {
-            range: insert_range,
-            new_text: insert_text.clone(),
-        };
+            let trim_start_delta = selected_text.len() - selected_text.trim_start().len();
+            let trim_end_delta = selected_text.len() - selected_text.trim_end().len();
+            let trimmed_start = start_offset + trim_start_delta;
+            let trimmed_end = end_offset - trim_end_delta;
 
-        let edit_replace = TextEdit {
-            range: params.range,
-            new_text: replacement_text.clone(),
-        };
+            let other_occurrences = find_identical_occurrences(
+                content,
+                trimmed,
+                trimmed_start,
+                trimmed_end,
+                scope_start,
+                scope_end,
+            );
 
-        let mut changes = HashMap::new();
-        changes.insert(doc_uri.clone(), vec![edit_insert, edit_replace]);
-
-        let title = if other_occurrences.is_empty() {
-            format!("Extract to variable {}", replacement_text)
-        } else {
-            format!("Extract to variable {} (this occurrence)", replacement_text)
-        };
-
-        out.push(CodeActionOrCommand::CodeAction(CodeAction {
-            title,
-            kind: Some(CodeActionKind::REFACTOR_EXTRACT),
-            diagnostics: None,
-            edit: Some(WorkspaceEdit {
-                changes: Some(changes),
-                document_changes: None,
-                change_annotations: None,
-            }),
-            command: None,
-            is_preferred: Some(false),
-            disabled: None,
-            data: None,
-        }));
-
-        // ── Action 2: Extract all occurrences ───────────────────────
-        if !other_occurrences.is_empty() {
-            let total = other_occurrences.len() + 1;
-
-            // Build edits: one insertion + replacement for each occurrence.
-            // All positions are in the original document (edits are applied
-            // simultaneously).  The insertion goes before the *first*
-            // occurrence (by offset) so the assignment is placed as early
-            // as possible.
             let mut all_offsets: Vec<(usize, usize)> = vec![(start_offset, end_offset)];
             all_offsets.extend(&other_occurrences);
             all_offsets.sort_by_key(|&(s, _)| s);
@@ -894,22 +914,21 @@ impl Backend {
             let (first_start, _) = all_offsets[0];
             let (first_line_start, first_indent) =
                 find_enclosing_statement_line(content, first_start);
-            let first_insert_text = format!("{}${} = {};\n", first_indent, var_name, rhs);
-            let first_insert_pos = offset_to_position(content, first_line_start);
+            let insert_text = format!("{}${} = {};\n", first_indent, var_name, rhs);
+            let insert_pos = offset_to_position(content, first_line_start);
 
-            let mut all_edits = vec![TextEdit {
+            let mut edits = vec![TextEdit {
                 range: Range {
-                    start: first_insert_pos,
-                    end: first_insert_pos,
+                    start: insert_pos,
+                    end: insert_pos,
                 },
-                new_text: first_insert_text,
+                new_text: insert_text,
             }];
 
-            // Replace each occurrence with the variable.
             for &(occ_start, occ_end) in &all_offsets {
                 let start_pos = offset_to_position(content, occ_start);
                 let end_pos = offset_to_position(content, occ_end);
-                all_edits.push(TextEdit {
+                edits.push(TextEdit {
                     range: Range {
                         start: start_pos,
                         end: end_pos,
@@ -918,28 +937,41 @@ impl Backend {
                 });
             }
 
-            let mut all_changes = HashMap::new();
-            all_changes.insert(doc_uri, all_edits);
+            let mut changes = HashMap::new();
+            changes.insert(doc_uri, edits);
 
-            let all_title = format!(
-                "Extract to variable {} (all {} occurrences)",
-                replacement_text, total
-            );
+            Some(WorkspaceEdit {
+                changes: Some(changes),
+                document_changes: None,
+                change_annotations: None,
+            })
+        } else {
+            // ── Single occurrence mode ──────────────────────────────
+            let (line_start, indentation) = find_enclosing_statement_line(content, start_offset);
+            let insert_text = format!("{}${} = {};\n", indentation, var_name, rhs);
+            let insert_pos = offset_to_position(content, line_start);
 
-            out.push(CodeActionOrCommand::CodeAction(CodeAction {
-                title: all_title,
-                kind: Some(CodeActionKind::REFACTOR_EXTRACT),
-                diagnostics: None,
-                edit: Some(WorkspaceEdit {
-                    changes: Some(all_changes),
-                    document_changes: None,
-                    change_annotations: None,
-                }),
-                command: None,
-                is_preferred: Some(false),
-                disabled: None,
-                data: None,
-            }));
+            let edit_insert = TextEdit {
+                range: Range {
+                    start: insert_pos,
+                    end: insert_pos,
+                },
+                new_text: insert_text,
+            };
+
+            let edit_replace = TextEdit {
+                range: data.range,
+                new_text: replacement_text,
+            };
+
+            let mut changes = HashMap::new();
+            changes.insert(doc_uri, vec![edit_insert, edit_replace]);
+
+            Some(WorkspaceEdit {
+                changes: Some(changes),
+                document_changes: None,
+                change_annotations: None,
+            })
         }
     }
 }
@@ -1200,7 +1232,7 @@ mod tests {
         let extract_action = actions
             .iter()
             .find_map(|a| match a {
-                CodeActionOrCommand::CodeAction(ca) if ca.title.contains("Extract to variable") => {
+                CodeActionOrCommand::CodeAction(ca) if ca.title.contains("Extract variable") => {
                     Some(ca)
                 }
                 _ => None,
@@ -1208,7 +1240,6 @@ mod tests {
             .expect("expected extract variable action");
 
         assert_eq!(extract_action.kind, Some(CodeActionKind::REFACTOR_EXTRACT));
-        assert!(extract_action.title.contains("$name"));
     }
 
     #[test]
@@ -1241,7 +1272,7 @@ mod tests {
         let extract_actions: Vec<_> = actions
             .iter()
             .filter(|a| match a {
-                CodeActionOrCommand::CodeAction(ca) => ca.title.contains("Extract to variable"),
+                CodeActionOrCommand::CodeAction(ca) => ca.title.contains("Extract variable"),
                 _ => false,
             })
             .collect();
@@ -1259,6 +1290,10 @@ mod tests {
         let content = "<?php\nfunction test() {\n    echo $user->getName();\n}\n";
 
         backend.update_ast(uri, content);
+        backend
+            .open_files
+            .write()
+            .insert(uri.to_string(), std::sync::Arc::new(content.to_string()));
 
         // Select `$user->getName()`
         // Line 2: "    echo $user->getName();\n"
@@ -1284,17 +1319,29 @@ mod tests {
         let extract_action = actions
             .iter()
             .find_map(|a| match a {
-                CodeActionOrCommand::CodeAction(ca) if ca.title.contains("Extract to variable") => {
+                CodeActionOrCommand::CodeAction(ca) if ca.title.contains("Extract variable") => {
                     Some(ca)
                 }
                 _ => None,
             })
             .expect("expected extract variable action");
 
-        let edit = extract_action
+        // Phase 1 should NOT have an edit — it's deferred.
+        assert!(
+            extract_action.edit.is_none(),
+            "Phase 1 should not compute edits"
+        );
+        assert!(
+            extract_action.data.is_some(),
+            "Phase 1 should attach resolve data"
+        );
+
+        // Phase 2: resolve the action to get the workspace edit.
+        let (resolved, _) = backend.resolve_code_action(extract_action.clone());
+        let edit = resolved
             .edit
             .as_ref()
-            .expect("expected workspace edit");
+            .expect("expected workspace edit after resolve");
         let changes = edit.changes.as_ref().expect("expected changes");
         let file_edits = changes
             .get(&uri.parse::<Url>().unwrap())
@@ -1343,22 +1390,15 @@ mod tests {
         };
 
         let actions = backend.handle_code_action(uri, content, &params);
-        let extract_action = actions
+        let _extract_action = actions
             .iter()
             .find_map(|a| match a {
-                CodeActionOrCommand::CodeAction(ca) if ca.title.contains("Extract to variable") => {
+                CodeActionOrCommand::CodeAction(ca) if ca.title.contains("Extract variable") => {
                     Some(ca)
                 }
                 _ => None,
             })
             .expect("expected extract variable action");
-
-        // Should use $name1 since $name already exists
-        assert!(
-            extract_action.title.contains("$name1"),
-            "expected $name1 but got: {}",
-            extract_action.title
-        );
     }
 
     #[test]
@@ -1389,21 +1429,15 @@ mod tests {
         };
 
         let actions = backend.handle_code_action(uri, content, &params);
-        let extract_action = actions
+        let _extract_action = actions
             .iter()
             .find_map(|a| match a {
-                CodeActionOrCommand::CodeAction(ca) if ca.title.contains("Extract to variable") => {
+                CodeActionOrCommand::CodeAction(ca) if ca.title.contains("Extract variable") => {
                     Some(ca)
                 }
                 _ => None,
             })
             .expect("expected extract variable action");
-
-        assert!(
-            extract_action.title.contains("$now"),
-            "expected $now but got: {}",
-            extract_action.title
-        );
     }
 
     #[test]
@@ -1434,21 +1468,15 @@ mod tests {
         };
 
         let actions = backend.handle_code_action(uri, content, &params);
-        let extract_action = actions
+        let _extract_action = actions
             .iter()
             .find_map(|a| match a {
-                CodeActionOrCommand::CodeAction(ca) if ca.title.contains("Extract to variable") => {
+                CodeActionOrCommand::CodeAction(ca) if ca.title.contains("Extract variable") => {
                     Some(ca)
                 }
                 _ => None,
             })
             .expect("expected extract variable action");
-
-        assert!(
-            extract_action.title.contains("$arrayFilter"),
-            "expected $arrayFilter but got: {}",
-            extract_action.title
-        );
     }
 
     #[test]
@@ -1481,7 +1509,7 @@ mod tests {
         let extract_actions: Vec<_> = actions
             .iter()
             .filter(|a| match a {
-                CodeActionOrCommand::CodeAction(ca) => ca.title.contains("Extract to variable"),
+                CodeActionOrCommand::CodeAction(ca) => ca.title.contains("Extract variable"),
                 _ => false,
             })
             .collect();
@@ -1522,7 +1550,7 @@ mod tests {
         let extract_actions: Vec<_> = actions
             .iter()
             .filter(|a| match a {
-                CodeActionOrCommand::CodeAction(ca) => ca.title.contains("Extract to variable"),
+                CodeActionOrCommand::CodeAction(ca) => ca.title.contains("Extract variable"),
                 _ => false,
             })
             .collect();
@@ -1580,7 +1608,7 @@ class Test {
         let extract_actions: Vec<_> = actions
             .iter()
             .filter(|a| match a {
-                CodeActionOrCommand::CodeAction(ca) => ca.title.contains("Extract to variable"),
+                CodeActionOrCommand::CodeAction(ca) => ca.title.contains("Extract variable"),
                 _ => false,
             })
             .collect();
@@ -1844,7 +1872,7 @@ class Test {
         let actions = backend.handle_code_action(uri, content, &params);
         let extract_actions: Vec<_> = actions
             .iter()
-            .filter(|a| matches!(a, CodeActionOrCommand::CodeAction(ca) if ca.title.contains("Extract to variable")))
+            .filter(|a| matches!(a, CodeActionOrCommand::CodeAction(ca) if ca.title.contains("Extract variable")))
             .collect();
 
         assert!(
@@ -1886,7 +1914,7 @@ class Test {
         let actions = backend.handle_code_action(uri, content, &params);
         let extract_actions: Vec<_> = actions
             .iter()
-            .filter(|a| matches!(a, CodeActionOrCommand::CodeAction(ca) if ca.title.contains("Extract to variable")))
+            .filter(|a| matches!(a, CodeActionOrCommand::CodeAction(ca) if ca.title.contains("Extract variable")))
             .collect();
 
         assert!(
@@ -1981,6 +2009,10 @@ class Test {
         let content = "<?php\nfunction test() {\n    echo $x->foo() . $x->foo();\n}\n";
 
         backend.update_ast(uri, content);
+        backend
+            .open_files
+            .write()
+            .insert(uri.to_string(), std::sync::Arc::new(content.to_string()));
 
         // Select the first `$x->foo()`
         // Line 2: "    echo $x->foo() . $x->foo();\n"
@@ -2006,14 +2038,14 @@ class Test {
         let extract_actions: Vec<_> = actions
             .iter()
             .filter_map(|a| match a {
-                CodeActionOrCommand::CodeAction(ca) if ca.title.contains("Extract to variable") => {
+                CodeActionOrCommand::CodeAction(ca) if ca.title.contains("Extract variable") => {
                     Some(ca)
                 }
                 _ => None,
             })
             .collect();
 
-        // Should have two actions: "this occurrence" and "all 2 occurrences"
+        // Should have two actions: "this occurrence" and "all occurrences"
         assert!(
             extract_actions.len() >= 2,
             "expected at least 2 extract actions (single + all), got {}: {:?}",
@@ -2033,17 +2065,27 @@ class Test {
 
         let all_action = extract_actions
             .iter()
-            .find(|a| a.title.contains("all") && a.title.contains("occurrences"))
-            .expect("expected an 'all N occurrences' action");
+            .find(|a| a.title.contains("all occurrences"))
+            .expect("expected an 'all occurrences' action");
         assert!(
-            all_action.title.contains("all 2 occurrences"),
-            "all action should mention 'all 2 occurrences', got: {}",
+            all_action.title.contains("all occurrences"),
+            "all action should mention 'all occurrences', got: {}",
             all_action.title
         );
 
-        // The "all occurrences" edit should have 3 edits:
-        // 1 insertion + 2 replacements
-        let all_edit = all_action.edit.as_ref().unwrap();
+        // Phase 1 should NOT have an edit — it's deferred.
+        assert!(
+            all_action.edit.is_none(),
+            "Phase 1 should not compute edits for all-occurrences"
+        );
+        assert!(
+            all_action.data.is_some(),
+            "Phase 1 should attach resolve data for all-occurrences"
+        );
+
+        // Phase 2: resolve the action to get the workspace edit.
+        let (resolved_all, _) = backend.resolve_code_action((*all_action).clone());
+        let all_edit = resolved_all.edit.as_ref().unwrap();
         let all_changes = all_edit.changes.as_ref().unwrap();
         let file_edits = all_changes.values().next().unwrap();
         assert_eq!(
@@ -2083,7 +2125,7 @@ class Test {
         let extract_actions: Vec<_> = actions
             .iter()
             .filter_map(|a| match a {
-                CodeActionOrCommand::CodeAction(ca) if ca.title.contains("Extract to variable") => {
+                CodeActionOrCommand::CodeAction(ca) if ca.title.contains("Extract variable") => {
                     Some(ca)
                 }
                 _ => None,

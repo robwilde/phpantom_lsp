@@ -21,7 +21,7 @@
 //!   reports an unnecessary ignore, offer to remove it.
 
 mod add_override;
-mod add_throws;
+pub(crate) mod add_throws;
 mod ignore;
 mod remove_throws;
 

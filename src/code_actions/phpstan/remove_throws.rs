@@ -20,6 +20,8 @@ use std::collections::HashMap;
 use tower_lsp::lsp_types::*;
 
 use crate::Backend;
+use crate::code_actions::CodeActionData;
+use crate::code_actions::make_code_action_data;
 
 /// PHPStan identifiers we match on.
 const UNUSED_TYPE_ID: &str = "throws.unusedType";
@@ -35,11 +37,6 @@ impl Backend {
         params: &CodeActionParams,
         out: &mut Vec<CodeActionOrCommand>,
     ) {
-        let doc_uri: Url = match uri.parse() {
-            Ok(u) => u,
-            Err(_) => return,
-        };
-
         let phpstan_diags: Vec<Diagnostic> = {
             let cache = self.phpstan_last_diags.lock();
             cache.get(uri).cloned().unwrap_or_default()
@@ -59,7 +56,7 @@ impl Backend {
                 continue;
             }
 
-            // Extract the type name from the message.
+            // Extract the type name from the message (validation only).
             let type_name = match extract_throws_type(&diag.message, identifier) {
                 Some(t) => t,
                 None => continue,
@@ -67,39 +64,70 @@ impl Backend {
 
             let short_name = short_name_from_type(&type_name);
 
-            // Find the docblock above the diagnostic line.
+            // Find the docblock above the diagnostic line (validation only).
             let diag_line = diag.range.start.line as usize;
             let docblock = match find_docblock_above_line(content, diag_line) {
                 Some(db) => db,
                 None => continue,
             };
 
-            // Find the @throws line to remove.
-            let throws_edit = match build_remove_throws_edit(content, &docblock, &type_name) {
-                Some(edit) => edit,
-                None => continue,
-            };
-
-            let mut changes = HashMap::new();
-            changes.insert(doc_uri.clone(), vec![throws_edit]);
+            // Validate that the @throws line can be removed (validation only).
+            if build_remove_throws_edit(content, &docblock, &type_name).is_none() {
+                continue;
+            }
 
             let title = format!("Remove @throws {}", short_name);
+
+            let extra = serde_json::json!({
+                "diagnostic_message": diag.message,
+                "diagnostic_line": diag_line,
+                "diagnostic_code": identifier,
+            });
 
             out.push(CodeActionOrCommand::CodeAction(CodeAction {
                 title,
                 kind: Some(CodeActionKind::QUICKFIX),
                 diagnostics: Some(vec![diag.clone()]),
-                edit: Some(WorkspaceEdit {
-                    changes: Some(changes),
-                    document_changes: None,
-                    change_annotations: None,
-                }),
+                edit: None,
                 command: None,
                 is_preferred: Some(true),
                 disabled: None,
-                data: None,
+                data: Some(make_code_action_data(
+                    "phpstan.removeThrows",
+                    uri,
+                    &params.range,
+                    extra,
+                )),
             }));
         }
+    }
+
+    /// Resolve a "Remove @throws" code action by recomputing the
+    /// workspace edit from the stored data.
+    pub(crate) fn resolve_remove_throws(
+        &self,
+        data: &CodeActionData,
+        content: &str,
+    ) -> Option<WorkspaceEdit> {
+        let extra = &data.extra;
+        let message = extra.get("diagnostic_message")?.as_str()?;
+        let line = extra.get("diagnostic_line")?.as_u64()? as usize;
+        let code = extra.get("diagnostic_code")?.as_str()?;
+
+        let type_name = extract_throws_type(message, code)?;
+
+        let docblock = find_docblock_above_line(content, line)?;
+        let throws_edit = build_remove_throws_edit(content, &docblock, &type_name)?;
+
+        let doc_uri: Url = data.uri.parse().ok()?;
+        let mut changes = HashMap::new();
+        changes.insert(doc_uri, vec![throws_edit]);
+
+        Some(WorkspaceEdit {
+            changes: Some(changes),
+            document_changes: None,
+            change_annotations: None,
+        })
     }
 }
 
