@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1774665520726,
+  "lastUpdate": 1774666994814,
   "repoUrl": "https://github.com/AJenbo/phpantom_lsp",
   "entries": {
     "PHPantom Benchmarks": [
@@ -17663,6 +17663,198 @@ window.BENCHMARK_DATA = {
             "name": "diagnostics/fixture/method_chain",
             "value": 594237,
             "range": "± 8796",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ryangjchandler@gmail.com",
+            "name": "Ryan Chandler",
+            "username": "ryangjchandler"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "cadc9ab44db3d232ee04504bf6335639f51a6697",
+          "message": "Add support for keyword completions (#43)\n\nCo-authored-by: Anders Jenbo <anders@jenbo.dk>",
+          "timestamp": "2026-03-28T03:56:07+01:00",
+          "tree_id": "b0f1f0c83ecd0dfe2b7550f91aabcacc3bca07f6",
+          "url": "https://github.com/AJenbo/phpantom_lsp/commit/cadc9ab44db3d232ee04504bf6335639f51a6697"
+        },
+        "date": 1774666994227,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "cold_start_completion",
+            "value": 58918925,
+            "range": "± 300673",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "completion_simple_class",
+            "value": 14559,
+            "range": "± 62",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "completion_inheritance_depth/depth_5",
+            "value": 63204,
+            "range": "± 348",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "completion_inheritance_depth/depth_10",
+            "value": 131161,
+            "range": "± 2016",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "completion_inheritance_depth/depth_20",
+            "value": 268080,
+            "range": "± 2592",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "completion_classmap_size/100_classes",
+            "value": 163417,
+            "range": "± 1037",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "completion_classmap_size/500_classes",
+            "value": 771464,
+            "range": "± 4832",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "completion_classmap_size/1000_classes",
+            "value": 1536384,
+            "range": "± 19198",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "completion_generics_and_mixins",
+            "value": 45276,
+            "range": "± 394",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "completion_with_narrowing",
+            "value": 15267,
+            "range": "± 335",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "completion_5_method_chain",
+            "value": 10307,
+            "range": "± 48",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "completion_cross_file_type_hint",
+            "value": 17496,
+            "range": "± 438",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "completion_carbon_class",
+            "value": 3409976,
+            "range": "± 41518",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "completion_yii_deep_hierarchy",
+            "value": 349435,
+            "range": "± 5879",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "completion_large_file",
+            "value": 205909,
+            "range": "± 5382",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "completion_short_file",
+            "value": 17948,
+            "range": "± 136",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "variable_completion/short",
+            "value": 12864,
+            "range": "± 55",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "variable_completion/long",
+            "value": 90511,
+            "range": "± 429",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "hover_method_call",
+            "value": 16080,
+            "range": "± 341",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "goto_definition_method",
+            "value": 11713,
+            "range": "± 44",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "update_ast_parse_time/100_lines",
+            "value": 161499,
+            "range": "± 6889",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "update_ast_parse_time/500_lines",
+            "value": 845237,
+            "range": "± 5571",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "update_ast_parse_time/2000_lines",
+            "value": 4095597,
+            "range": "± 25490",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "reparse_500_line_file",
+            "value": 855817,
+            "range": "± 4260",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diagnostics/fixture/lots_of_new_generic_objects",
+            "value": 18387,
+            "range": "± 128",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diagnostics/fixture/lots_of_new_objects",
+            "value": 17026,
+            "range": "± 116",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diagnostics/fixture/lots_of_missing_methods",
+            "value": 77557629,
+            "range": "± 637719",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "diagnostics/fixture/method_chain",
+            "value": 587719,
+            "range": "± 6302",
             "unit": "ns/iter"
           }
         ]
