@@ -18,10 +18,17 @@
 
 namespace Demo {
 
+use Attribute;
+use Bug10298\PropAttr;
+use Bug5607\Cl;
 use Closure;
 use Demo\ValidationException;
 use Demo\NotFoundException;
 use Exception;
+use Override;
+use PHPStan\DependencyInjection\GenerateFactory;
+use PHPStan\Reflection\ClassReflection;
+use ReadonlyPropertyAssignPhpDoc\C;
 use Stringable;
 use Demo\UserProfile as Profile;
 
@@ -2923,9 +2930,43 @@ class SimplifyNullDemo
 }
 
 
+// ── Attribute Completion ────────────────────────────────────────────────────
+// Inside `#[…]`, completion only offers classes decorated with
+// `#[\Attribute]`, filtered by the target of the declaration the
+// attribute applies to.
+
+class AttributeCompletionDemo
+{
+    public string $property;
+
+    public function demo(): void
+    {
+        // Nothing to complete at runtime — this demo is about the
+        // completion popup.  Open the class below and trigger
+        // completion inside the `#[…]` brackets to see it in action.
+    }
+}
+
+
 // ═══════════════════════════════════════════════════════════════════════════
 // ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 // ┃  SCAFFOLDING — Supporting definitions below this line.              ┃
+
+// ── Attribute Completion scaffolding ────────────────────────────────────────
+#[\Attribute(\Attribute::TARGET_CLASS)]
+class ClassOnlyAttr {}
+
+#[\Attribute(\Attribute::TARGET_METHOD)]
+class MethodOnlyAttr {}
+
+#[\Attribute(\Attribute::TARGET_PROPERTY)]
+class PropertyOnlyAttr {}
+
+#[\Attribute(\Attribute::TARGET_CLASS | \Attribute::TARGET_METHOD)]
+class ClassOrMethodAttr {}
+
+#[\Attribute]
+class AnyTargetAttr {}
 
 // ── Constant Type Demo scaffolding ──────────────────────────────────────────
 define('CT_ALLOWED_HOSTS', ['localhost', '127.0.0.1']);

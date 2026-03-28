@@ -60,6 +60,7 @@ pub fn make_class(name: &str) -> ClassInfo {
         class_docblock: None,
         file_namespace: None,
         backed_type: None,
+        attribute_targets: 0,
         laravel: None,
     }
 }

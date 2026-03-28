@@ -1175,9 +1175,14 @@ impl Backend {
         let partial = match Self::extract_partial_class_name(content, position) {
             Some(p) => p,
             None => {
+                // Allow attribute completion on empty prefix (e.g. `#[`
+                // with nothing typed yet).
+                if matches!(class_ctx, ClassNameContext::Attribute(_)) {
+                    String::new()
+                }
                 // Allow keyword completion on empty prefix inside class-like
                 // bodies (e.g. after typing `public `).
-                if keyword_ctx.after_member_modifier_chain {
+                else if keyword_ctx.after_member_modifier_chain {
                     let items = crate::completion::keyword_completion::build_keyword_completions(
                         "",
                         class_ctx,
@@ -1187,8 +1192,9 @@ impl Backend {
                         return None;
                     }
                     return Some(CompletionResponse::Array(items));
+                } else {
+                    return None;
                 }
-                return None;
             }
         };
 

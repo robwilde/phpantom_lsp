@@ -1142,6 +1142,31 @@ pub enum ClassLikeKind {
     Enum,
 }
 
+/// PHP `\Attribute` target flags.
+///
+/// These mirror the constants defined on the built-in `\Attribute` class
+/// and are stored as a bitmask in [`ClassInfo::attribute_targets`].
+///
+/// A value of `0` means "not an attribute class".  A non-zero value means
+/// the class is decorated with `#[\Attribute(...)]` and the bits indicate
+/// which declaration kinds the attribute may be applied to.
+pub mod attribute_target {
+    /// The class can be used as an attribute on class declarations.
+    pub const TARGET_CLASS: u8 = 1;
+    /// The class can be used as an attribute on function declarations.
+    pub const TARGET_FUNCTION: u8 = 1 << 1;
+    /// The class can be used as an attribute on method declarations.
+    pub const TARGET_METHOD: u8 = 1 << 2;
+    /// The class can be used as an attribute on property declarations.
+    pub const TARGET_PROPERTY: u8 = 1 << 3;
+    /// The class can be used as an attribute on class constant declarations.
+    pub const TARGET_CLASS_CONSTANT: u8 = 1 << 4;
+    /// The class can be used as an attribute on function/method parameters.
+    pub const TARGET_PARAMETER: u8 = 1 << 5;
+    /// All targets (the default when `#[\Attribute]` has no arguments).
+    pub const TARGET_ALL: u8 = (1 << 6) - 1; // 63
+}
+
 /// Laravel-specific metadata extracted from Eloquent model classes.
 ///
 /// Grouped into a sub-struct to keep the core `ClassInfo` focused on
@@ -1369,6 +1394,16 @@ pub struct ClassInfo {
     /// The backing type of a backed enum (e.g. `"string"` or `"int"`).
     /// `None` for unit enums and non-enum class-like declarations.
     pub backed_type: Option<String>,
+    /// PHP attribute target bitmask.
+    ///
+    /// `0` means this class is **not** a PHP attribute.  A non-zero value
+    /// means the class is decorated with `#[\Attribute(...)]` and the bits
+    /// indicate which declaration kinds the attribute may target (see
+    /// [`attribute_target`] constants).
+    ///
+    /// When `#[\Attribute]` is used without arguments, the default is
+    /// [`attribute_target::TARGET_ALL`] (all targets).
+    pub attribute_targets: u8,
     /// Laravel-specific metadata (custom collections, casts, attribute
     /// defaults, column names). `None` for non-Laravel classes to avoid
     /// per-class allocation overhead.
@@ -1422,6 +1457,7 @@ impl ClassInfo {
             || self.is_abstract != other.is_abstract
             || self.deprecation_message != other.deprecation_message
             || self.deprecated_replacement != other.deprecated_replacement
+            || self.attribute_targets != other.attribute_targets
             || self.template_params != other.template_params
             || self.template_param_bounds != other.template_param_bounds
             || self.extends_generics != other.extends_generics

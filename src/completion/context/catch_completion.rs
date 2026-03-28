@@ -561,6 +561,7 @@ impl Backend {
         let ctx = ClassItemCtx {
             is_fqn_prefix,
             is_new,
+            is_attribute: false,
             fqn_replace_range,
             file_use_map,
             use_block: analyze_use_block(content),
@@ -609,14 +610,7 @@ impl Backend {
                 filter,
                 use_import: None,
             };
-            items.push(ctx.build_item(
-                texts,
-                fqn,
-                '0',
-                false,
-                |name| Self::build_new_insert(name, None),
-                false,
-            ));
+            items.push(ctx.build_item(texts, fqn, '0', false, None, false));
         }
 
         // ── 1b. Same-namespace classes (must be concrete + Throwable)
@@ -701,7 +695,7 @@ impl Backend {
                     &fqn,
                     '1',
                     false,
-                    |name| Self::build_new_insert(name, None),
+                    None,
                     deprecation_message.is_some(),
                 ));
             }
@@ -743,14 +737,7 @@ impl Backend {
                     use_import,
                 };
                 ctx.apply_import_fixups(&mut texts.base_name, &mut texts.use_import, false);
-                items.push(ctx.build_item(
-                    texts,
-                    fqn,
-                    '2',
-                    false,
-                    |name| (format!("{name}()$0"), Some(InsertTextFormat::SNIPPET)),
-                    false,
-                ));
+                items.push(ctx.build_item(texts, fqn, '2', false, None, false));
             }
         }
 
@@ -792,14 +779,7 @@ impl Backend {
                     use_import,
                 };
                 ctx.apply_import_fixups(&mut texts.base_name, &mut texts.use_import, false);
-                items.push(ctx.build_item(
-                    texts,
-                    fqn,
-                    '2',
-                    demoted,
-                    |name| (format!("{name}()$0"), Some(InsertTextFormat::SNIPPET)),
-                    false,
-                ));
+                items.push(ctx.build_item(texts, fqn, '2', demoted, None, false));
             }
         }
 
@@ -838,14 +818,7 @@ impl Backend {
                 use_import,
             };
             ctx.apply_import_fixups(&mut texts.base_name, &mut texts.use_import, false);
-            items.push(ctx.build_item(
-                texts,
-                name,
-                '2',
-                demoted,
-                |name| (format!("{name}()$0"), Some(InsertTextFormat::SNIPPET)),
-                false,
-            ));
+            items.push(ctx.build_item(texts, name, '2', demoted, None, false));
         }
 
         let is_incomplete = items.len() > Self::MAX_CLASS_COMPLETIONS;

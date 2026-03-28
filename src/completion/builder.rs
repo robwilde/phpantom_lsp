@@ -74,6 +74,108 @@ pub(crate) fn build_callable_snippet(name: &str, params: &[ParameterInfo]) -> St
     }
 }
 
+/// Build an LSP snippet string for a PHP attribute constructor.
+///
+/// Attributes are syntactic sugar for `new ClassName(...)` with the `new`
+/// dropped, so they take the same constructor parameters.  Unlike regular
+/// `new` snippets, attribute snippets use **named arguments** for every
+/// parameter (both required and optional with non-trivial defaults).
+/// Named arguments are safe here because both attributes and named
+/// arguments were introduced in PHP 8.0, so there is no risk of
+/// generating code incompatible with older PHP versions.
+///
+/// Placeholder values are chosen to be valid PHP literals:
+///
+/// | Type hint    | Default placeholder |
+/// |--------------|---------------------|
+/// | `string`     | `'value'`           |
+/// | `bool`       | `false`             |
+/// | `int`        | `0`                 |
+/// | `float`      | `0.0`              |
+/// | `array`      | `[]`                |
+/// | (other/none) | the `$name` without `$` |
+///
+/// When a parameter has an explicit default value in source, that value
+/// is used as the snippet placeholder instead of the type-based guess.
+///
+/// # Examples
+///
+/// | call                                                    | result                                                |
+/// |---------------------------------------------------------|-------------------------------------------------------|
+/// | `("Override", &[])`                                     | `"Override"`                                          |
+/// | `("DataProvider", &[req(string $methodName)])`          | `"DataProvider(${1:'methodName'})$0"`                 |
+/// | `("Route", &[req(string $path), opt(array $methods)])` | `"Route(${1:'path'})$0"`                              |
+pub(crate) fn build_attribute_snippet(name: &str, params: &[ParameterInfo]) -> String {
+    // Collect parameters worth including: all required ones, plus
+    // optional ones only when they have no default (rare but possible).
+    // Parameters with defaults are omitted — the user can add them via
+    // signature help if needed.
+    let required: Vec<&ParameterInfo> = params.iter().filter(|p| p.is_required).collect();
+
+    if required.is_empty() {
+        // No required constructor params — insert the bare attribute
+        // name without parentheses.  `#[Override]` not `#[Override()]`.
+        name.to_string()
+    } else {
+        let placeholders: Vec<String> = required
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let arg_name = p.name.strip_prefix('$').unwrap_or(&p.name);
+                let (prefix, placeholder, suffix) = attribute_placeholder(p);
+                format!("{arg_name}: {prefix}${{{}:{}}}{suffix}", i + 1, placeholder)
+            })
+            .collect();
+        format!("{name}({})$0", placeholders.join(", "))
+    }
+}
+
+/// Choose a sensible placeholder value for an attribute constructor parameter.
+///
+/// Returns `(prefix, placeholder, suffix)` where `prefix` and `suffix`
+/// are literal characters that surround the snippet tab stop.  For
+/// string parameters this produces `'${n:methodName}'` so that typing
+/// replaces only the inner text while preserving the quotes.
+///
+/// If the parameter has an explicit default value in source code, that
+/// is used directly as the placeholder with no wrapping.  Otherwise,
+/// the type hint is inspected to produce a valid PHP literal.
+fn attribute_placeholder(param: &ParameterInfo) -> (String, String, String) {
+    // Use the explicit default when available.
+    if let Some(ref default) = param.default_value {
+        return (String::new(), default.clone(), String::new());
+    }
+
+    // Infer from the type hint.
+    let hint = param
+        .native_type_hint
+        .as_deref()
+        .or(param.type_hint.as_deref())
+        .unwrap_or("");
+
+    // Strip leading `?` for nullable types (e.g. `?string` → `string`).
+    let base = hint.strip_prefix('?').unwrap_or(hint);
+
+    match base.to_lowercase().as_str() {
+        "string" => {
+            // Use the parameter name (without $) as a descriptive
+            // placeholder.  Quotes sit outside the tab stop so typing
+            // replaces only the inner text: `'${1:methodName}'`.
+            let name = param.name.strip_prefix('$').unwrap_or(&param.name);
+            ("'".to_string(), name.to_string(), "'".to_string())
+        }
+        "bool" => (String::new(), "false".to_string(), String::new()),
+        "int" => (String::new(), "0".to_string(), String::new()),
+        "float" | "double" => (String::new(), "0.0".to_string(), String::new()),
+        "array" => (String::new(), "[]".to_string(), String::new()),
+        _ => {
+            // Unknown or complex type — use the bare parameter name.
+            let name = param.name.strip_prefix('$').unwrap_or(&param.name);
+            (String::new(), name.to_string(), String::new())
+        }
+    }
+}
+
 // Re-export use-statement helpers so existing `use crate::completion::builder::{…}`
 // imports continue to work.
 pub(crate) use super::use_edit::{analyze_use_block, build_use_edit, use_import_conflicts};

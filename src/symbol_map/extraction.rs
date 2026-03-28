@@ -795,6 +795,9 @@ fn extract_from_class_member<'a>(member: &'a ClassLikeMember<'a>, ctx: &mut Extr
             }
         }
         ClassLikeMember::EnumCase(enum_case) => {
+            // Attributes (PHP 8) on the enum case.
+            extract_from_attribute_lists(&enum_case.attribute_lists, ctx, 0);
+
             // Enum case name — declaration site span for find-references,
             // rename, and document-highlights.  Enum cases are accessed
             // statically (`self::Issue`, `TaskType::Issue`).
@@ -1015,6 +1018,8 @@ fn extract_from_method<'a>(method: &'a Method<'a>, ctx: &mut ExtractionCtx<'a>) 
 
     // Parameter type hints, variable spans, and variable definition sites.
     for param in method.parameter_list.parameters.iter() {
+        // Attributes (PHP 8) on the parameter.
+        extract_from_attribute_lists(&param.attribute_lists, ctx, 0);
         if let Some(ref hint) = param.hint {
             extract_from_hint(hint, &mut ctx.spans);
         }
@@ -1079,9 +1084,11 @@ fn extract_inline_docblock(node: &impl HasSpan, ctx: &mut ExtractionCtx<'_>) {
 }
 
 fn extract_from_property<'a>(property: &Property<'a>, ctx: &mut ExtractionCtx<'a>) {
-    // NOTE: Property attributes (PHP 8) are not extracted here because
-    // `Property` is an enum without a direct `attribute_lists` field.
-    // This can be added later by matching on the property variant.
+    // Attributes (PHP 8) on the property.
+    match property {
+        Property::Plain(plain) => extract_from_attribute_lists(&plain.attribute_lists, ctx, 0),
+        Property::Hooked(hooked) => extract_from_attribute_lists(&hooked.attribute_lists, ctx, 0),
+    }
 
     // Docblock.
     if let Some((doc_text, doc_offset)) =
@@ -1151,6 +1158,9 @@ fn extract_from_class_constant<'a>(
     constant: &'a ClassLikeConstant<'a>,
     ctx: &mut ExtractionCtx<'a>,
 ) {
+    // Attributes (PHP 8) on the constant.
+    extract_from_attribute_lists(&constant.attribute_lists, ctx, 0);
+
     // Constant name(s) — declaration site spans for find-references and rename.
     // Class constants are always accessed statically (Foo::CONST).
     for item in constant.items.iter() {
@@ -1248,6 +1258,8 @@ fn extract_from_function<'a>(func: &'a Function<'a>, ctx: &mut ExtractionCtx<'a>
 
     // Parameter type hints, variable spans, and variable definition sites.
     for param in func.parameter_list.parameters.iter() {
+        // Attributes (PHP 8) on the parameter.
+        extract_from_attribute_lists(&param.attribute_lists, ctx, 0);
         if let Some(ref hint) = param.hint {
             extract_from_hint(hint, &mut ctx.spans);
         }
@@ -1830,6 +1842,8 @@ fn extract_from_expression<'a>(
                 .push((closure_scope_start, closure_scope_end));
 
             for param in closure.parameter_list.parameters.iter() {
+                // Attributes (PHP 8) on the parameter.
+                extract_from_attribute_lists(&param.attribute_lists, ctx, 0);
                 if let Some(ref hint) = param.hint {
                     extract_from_hint(hint, &mut ctx.spans);
                 }
@@ -1901,6 +1915,8 @@ fn extract_from_expression<'a>(
                 .push((arrow.arrow.start.offset, arrow_scope_end));
 
             for param in arrow.parameter_list.parameters.iter() {
+                // Attributes (PHP 8) on the parameter.
+                extract_from_attribute_lists(&param.attribute_lists, ctx, 0);
                 if let Some(ref hint) = param.hint {
                     extract_from_hint(hint, &mut ctx.spans);
                 }

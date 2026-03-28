@@ -3362,3 +3362,195 @@ fn see_tag_on_property_docblock() {
         panic!("Expected ClassReference for CacheDriver");
     }
 }
+
+#[test]
+fn property_attribute_class_reference() {
+    let php = concat!(
+        "<?php\n",
+        "class Foo {\n",
+        "    #[\\Assert\\NotBlank]\n",
+        "    public string $name;\n",
+        "}\n",
+    );
+    let map = parse_and_extract(php);
+
+    let attr_offset = php.find("\\Assert\\NotBlank").unwrap() as u32;
+    let hit = map.lookup(attr_offset);
+    assert!(
+        hit.is_some(),
+        "Should find attribute class reference on property"
+    );
+    if let SymbolKind::ClassReference { ref name, is_fqn } = hit.unwrap().kind {
+        assert_eq!(name, "Assert\\NotBlank");
+        assert!(is_fqn);
+    } else {
+        panic!(
+            "Expected ClassReference for property attribute, got {:?}",
+            hit.unwrap().kind
+        );
+    }
+}
+
+#[test]
+fn hooked_property_attribute_class_reference() {
+    let php = concat!(
+        "<?php\n",
+        "class Foo {\n",
+        "    #[\\Assert\\Email]\n",
+        "    public string $email {\n",
+        "        set { $this->email = strtolower($value); }\n",
+        "    }\n",
+        "}\n",
+    );
+    let map = parse_and_extract(php);
+
+    let attr_offset = php.find("\\Assert\\Email").unwrap() as u32;
+    let hit = map.lookup(attr_offset);
+    assert!(
+        hit.is_some(),
+        "Should find attribute class reference on hooked property"
+    );
+    if let SymbolKind::ClassReference { ref name, .. } = hit.unwrap().kind {
+        assert_eq!(name, "Assert\\Email");
+    } else {
+        panic!(
+            "Expected ClassReference for hooked property attribute, got {:?}",
+            hit.unwrap().kind
+        );
+    }
+}
+
+#[test]
+fn class_constant_attribute_class_reference() {
+    let php = concat!(
+        "<?php\n",
+        "class Foo {\n",
+        "    #[\\Deprecated]\n",
+        "    const OLD_NAME = 'old';\n",
+        "}\n",
+    );
+    let map = parse_and_extract(php);
+
+    let attr_offset = php.find("\\Deprecated").unwrap() as u32;
+    let hit = map.lookup(attr_offset);
+    assert!(
+        hit.is_some(),
+        "Should find attribute class reference on class constant"
+    );
+    if let SymbolKind::ClassReference { ref name, .. } = hit.unwrap().kind {
+        assert_eq!(name, "Deprecated");
+    } else {
+        panic!(
+            "Expected ClassReference for constant attribute, got {:?}",
+            hit.unwrap().kind
+        );
+    }
+}
+
+#[test]
+fn parameter_attribute_class_reference() {
+    let php = concat!(
+        "<?php\n",
+        "function handle(#[\\SensitiveParameter] string $secret): void {}\n",
+    );
+    let map = parse_and_extract(php);
+
+    let attr_offset = php.find("\\SensitiveParameter").unwrap() as u32;
+    let hit = map.lookup(attr_offset);
+    assert!(
+        hit.is_some(),
+        "Should find attribute class reference on parameter"
+    );
+    if let SymbolKind::ClassReference { ref name, .. } = hit.unwrap().kind {
+        assert_eq!(name, "SensitiveParameter");
+    } else {
+        panic!(
+            "Expected ClassReference for parameter attribute, got {:?}",
+            hit.unwrap().kind
+        );
+    }
+}
+
+#[test]
+fn method_parameter_attribute_class_reference() {
+    let php = concat!(
+        "<?php\n",
+        "class Svc {\n",
+        "    public function run(#[\\Autowire] Logger $log): void {}\n",
+        "}\n",
+    );
+    let map = parse_and_extract(php);
+
+    let attr_offset = php.find("\\Autowire").unwrap() as u32;
+    let hit = map.lookup(attr_offset);
+    assert!(
+        hit.is_some(),
+        "Should find attribute class reference on method parameter"
+    );
+    if let SymbolKind::ClassReference { ref name, .. } = hit.unwrap().kind {
+        assert_eq!(name, "Autowire");
+    } else {
+        panic!(
+            "Expected ClassReference for method parameter attribute, got {:?}",
+            hit.unwrap().kind
+        );
+    }
+}
+
+#[test]
+fn enum_case_attribute_class_reference() {
+    let php = concat!(
+        "<?php\n",
+        "enum Status: string {\n",
+        "    #[\\Deprecated]\n",
+        "    case Legacy = 'legacy';\n",
+        "    case Active = 'active';\n",
+        "}\n",
+    );
+    let map = parse_and_extract(php);
+
+    let attr_offset = php.find("\\Deprecated").unwrap() as u32;
+    let hit = map.lookup(attr_offset);
+    assert!(
+        hit.is_some(),
+        "Should find attribute class reference on enum case"
+    );
+    if let SymbolKind::ClassReference { ref name, .. } = hit.unwrap().kind {
+        assert_eq!(name, "Deprecated");
+    } else {
+        panic!(
+            "Expected ClassReference for enum case attribute, got {:?}",
+            hit.unwrap().kind
+        );
+    }
+}
+
+#[test]
+fn multiple_property_attributes() {
+    let php = concat!(
+        "<?php\n",
+        "class Foo {\n",
+        "    #[\\Assert\\NotBlank, \\Assert\\Length(max: 255)]\n",
+        "    public string $title;\n",
+        "}\n",
+    );
+    let map = parse_and_extract(php);
+
+    let nb_offset = php.find("\\Assert\\NotBlank").unwrap() as u32;
+    let hit = map.lookup(nb_offset);
+    assert!(hit.is_some(), "Should find first property attribute");
+    if let SymbolKind::ClassReference { ref name, .. } = hit.unwrap().kind {
+        assert_eq!(name, "Assert\\NotBlank");
+    } else {
+        panic!("Expected ClassReference for first attribute");
+    }
+
+    let len_offset = php.find("\\Assert\\Length").unwrap() as u32;
+    let hit = map.lookup(len_offset);
+    assert!(hit.is_some(), "Should find second property attribute");
+    if let SymbolKind::ClassReference { ref name, .. } = hit.unwrap().kind {
+        assert_eq!(name, "Assert\\Length");
+    } else {
+        panic!("Expected ClassReference for second attribute");
+    }
+}

@@ -64,6 +64,16 @@ pub(crate) enum ClassNameContext {
     /// After `namespace` keyword at the top level — namespace names
     /// (handled by `namespace_completion`).
     NamespaceDeclaration,
+    /// Inside a PHP attribute list (`#[…]`).
+    ///
+    /// Only classes decorated with `#[\Attribute]` are valid here.
+    /// The inner `u8` is the attribute target bitmask for the
+    /// declaration the attribute is applied to (e.g.
+    /// [`attribute_target::TARGET_CLASS`] when writing `#[…]` above a
+    /// class).  Loaded classes are hard-filtered by target; unloaded
+    /// classes are demoted when their short name does not contain
+    /// "Attribute".
+    Attribute(u8),
 }
 
 impl ClassNameContext {
@@ -79,6 +89,9 @@ impl ClassNameContext {
             Self::Instanceof | Self::TypeHint => cls.kind != ClassLikeKind::Trait,
             Self::UseImport => true,
             Self::UseFunction | Self::UseConst | Self::NamespaceDeclaration => false,
+            Self::Attribute(target) => {
+                cls.attribute_targets != 0 && (cls.attribute_targets & target) != 0
+            }
         }
     }
 
@@ -100,6 +113,8 @@ impl ClassNameContext {
             Self::TraitUse => kind == ClassLikeKind::Trait,
             Self::Instanceof | Self::TypeHint => kind != ClassLikeKind::Trait,
             Self::UseFunction | Self::UseConst | Self::NamespaceDeclaration => false,
+            // Cannot verify attribute status from kind flags alone.
+            Self::Attribute(_) => true,
         }
     }
 
@@ -116,12 +131,18 @@ impl ClassNameContext {
                 | Self::Instanceof
                 | Self::TypeHint
                 | Self::UseImport
+                | Self::Attribute(_)
         )
     }
 
     /// Whether this context is `New`.
     pub(crate) fn is_new(&self) -> bool {
         matches!(self, Self::New)
+    }
+
+    /// Whether this context is inside an attribute list (`#[…]`).
+    pub(crate) fn is_attribute(&self) -> bool {
+        matches!(self, Self::Attribute(_))
     }
 
     /// Whether this context requires a very specific class-like kind
@@ -135,15 +156,21 @@ impl ClassNameContext {
 
     /// Heuristic: names that are unlikely to match this context.
     ///
-    /// Used to demote (but not exclude) items from classmap/stubs
-    /// where we cannot verify the actual class kind. For example,
-    /// `new AbstractFoo` is very likely wrong.
+    /// Used to demote (but not exclude) unloaded classes whose actual
+    /// kind or attribute status cannot be verified.  For example,
+    /// `new AbstractFoo` is very likely wrong, and `#[UserService]`
+    /// is unlikely to be an attribute class.
+    ///
+    /// This should only be called for classes that could NOT be loaded
+    /// (i.e. `matches_context_or_unloaded` returned `true` because the
+    /// class was unloaded, not because it passed `matches()`).
     pub(crate) fn likely_mismatch(&self, short_name: &str) -> bool {
         match self {
             Self::New => likely_non_instantiable(short_name),
             Self::ExtendsClass => likely_interface_name(short_name),
             Self::Implements | Self::ExtendsInterface => likely_non_interface_name(short_name),
             Self::TraitUse => likely_non_instantiable(short_name),
+            Self::Attribute(_) => !likely_attribute_name(short_name),
             _ => false,
         }
     }
@@ -241,6 +268,15 @@ pub(crate) fn detect_class_name_context(content: &str, position: Position) -> Cl
     let mut i = offset;
     while i > 0 && (chars[i - 1].is_alphanumeric() || chars[i - 1] == '_' || chars[i - 1] == '\\') {
         i -= 1;
+    }
+
+    // ── Attribute context (`#[…]`) ──────────────────────────────────
+    // Before checking keywords, detect whether the cursor is inside a
+    // PHP attribute list.  Walk backward from the position (past the
+    // partial identifier) looking for `#[`.  Skip over commas and
+    // already-typed attribute names/args (e.g. `#[Override, Ov|`).
+    if let Some(target) = detect_attribute_context(&chars, i, content, position) {
+        return ClassNameContext::Attribute(target);
     }
 
     // Skip whitespace (including newlines for multi-line declarations).
@@ -433,6 +469,28 @@ pub(crate) fn detect_stub_class_kind(
     None
 }
 
+/// Heuristic: the short name looks like it could be an attribute class.
+///
+/// Returns `true` when the name contains "Attribute" as a substring
+/// (case-insensitive), or is one of the well-known built-in attributes
+/// (`Override`, `Deprecated`, `SensitiveParameter`, etc.).
+fn likely_attribute_name(short_name: &str) -> bool {
+    let lower = short_name.to_lowercase();
+    if lower.contains("attribute") {
+        return true;
+    }
+    // Well-known PHP built-in attributes that don't have "Attribute"
+    // in their name.
+    matches!(
+        short_name,
+        "Override"
+            | "Deprecated"
+            | "SensitiveParameter"
+            | "AllowDynamicProperties"
+            | "ReturnTypeWillChange"
+    )
+}
+
 /// Heuristic: names that look like interfaces (`IFoo`, `FooInterface`).
 fn likely_interface_name(name: &str) -> bool {
     if name.starts_with('I') && name.len() > 1 {
@@ -496,6 +554,246 @@ fn likely_non_instantiable(name: &str) -> bool {
 }
 
 /// Whether a class name represents an anonymous class.
+/// Detect whether the cursor is inside a PHP attribute list (`#[…]`).
+///
+/// `j` is the char offset just before the partial identifier the user is
+/// typing.  We walk backward through whitespace, commas, nested parens,
+/// and prior attribute names looking for the opening `#[`.
+///
+/// Returns `Some(target_flags)` when confirmed, or `None` when the
+/// cursor is not inside an attribute list.
+fn detect_attribute_context(
+    chars: &[char],
+    j: usize,
+    content: &str,
+    position: Position,
+) -> Option<u8> {
+    let mut k = j;
+
+    // Walk backward over whitespace, comma-separated attributes,
+    // and their argument lists to find the `#[` opener.
+    loop {
+        // Skip whitespace.
+        while k > 0 && chars[k - 1].is_ascii_whitespace() {
+            k -= 1;
+        }
+
+        if k == 0 {
+            return None;
+        }
+
+        // If we see `#[`, we found the attribute list start.
+        if k >= 2 && chars[k - 2] == '#' && chars[k - 1] == '[' {
+            let target = infer_attribute_target(content, position);
+            return Some(target);
+        }
+
+        // If we see `[` without a preceding `#`, this is not a PHP
+        // attribute (could be an array).
+        if chars[k - 1] == '[' {
+            return None;
+        }
+
+        // If we see `)`, skip over a balanced parenthesised argument
+        // list (e.g. `#[Route('/foo'), |`).
+        if chars[k - 1] == ')' {
+            k -= 1;
+            let mut depth = 1i32;
+            while k > 0 && depth > 0 {
+                k -= 1;
+                match chars[k] {
+                    ')' => depth += 1,
+                    '(' => depth -= 1,
+                    _ => {}
+                }
+            }
+            // Now `k` points at the `(`.  Skip backward past the
+            // attribute name before it.
+            while k > 0
+                && (chars[k - 1].is_alphanumeric() || chars[k - 1] == '_' || chars[k - 1] == '\\')
+            {
+                k -= 1;
+            }
+            // Skip whitespace and check for comma.
+            while k > 0 && chars[k - 1].is_ascii_whitespace() {
+                k -= 1;
+            }
+            if k > 0 && chars[k - 1] == ',' {
+                k -= 1;
+                continue;
+            }
+            // No comma — check for `#[` directly.
+            continue;
+        }
+
+        // If we see `,`, skip it and continue backward (multiple
+        // attributes: `#[A, B, |`).
+        if chars[k - 1] == ',' {
+            k -= 1;
+            // Skip whitespace.
+            while k > 0 && chars[k - 1].is_ascii_whitespace() {
+                k -= 1;
+            }
+            // Skip the preceding attribute name (and possibly its args).
+            if k > 0 && chars[k - 1] == ')' {
+                // Has argument list — loop will handle it next iteration.
+                continue;
+            }
+            // Skip bare attribute name.
+            while k > 0
+                && (chars[k - 1].is_alphanumeric() || chars[k - 1] == '_' || chars[k - 1] == '\\')
+            {
+                k -= 1;
+            }
+            continue;
+        }
+
+        // Nothing recognised — not inside an attribute list.
+        return None;
+    }
+}
+
+/// Infer the attribute target flags from the syntactic position of the
+/// attribute list.
+///
+/// Scans lines after the cursor to find the declaration the attribute
+/// applies to.  Uses brace depth to distinguish top-level declarations
+/// (class, function) from class members (method, property, constant).
+fn infer_attribute_target(content: &str, position: Position) -> u8 {
+    use crate::types::attribute_target;
+
+    let lines: Vec<&str> = content.lines().collect();
+    let cursor_line = position.line as usize;
+
+    // First check brace depth at the cursor line to know whether we are
+    // at the top level or inside a class body.
+    let depth = {
+        let mut d = 0i32;
+        for (idx, line) in lines.iter().enumerate() {
+            if idx >= cursor_line {
+                break;
+            }
+            for ch in line.chars() {
+                match ch {
+                    '{' => d += 1,
+                    '}' => d -= 1,
+                    _ => {}
+                }
+            }
+        }
+        d
+    };
+
+    // Scan forward from the line after the cursor, skipping blank lines
+    // and additional attribute lines, to find the declaration keyword.
+    for line in lines
+        .iter()
+        .take(lines.len().min(cursor_line + 10))
+        .skip(cursor_line + 1)
+    {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("//") {
+            continue;
+        }
+
+        // Inside a function/method parameter list.
+        // We detect this when the following non-blank line starts with
+        // a type-hint or `$` (parameter) rather than a declaration
+        // keyword.  However, this is tricky to distinguish reliably.
+        // For now, look for specific declaration keywords.
+
+        // Tokenise the first few words of the line.
+        let words = declaration_keywords(trimmed);
+
+        if words.contains(&"class")
+            || words.contains(&"interface")
+            || words.contains(&"trait")
+            || words.contains(&"enum")
+        {
+            return attribute_target::TARGET_CLASS;
+        }
+
+        if words.contains(&"function") {
+            return if depth >= 1 {
+                attribute_target::TARGET_METHOD
+            } else {
+                attribute_target::TARGET_FUNCTION
+            };
+        }
+
+        if words.contains(&"const") {
+            return attribute_target::TARGET_CLASS_CONSTANT;
+        }
+
+        // Inside a class body, if we see a visibility modifier or
+        // `var`/`readonly`/`static` followed by a type or `$`, it is
+        // a property.
+        if depth >= 1 {
+            // If the line contains `function`, it is a method
+            // (handled above).  Otherwise, a modifier chain without
+            // `function` or `const` is a property.
+            let has_modifier = words.iter().any(|w| {
+                matches!(
+                    *w,
+                    "public"
+                        | "protected"
+                        | "private"
+                        | "readonly"
+                        | "static"
+                        | "var"
+                        | "abstract"
+                        | "final"
+                )
+            });
+            if has_modifier {
+                return attribute_target::TARGET_PROPERTY;
+            }
+        }
+
+        // Could not determine — fall back to all targets.
+        break;
+    }
+
+    // Fallback: if inside a class body, offer method/property/constant
+    // targets.  At the top level, offer class/function.
+    if depth >= 1 {
+        attribute_target::TARGET_METHOD
+            | attribute_target::TARGET_PROPERTY
+            | attribute_target::TARGET_CLASS_CONSTANT
+    } else {
+        attribute_target::TARGET_CLASS | attribute_target::TARGET_FUNCTION
+    }
+}
+
+/// Extract the leading declaration keywords from a source line.
+///
+/// Returns a vector of lowercase keyword strings found before the first
+/// non-keyword token (identifier, `$`, `(`, etc.).  This is used by
+/// [`infer_attribute_target`] to determine what kind of declaration
+/// follows an attribute list.
+fn declaration_keywords(line: &str) -> Vec<&str> {
+    let mut result = Vec::new();
+    for word in line.split_whitespace() {
+        // Stop at tokens that are clearly not keywords.
+        if word.starts_with('$')
+            || word.starts_with('(')
+            || word.starts_with('{')
+            || word.starts_with('/')
+            || word.starts_with('#')
+        {
+            break;
+        }
+        match word.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '_') {
+            "public" | "protected" | "private" | "static" | "abstract" | "final" | "readonly"
+            | "function" | "class" | "interface" | "trait" | "enum" | "const" | "var" => {
+                result.push(word.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '_'));
+            }
+            _ => break,
+        }
+    }
+    result
+}
+
 pub(in crate::completion) fn is_anonymous_class(name: &str) -> bool {
     name.starts_with("__anonymous@")
 }
@@ -768,6 +1066,12 @@ pub(in crate::completion) fn class_edit_texts(
 pub(in crate::completion) struct ClassItemCtx<'a> {
     pub(in crate::completion) is_fqn_prefix: bool,
     pub(in crate::completion) is_new: bool,
+    /// Whether this completion is inside an attribute list (`#[…]`).
+    ///
+    /// When true, `build_item` generates constructor snippets with
+    /// named arguments and smart default placeholders instead of
+    /// inserting the bare class name.
+    pub(in crate::completion) is_attribute: bool,
     pub(in crate::completion) fqn_replace_range: Option<Range>,
     pub(in crate::completion) file_use_map: &'a HashMap<String, String>,
     pub(in crate::completion) use_block: use_edit::UseBlockInfo,
@@ -889,7 +1193,7 @@ impl ClassItemCtx<'_> {
         fqn: &str,
         source_tier: char,
         demoted: bool,
-        new_insert_fn: impl FnOnce(&str) -> (String, Option<InsertTextFormat>),
+        ctor_params: Option<&[ParameterInfo]>,
         is_deprecated: bool,
     ) -> CompletionItem {
         let short_name = crate::util::short_name(fqn);
@@ -901,8 +1205,19 @@ impl ClassItemCtx<'_> {
             demoted,
             &self.affinity_table,
         );
-        let (insert_text, insert_text_format) = if self.is_new {
-            new_insert_fn(&texts.base_name)
+        let (insert_text, insert_text_format) = if self.is_attribute {
+            let snippet = crate::completion::builder::build_attribute_snippet(
+                &texts.base_name,
+                ctor_params.unwrap_or(&[]),
+            );
+            if snippet.contains("$0") {
+                (snippet, Some(InsertTextFormat::SNIPPET))
+            } else {
+                // No constructor params — bare name, no snippet syntax.
+                (snippet, None)
+            }
+        } else if self.is_new {
+            Backend::build_new_insert(&texts.base_name, ctor_params)
         } else {
             (texts.base_name, None)
         };
@@ -1092,6 +1407,20 @@ impl Backend {
         }
     }
 
+    /// Load the `__construct` parameters for a class, if available.
+    ///
+    /// Tries `load_stub_class` (which checks `ast_map` first, then
+    /// in-memory stubs) to avoid disk I/O.  Returns `None` when the
+    /// class cannot be found or has no constructor.
+    fn ctor_params_for(&self, class_name: &str) -> Option<Vec<ParameterInfo>> {
+        let cls = self.load_stub_class(class_name)?;
+        let ctor = cls
+            .methods
+            .iter()
+            .find(|m| m.name.eq_ignore_ascii_case("__construct"))?;
+        Some(ctor.parameters.clone())
+    }
+
     /// Maximum number of class name completions to return.
     ///
     /// After this limit the result is marked `is_incomplete = true` so
@@ -1124,6 +1453,7 @@ impl Backend {
             uri,
         } = params;
         let is_new = context.is_new();
+        let is_attribute = context.is_attribute();
         let is_use_import = matches!(context, ClassNameContext::UseImport);
         // In FQN mode (except UseImport), try to shorten references
         // using the file's existing `use` imports.  E.g. if the user
@@ -1201,9 +1531,11 @@ impl Backend {
         let prefix_has_namespace =
             normalized.contains('\\') || has_leading_backslash || is_use_import;
 
+        let needs_ctor = is_new || is_attribute;
         let ctx = ClassItemCtx {
             is_fqn_prefix,
             is_new,
+            is_attribute,
             fqn_replace_range,
             file_use_map,
             use_block: analyze_use_block(content),
@@ -1229,7 +1561,10 @@ impl Backend {
                 continue;
             }
             // Apply context-aware filtering for loaded classes.
-            if context.is_class_only() && !self.matches_context_or_unloaded(fqn, context) {
+            // Unloaded classes pass through (demoted below).
+            if context.is_class_only()
+                && let Some(false) = self.check_context_match(fqn, context)
+            {
                 continue;
             }
             // In narrow contexts (TraitUse, Implements, ExtendsInterface)
@@ -1257,14 +1592,15 @@ impl Backend {
                 filter,
                 use_import: None,
             };
-            items.push(ctx.build_item(
-                texts,
-                fqn,
-                '0',
-                false,
-                |name| Self::build_new_insert(name, None),
-                false,
-            ));
+            let demoted = context.is_class_only()
+                && self.check_context_match(fqn, context).is_none()
+                && context.likely_mismatch(sn);
+            let ctor = if needs_ctor {
+                self.ctor_params_for(fqn)
+            } else {
+                None
+            };
+            items.push(ctx.build_item(texts, fqn, '0', demoted, ctor.as_deref(), false));
         }
 
         // ── 2. Same-namespace classes (from ast_map) ────────────────
@@ -1325,12 +1661,15 @@ impl Backend {
                                 base_name = shortened;
                             }
                             // Source 2 has ClassInfo — check __construct
-                            // for richer `new` snippets.
-                            let ctor_params: Option<Vec<ParameterInfo>> = cls
-                                .methods
-                                .iter()
-                                .find(|m| m.name.eq_ignore_ascii_case("__construct"))
-                                .map(|m| m.parameters.clone());
+                            // for richer `new` / attribute snippets.
+                            let ctor_params: Option<Vec<ParameterInfo>> = if needs_ctor {
+                                cls.methods
+                                    .iter()
+                                    .find(|m| m.name.eq_ignore_ascii_case("__construct"))
+                                    .map(|m| m.parameters.clone())
+                            } else {
+                                None
+                            };
                             // Source 2 never needs a use-import
                             // (same namespace).
                             let texts = ClassItemTexts {
@@ -1343,7 +1682,7 @@ impl Backend {
                                 &cls_fqn,
                                 '1',
                                 false,
-                                |name| Self::build_new_insert(name, ctor_params.as_deref()),
+                                ctor_params.as_deref(),
                                 cls.deprecation_message.is_some(),
                             ));
                         }
@@ -1370,9 +1709,16 @@ impl Backend {
                     continue;
                 }
                 // Apply context-aware filtering for loaded classes.
-                if context.is_class_only() && !self.matches_context_or_unloaded(fqn, context) {
-                    continue;
-                }
+                // Unloaded classes pass through (demoted below).
+                let ctx_match = if context.is_class_only() {
+                    let m = self.check_context_match(fqn, context);
+                    if m == Some(false) {
+                        continue;
+                    }
+                    m
+                } else {
+                    None
+                };
                 let (mut base_name, filter, mut use_import) = class_edit_texts(
                     sn,
                     fqn,
@@ -1394,14 +1740,15 @@ impl Backend {
                     use_import,
                 };
                 ctx.apply_import_fixups(&mut texts.base_name, &mut texts.use_import, was_shortened);
-                items.push(ctx.build_item(
-                    texts,
-                    fqn,
-                    '2',
-                    context.likely_mismatch(sn),
-                    |name| (format!("{name}()$0"), Some(InsertTextFormat::SNIPPET)),
-                    false,
-                ));
+                // Demote only when the class could not be loaded (truly
+                // unknown).  Loaded classes already passed matches().
+                let demoted = ctx_match.is_none() && context.likely_mismatch(sn);
+                let ctor = if needs_ctor {
+                    self.ctor_params_for(fqn)
+                } else {
+                    None
+                };
+                items.push(ctx.build_item(texts, fqn, '2', demoted, ctor.as_deref(), false));
             }
         }
 
@@ -1423,9 +1770,16 @@ impl Backend {
                     continue;
                 }
                 // Apply context-aware filtering for loaded classes.
-                if context.is_class_only() && !self.matches_context_or_unloaded(fqn, context) {
-                    continue;
-                }
+                // Unloaded classes pass through (demoted below).
+                let ctx_match = if context.is_class_only() {
+                    let m = self.check_context_match(fqn, context);
+                    if m == Some(false) {
+                        continue;
+                    }
+                    m
+                } else {
+                    None
+                };
                 let (mut base_name, filter, mut use_import) = class_edit_texts(
                     sn,
                     fqn,
@@ -1447,14 +1801,14 @@ impl Backend {
                     use_import,
                 };
                 ctx.apply_import_fixups(&mut texts.base_name, &mut texts.use_import, was_shortened);
-                items.push(ctx.build_item(
-                    texts,
-                    fqn,
-                    '2',
-                    context.likely_mismatch(sn),
-                    |name| Self::build_new_insert(name, None),
-                    false,
-                ));
+                // Demote only when the class could not be loaded.
+                let demoted = ctx_match.is_none() && context.likely_mismatch(sn);
+                let ctor = if needs_ctor {
+                    self.ctor_params_for(fqn)
+                } else {
+                    None
+                };
+                items.push(ctx.build_item(texts, fqn, '2', demoted, ctor.as_deref(), false));
             }
         }
 
@@ -1479,12 +1833,15 @@ impl Backend {
             // stub if it lives in memory but hasn't been parsed yet,
             // so we get a real ClassInfo with kind/abstract/final
             // flags instead of scanning raw source.
-            if context.is_class_only()
-                && let Some(cls) = self.load_stub_class(name)
-                && !context.matches(&cls)
-            {
-                continue;
-            }
+            let ctx_match = if context.is_class_only() {
+                let m = self.check_context_match(name, context);
+                if m == Some(false) {
+                    continue;
+                }
+                m
+            } else {
+                None
+            };
             let (mut base_name, filter, mut use_import) = class_edit_texts(
                 sn,
                 name,
@@ -1506,14 +1863,14 @@ impl Backend {
                 use_import,
             };
             ctx.apply_import_fixups(&mut texts.base_name, &mut texts.use_import, was_shortened);
-            items.push(ctx.build_item(
-                texts,
-                name,
-                '2',
-                context.likely_mismatch(sn),
-                |name| (format!("{name}()$0"), Some(InsertTextFormat::SNIPPET)),
-                false,
-            ));
+            // Demote only when the class could not be loaded.
+            let demoted = ctx_match.is_none() && context.likely_mismatch(sn);
+            let ctor = if needs_ctor {
+                self.ctor_params_for(name)
+            } else {
+                None
+            };
+            items.push(ctx.build_item(texts, name, '2', demoted, ctor.as_deref(), false));
         }
 
         // ── Namespace segment items (FQN mode only) ─────────────────
@@ -1699,17 +2056,22 @@ impl Backend {
     /// Check whether a class matches the given `ClassNameContext`, or
     /// allow it through if not loaded.
     ///
-    /// Returns `true` when the class is found and satisfies
-    /// `context.matches()`, or when the class cannot be loaded.
-    /// Only returns `true` for truly unknown classes as a last resort.
-    fn matches_context_or_unloaded(&self, class_name: &str, context: ClassNameContext) -> bool {
+    /// Returns `Some(true)` when the class is loaded and passes
+    /// `context.matches()`, `Some(false)` when loaded but rejected,
+    /// and `None` when the class could not be loaded at all.
+    ///
+    /// Callers should hard-exclude on `Some(false)`, pass through on
+    /// `None` (with optional heuristic demotion via
+    /// [`ClassNameContext::likely_mismatch`]), and include on
+    /// `Some(true)` without demotion.
+    fn check_context_match(&self, class_name: &str, context: ClassNameContext) -> Option<bool> {
         // load_stub_class checks ast_map first, then parses in-memory
         // stubs if needed.  No disk I/O.
         if let Some(cls) = self.load_stub_class(class_name) {
-            return context.matches(&cls);
+            return Some(context.matches(&cls));
         }
-        // Truly unknown — allow through.
-        true
+        // Truly unknown.
+        None
     }
 
     /// Check whether `class_name` exists in any class source (ast_map,

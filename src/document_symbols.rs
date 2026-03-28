@@ -627,6 +627,7 @@ mod tests {
             class_docblock: None,
             file_namespace: None,
             backed_type: None,
+            attribute_targets: 0,
             laravel: None,
         };
         let detail = build_class_detail(&class);
@@ -666,6 +667,7 @@ mod tests {
             class_docblock: None,
             file_namespace: None,
             backed_type: None,
+            attribute_targets: 0,
             laravel: None,
         };
         let detail = build_class_detail(&class);
