@@ -48,11 +48,18 @@
 //!   `$x ?? $d`, `$x !== null ? $x : $d` → `$x ?? $d`, `$x === null
 //!   ? $d : $x` → `$x ?? $d`, `$x !== null ? $x->foo() : null` →
 //!   `$x?->foo()` (PHP 8.0+).
+//! - **Extract constant** — when the user selects a literal expression
+//!   (string, integer, float, or boolean) inside a class body, offer to
+//!   extract it into a class constant.  The literal is replaced with
+//!   `self::CONSTANT_NAME` and a new constant declaration is inserted at
+//!   the top of the class (after any existing constants).  Offers both
+//!   single-occurrence and all-occurrences variants when duplicates exist.
 //!
 //! ## Deferred edit computation (`codeAction/resolve`)
 //!
 //! Expensive code actions (PHPStan quickfixes, extract function/method,
-//! extract variable, inline variable) use a two-phase model:
+//! extract variable, extract constant, inline variable) use a two-phase
+//! model:
 //!
 //! 1. **Phase 1** (`textDocument/codeAction`): Return lightweight
 //!    `CodeAction` objects with a `data` field but **no `edit`**.
@@ -65,6 +72,7 @@
 
 mod change_visibility;
 pub(crate) mod cursor_context;
+mod extract_constant;
 mod extract_function;
 mod extract_variable;
 mod generate_constructor;
@@ -158,6 +166,9 @@ impl Backend {
         // ── Generate property hooks (PHP 8.4+) ─────────────────────────────
         self.collect_generate_property_hook_actions(uri, content, params, &mut actions);
 
+        // ── Extract constant (deferred) ─────────────────────────────────
+        self.collect_extract_constant_actions(uri, content, params, &mut actions);
+
         // ── Extract variable (deferred) ─────────────────────────────────
         self.collect_extract_variable_actions(uri, content, params, &mut actions);
 
@@ -223,6 +234,9 @@ impl Backend {
                 self.resolve_remove_unused_import(&data, &content, action.diagnostics.as_deref())
             }
             // ── Refactoring actions ─────────────────────────────────
+            "refactor.extractConstant" | "refactor.extractConstantAll" => {
+                self.resolve_extract_constant(&data, &content)
+            }
             "refactor.extractVariable" | "refactor.extractVariableAll" => {
                 self.resolve_extract_variable(&data, &content)
             }
