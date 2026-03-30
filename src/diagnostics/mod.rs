@@ -297,6 +297,17 @@ fn is_stale_phpstan_diagnostic(diag: &Diagnostic, content: &str) -> bool {
         );
     }
 
+    // ── class.prefixed — prefixed class name fixed ──────────────────
+    // The user may fix the leading backslash by hand, so check whether
+    // the prefixed name still appears on the diagnostic line.
+    if identifier == "class.prefixed" {
+        return crate::code_actions::phpstan::fix_prefixed_class::is_fix_prefixed_class_stale(
+            content,
+            diag.range.start.line as usize,
+            &diag.message,
+        );
+    }
+
     false
 }
 
@@ -1128,12 +1139,26 @@ fn deduplicate_diagnostics(diagnostics: &mut Vec<Diagnostic>) {
     // entire line, i.e. it has a meaningful character range rather than
     // `0..MAX`.  External tools like PHPStan only report a line number,
     // so their diagnostics stretch the full line.  When a native
-    // diagnostic already pinpoints the exact location on that line, the
-    // full-line underline is redundant noise.
-    let mut lines_with_precise_diag = std::collections::HashSet::new();
+    // diagnostic already pinpoints the exact location on that line *and*
+    // reports a related issue, the full-line underline is redundant
+    // noise.  We only suppress a full-line diagnostic when a precise
+    // diagnostic on the same line has a related code.
+    let mut precise_diags_by_line: std::collections::HashMap<u32, Vec<String>> =
+        std::collections::HashMap::new();
     for d in diagnostics.iter() {
         if !is_full_line_range(&d.range) {
-            lines_with_precise_diag.insert(d.range.start.line);
+            let code = d
+                .code
+                .as_ref()
+                .map(|c| match c {
+                    NumberOrString::String(s) => s.clone(),
+                    NumberOrString::Number(n) => n.to_string(),
+                })
+                .unwrap_or_default();
+            precise_diags_by_line
+                .entry(d.range.start.line)
+                .or_default()
+                .push(code);
         }
     }
 
@@ -1155,12 +1180,32 @@ fn deduplicate_diagnostics(diagnostics: &mut Vec<Diagnostic>) {
         }
 
         // Suppress full-line diagnostics on lines where a more precise
-        // diagnostic already exists.  This avoids the visual clutter of
-        // a line-wide PHPStan underline next to a pinpointed native
-        // error.  The suppressed diagnostic will reappear once the user
-        // resolves the precise one.
-        if is_full_line_range(&d.range) && lines_with_precise_diag.contains(&d.range.start.line) {
-            return false;
+        // diagnostic already covers the same issue.  This avoids the
+        // visual clutter of a line-wide PHPStan underline next to a
+        // pinpointed native error.  The suppressed diagnostic will
+        // reappear once the user resolves the precise one.
+        //
+        // Only suppress when the precise diagnostic is *related* to
+        // the full-line one.  Unrelated diagnostics (e.g. PHPStan's
+        // `class.prefixed` alongside a native `unknown_class`) must
+        // both be shown so their respective code actions are available.
+        if is_full_line_range(&d.range) {
+            let full_line_code = d
+                .code
+                .as_ref()
+                .map(|c| match c {
+                    NumberOrString::String(s) => s.as_str(),
+                    _ => "",
+                })
+                .unwrap_or("");
+
+            if let Some(precise_codes) = precise_diags_by_line.get(&d.range.start.line)
+                && precise_codes
+                    .iter()
+                    .any(|pc| are_related_diagnostics(full_line_code, pc))
+            {
+                return false;
+            }
         }
 
         true
@@ -1183,6 +1228,76 @@ fn deduplicate_diagnostics(diagnostics: &mut Vec<Diagnostic>) {
 /// produce these ranges because they don't report column information.
 fn is_full_line_range(range: &Range) -> bool {
     range.start.line == range.end.line && range.start.character == 0 && range.end.character >= 1000
+}
+
+/// Check whether two diagnostic codes report related issues such that
+/// the full-line diagnostic is redundant when the precise one is
+/// present.
+///
+/// For example, PHPStan's `argument.type` and a native `unknown_class`
+/// on the same line are related (the class error causes the argument
+/// mismatch).  But PHPStan's `class.prefixed` and a native
+/// `unknown_class` are unrelated issues that need separate fixes.
+fn are_related_diagnostics(full_line_code: &str, precise_code: &str) -> bool {
+    // A native diagnostic that already covers the exact same concept
+    // makes the full-line PHPStan diagnostic redundant.
+    //
+    // Group 1: class existence / resolution errors.
+    const CLASS_RELATED: &[&str] = &["unknown_class", "class.notFound", "class.nameCase"];
+    // Group 2: member access errors.
+    const MEMBER_RELATED: &[&str] = &[
+        "unknown_member",
+        "unresolved_member_access",
+        "scalar_member_access",
+        "method.notFound",
+        "staticMethod.notFound",
+        "property.notFound",
+        "constant.notFound",
+        "access.property",
+        "access.staticProperty",
+    ];
+    // Group 3: function call errors.
+    const FUNCTION_RELATED: &[&str] = &["unknown_function", "function.notFound"];
+
+    // If both codes belong to the same group, they are related.
+    for group in &[CLASS_RELATED as &[&str], MEMBER_RELATED, FUNCTION_RELATED] {
+        let full_in = group.contains(&full_line_code);
+        let precise_in = group.contains(&precise_code);
+        if full_in && precise_in {
+            return true;
+        }
+    }
+
+    // PHPStan diagnostics that are consequences of a class/member not
+    // being found are redundant when the native diagnostic already
+    // flags the root cause.  For example, `argument.type` or
+    // `return.type` caused by an unknown class.
+    const CONSEQUENCE_CODES: &[&str] = &[
+        "argument.type",
+        "return.type",
+        "assign.propertyType",
+        "isset.property",
+        "deadCode.unreachable",
+    ];
+    const ROOT_CAUSE_CODES: &[&str] = &[
+        "unknown_class",
+        "unknown_member",
+        "unknown_function",
+        "scalar_member_access",
+        "unresolved_member_access",
+    ];
+
+    if CONSEQUENCE_CODES.contains(&full_line_code) && ROOT_CAUSE_CODES.contains(&precise_code) {
+        return true;
+    }
+
+    // Same code — always related (e.g. PHPStan `class.notFound` and
+    // native `class.notFound` on the same line).
+    if full_line_code == precise_code {
+        return true;
+    }
+
+    false
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

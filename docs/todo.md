@@ -21,10 +21,10 @@ within the same impact tier.
 
 ## Sprint 4 — Refactoring toolkit
 
-| #   | Item                                                                                                                                             | Impact   | Effort      |
-| --- | ------------------------------------------------------------------------------------------------------------------------------------------------ | -------- | ----------- |
-| H11 | [`method.visibility` / `property.visibility` — fix overriding visibility](todo/phpstan-actions.md#h11-methodvisibility--propertyvisibility--fix-overriding-visibility) | Medium | Low |
-|     | **Release 0.7.0**                                                                                                                                |          |             |
+| #   | Item                                                                                                                          | Impact | Effort |
+| --- | ----------------------------------------------------------------------------------------------------------------------------- | ------ | ------ |
+| H14 | [`throws.unusedType` — narrow `@throws` to actual thrown types](todo/phpstan-actions.md#h14-throwsunusedtype-narrow--narrow-throws-to-actual-thrown-types) | Medium | Medium |
+|     | **Release 0.7.0**                                                                                                             |        |        |
 
 ## Sprint 5 — Polish for office adoption
 
@@ -110,12 +110,10 @@ unlikely to move the needle for most users.
 | A10  | [Generate interface from class](todo/actions.md#a10-generate-interface-from-class)                                                                                          | Low-Medium  | Medium         |
 | A3   | Switch → match conversion                                                                                                                                                   | Low         | Medium         |
 |      | **[PHPStan Code Actions](todo/phpstan-actions.md)**                                                                                                                         |             |                |
-| H12  | `class.prefixed` — fix prefixed class name                                                                                                                                  | Medium      | Low            |
 | H4   | `assign.byRefForeachExpr` — unset by-reference foreach variable                                                                                                             | Medium      | Medium         |
 | H6   | `return.type` — update return type to match actual returns                                                                                                                  | Medium      | Medium         |
 | H10  | `return.unusedType` — remove unused type from return union                                                                                                                  | Medium      | Medium         |
 | H13  | `property.notFound` — declare missing property (same-class)                                                                                                                 | Medium      | Medium         |
-| H14  | `throws.unusedType` — narrow `@throws` to actual thrown types                                                                                                               | Medium      | Medium         |
 | H15  | Template bound from tip — add `@template T of X`                                                                                                                            | Medium      | Medium         |
 | H16  | `match.unhandled` — add missing match arms                                                                                                                                  | Medium      | Medium         |
 | H17  | `missingType.iterableValue` — add `@return` with inferred element type                                                                                                      | Medium      | High           |

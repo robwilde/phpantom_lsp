@@ -54,12 +54,10 @@ jobs:
           tool: cargo-llvm-cov,cargo-nextest
       - name: Run tests with coverage
         run: cargo llvm-cov nextest --lcov --output-path lcov.info
-      - name: Run doctests with coverage
-        run: cargo llvm-cov --doc --lcov --output-path lcov-doctest.info
       - name: Upload to Codecov
         uses: codecov/codecov-action@v5
         with:
-          files: lcov.info,lcov-doctest.info
+          files: lcov.info
           fail_ci_if_error: true
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}

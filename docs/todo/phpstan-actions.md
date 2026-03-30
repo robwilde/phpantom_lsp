@@ -73,34 +73,6 @@ or intersection member.
 
 ---
 
-### H11. `method.visibility` / `property.visibility` — Fix overriding visibility
-
-**Identifiers:** `method.visibility`, `property.visibility`
-**Messages:**
-- `{Private|Protected} method Foo::bar() overriding public method Parent::bar() should also be public.`
-- `Private method Foo::bar() overriding protected method Parent::bar() should be protected or public.`
-- (equivalent patterns for properties)
-
-Parse the required visibility from the message. Use the existing
-`change_visibility.rs` infrastructure to change the visibility modifier,
-but pre-select the correct target visibility instead of offering all three.
-
-When the message says "should also be public", offer only `public`.
-When the message says "should be protected or public", offer `protected`
-(as `is_preferred`) and `public`.
-
-Mark as `is_preferred` when there is only one correct answer.
-
-**`ignorable: false`:** These errors are non-ignorable in PHPStan — the
-"Add `@phpstan-ignore`" action would produce a broken ignore comment. This
-is one of the motivations for prerequisite R1: once we parse `ignorable`,
-the ignore action will be automatically suppressed.
-
-**Stale detection:** the visibility keyword on the diagnostic line has changed
-from the original value.
-
----
-
 ### H4. `assign.byRefForeachExpr` — Unset by-reference foreach variable
 
 **Identifier:** `assign.byRefForeachExpr`
@@ -128,28 +100,6 @@ real parser, but a simple nesting-depth counter works for well-formatted code.
 
 **Stale detection:** `unset($var)` appears between the foreach closing brace
 and the diagnostic line.
-
----
-
-### H12. `class.prefixed` — Fix prefixed class name
-
-**Identifier:** `class.prefixed`
-**Tip (in message):** `This is most likely unintentional. Did you mean to type {corrected}?`
-
-Parse the corrected class name from the tip using:
-`Did you mean to type (.+)\?$`
-
-The tip is available in the diagnostic message after the `\n` separator
-(see R3). Replace the prefixed name on the diagnostic line with the
-corrected one.
-
-**Caveat:** the diagnostic range currently covers the whole line
-(`character: 0` to `character: MAX`). We need to find the actual prefixed
-class name on the line — look for a backslash-prefixed version of the
-corrected name (e.g. `\DateTime` when corrected is `DateTime`).
-
-**Stale detection:** the prefixed class name no longer appears on the
-diagnostic line.
 
 ---
 
@@ -382,15 +332,12 @@ the list.
 
 Based on effort-to-value ratio and shared infrastructure:
 
-1. ~~**R1, R2, R3** — prerequisites~~ ✅ Done
-2. ~~**H7, H8, H9** — PHPDoc type mismatch family~~ ✅ Done
-3. **H11** — visibility fix (leverages existing `change_visibility.rs`)
-4. **H14** — narrow `@throws` (extends existing `remove_throws.rs`)
-5. **H6** — return type update
-6. **H10** — remove unused union member
-7. **H12** — prefixed class name
-8. **H4** — unset by-ref foreach variable
-9. Everything else based on user demand
+1. **H14** — narrow `@throws` (extends existing `remove_throws.rs`)
+2. **H6** — return type update
+3. **H10** — remove unused union member
+4. **H12** — prefixed class name
+5. **H4** — unset by-ref foreach variable
+6. Everything else based on user demand
 
 ---
 

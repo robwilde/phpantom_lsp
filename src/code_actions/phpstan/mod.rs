@@ -27,6 +27,9 @@
 //!   `@param`, or `@var` tag whose type is incompatible with the
 //!   native type hint), offer to update the tag type to match the
 //!   native type or remove the tag entirely.
+//! - **Fix prefixed class name** — when PHPStan reports
+//!   `class.prefixed` (a class name with an unnecessary leading
+//!   backslash), offer to replace it with the corrected name.
 //! - **PHPStan ignore** — when the cursor is on a line with a PHPStan
 //!   error, offer to add `@phpstan-ignore <identifier>`.  When PHPStan
 //!   reports an unnecessary ignore, offer to remove it.
@@ -35,6 +38,7 @@ mod add_override;
 pub(crate) mod add_return_type_will_change;
 pub(crate) mod add_throws;
 pub(crate) mod fix_phpdoc_type;
+pub(crate) mod fix_prefixed_class;
 mod ignore;
 pub(crate) mod new_static;
 pub(crate) mod remove_override;
@@ -53,7 +57,6 @@ use crate::Backend;
 ///
 /// Returns `(message, Some(tip))` when a tip is present, or
 /// `(message, None)` when there is no tip.
-#[allow(dead_code)] // consumers land with H4, H5, H12, H14, H15, H20
 pub(crate) fn split_phpstan_tip(message: &str) -> (&str, Option<&str>) {
     match message.split_once('\n') {
         Some((msg, tip)) => (msg, Some(tip)),
@@ -96,6 +99,9 @@ impl Backend {
 
         // ── Fix PHPDoc type mismatch (@return, @param, @var) ────────
         self.collect_fix_phpdoc_type_actions(uri, content, params, out);
+
+        // ── Fix prefixed class name ─────────────────────────────────
+        self.collect_fix_prefixed_class_actions(uri, content, params, out);
     }
 }
 
