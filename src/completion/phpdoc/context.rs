@@ -15,6 +15,7 @@
 
 use tower_lsp::lsp_types::Position;
 
+use super::helpers::{find_keyword_pos, find_matching_paren, split_params};
 use crate::completion::source::comment_position::{is_inside_docblock, position_to_byte_offset};
 
 // ─── Context Detection ─────────────────────────────────────────────────────
@@ -657,43 +658,6 @@ fn parse_symbol_info(text: &str) -> SymbolInfo {
     info
 }
 
-/// Find the position of a keyword in the declaration, making sure it's
-/// a whole word (not part of another identifier).
-fn find_keyword_pos(decl: &str, keyword: &str) -> Option<usize> {
-    let lower = decl.to_lowercase();
-    let mut start = 0;
-    while let Some(pos) = lower[start..].find(keyword) {
-        let abs_pos = start + pos;
-        let before_ok = abs_pos == 0 || !decl.as_bytes()[abs_pos - 1].is_ascii_alphanumeric();
-        let after_pos = abs_pos + keyword.len();
-        let after_ok =
-            after_pos >= decl.len() || !decl.as_bytes()[after_pos].is_ascii_alphanumeric();
-        if before_ok && after_ok {
-            return Some(abs_pos);
-        }
-        start = abs_pos + keyword.len();
-    }
-    None
-}
-
-/// Find the position of the matching `)` for the first `(`, handling nesting.
-fn find_matching_paren(s: &str) -> Option<usize> {
-    let mut depth = 0i32;
-    for (i, c) in s.char_indices() {
-        match c {
-            '(' => depth += 1,
-            ')' => {
-                if depth == 0 {
-                    return Some(i);
-                }
-                depth -= 1;
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
 /// Parse a comma-separated parameter list into `(type_hint, $name)` pairs.
 fn parse_params(params_str: &str) -> Vec<(Option<String>, String)> {
     if params_str.trim().is_empty() {
@@ -703,7 +667,7 @@ fn parse_params(params_str: &str) -> Vec<(Option<String>, String)> {
     let mut result = Vec::new();
 
     // Split on commas, respecting nested parens/angle brackets
-    for param in split_params_str(params_str) {
+    for param in split_params(params_str) {
         let param = param.trim();
         if param.is_empty() {
             continue;
@@ -749,38 +713,6 @@ fn parse_params(params_str: &str) -> Vec<(Option<String>, String)> {
     }
 
     result
-}
-
-/// Split a parameter string on commas, respecting nested parens and angle brackets.
-fn split_params_str(s: &str) -> Vec<String> {
-    let mut parts = Vec::new();
-    let mut current = String::new();
-    let mut depth = 0i32;
-
-    for c in s.chars() {
-        match c {
-            '(' | '<' | '[' => {
-                depth += 1;
-                current.push(c);
-            }
-            ')' | '>' | ']' => {
-                depth -= 1;
-                current.push(c);
-            }
-            ',' if depth == 0 => {
-                parts.push(current.clone());
-                current.clear();
-            }
-            _ => {
-                current.push(c);
-            }
-        }
-    }
-    if !current.trim().is_empty() {
-        parts.push(current);
-    }
-
-    parts
 }
 
 /// Extract the return type from the portion after `)` in a function declaration.

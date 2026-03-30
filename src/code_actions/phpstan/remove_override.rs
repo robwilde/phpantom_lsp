@@ -24,7 +24,7 @@ use tower_lsp::lsp_types::*;
 
 use crate::Backend;
 use crate::code_actions::{CodeActionData, make_code_action_data};
-use crate::util::ranges_overlap;
+use crate::util::{contains_php_attribute, ranges_overlap};
 
 /// PHPStan identifiers we match on.
 const METHOD_OVERRIDE_ID: &str = "method.override";
@@ -211,49 +211,11 @@ fn find_override_attribute_line(content: &str, diag_line: usize) -> Option<usize
     let search_start = diag_line.saturating_sub(10);
     for i in (search_start..=diag_line).rev() {
         let trimmed = lines[i].trim();
-        if trimmed.starts_with("#[") && contains_override_attr(trimmed) {
+        if trimmed.starts_with("#[") && contains_php_attribute(trimmed, b"Override") {
             return Some(i);
         }
     }
     None
-}
-
-/// Check if a `#[...]` line contains `Override` as an attribute name.
-///
-/// Matches patterns like:
-/// - `#[Override]`
-/// - `#[\Override]`
-/// - `#[Override, SomethingElse]`
-/// - `#[\Override, SomethingElse]`
-/// - `#[SomethingElse, Override]`
-/// - `#[SomethingElse, \Override]`
-fn contains_override_attr(line: &str) -> bool {
-    let bytes = line.as_bytes();
-    let target = b"Override";
-    let target_len = target.len();
-
-    let mut i = 0;
-    while i + target_len <= bytes.len() {
-        if &bytes[i..i + target_len] == target {
-            let ok_before = if i == 0 {
-                false
-            } else {
-                let prev = bytes[i - 1];
-                prev == b'[' || prev == b'\\' || prev == b',' || prev == b' ' || prev == b'\t'
-            };
-            let ok_after = if i + target_len >= bytes.len() {
-                true
-            } else {
-                let next = bytes[i + target_len];
-                next == b']' || next == b',' || next == b'(' || next == b' ' || next == b'\t'
-            };
-            if ok_before && ok_after {
-                return true;
-            }
-        }
-        i += 1;
-    }
-    false
 }
 
 /// Build a `TextEdit` that removes the `#[Override]` attribute from
@@ -448,29 +410,38 @@ mod tests {
         );
     }
 
-    // ── contains_override_attr ──────────────────────────────────────
+    // ── contains_php_attribute ──────────────────────────────────────
 
     #[test]
     fn finds_override_simple() {
-        assert!(contains_override_attr("#[Override]"));
+        assert!(contains_php_attribute("#[Override]", b"Override"));
     }
 
     #[test]
     fn finds_override_with_backslash() {
-        assert!(contains_override_attr("#[\\Override]"));
+        assert!(contains_php_attribute("#[\\Override]", b"Override"));
     }
 
     #[test]
     fn finds_override_in_list() {
-        assert!(contains_override_attr("#[Override, Deprecated]"));
-        assert!(contains_override_attr("#[Deprecated, Override]"));
-        assert!(contains_override_attr("#[Deprecated, \\Override]"));
+        assert!(contains_php_attribute(
+            "#[Override, Deprecated]",
+            b"Override"
+        ));
+        assert!(contains_php_attribute(
+            "#[Deprecated, Override]",
+            b"Override"
+        ));
+        assert!(contains_php_attribute(
+            "#[Deprecated, \\Override]",
+            b"Override"
+        ));
     }
 
     #[test]
     fn does_not_match_partial() {
-        assert!(!contains_override_attr("#[OverrideSomething]"));
-        assert!(!contains_override_attr("#[MyOverride]"));
+        assert!(!contains_php_attribute("#[OverrideSomething]", b"Override"));
+        assert!(!contains_php_attribute("#[MyOverride]", b"Override"));
     }
 
     // ── is_sole_override_attribute ──────────────────────────────────

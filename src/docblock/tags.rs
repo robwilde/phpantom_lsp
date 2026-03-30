@@ -21,6 +21,7 @@ use mago_docblock::document::TagKind;
 use mago_span::HasSpan;
 use mago_syntax::ast::*;
 
+use crate::symbol_map::docblock::get_docblock_text_with_offset;
 use crate::types::{AssertionKind, PhpVersion, TypeAssertion};
 
 use super::parser::{DocblockInfo, collapse_newlines, parse_docblock_for_tags};
@@ -1097,7 +1098,7 @@ pub fn find_enclosing_return_type(content: &str, cursor_offset: usize) -> Option
 
     // Scan backward over modifier keywords and whitespace.
     let trimmed = before_func.trim_end();
-    let after_mods = strip_trailing_modifiers(trimmed);
+    let after_mods = crate::util::strip_trailing_modifiers(trimmed);
 
     if !after_mods.ends_with("*/") {
         return None;
@@ -1107,49 +1108,6 @@ pub fn find_enclosing_return_type(content: &str, cursor_offset: usize) -> Option
     let docblock = &after_mods[open_pos..];
 
     extract_return_type(docblock)
-}
-
-/// Strip trailing PHP visibility/modifier keywords from a string.
-///
-/// Given a string like `"  /** ... */\n    public static"`, returns
-/// `"  /** ... */"` (after stripping `static` and `public`).
-///
-/// Recognised modifiers: `public`, `protected`, `private`, `static`,
-/// `abstract`, `final`.
-fn strip_trailing_modifiers(s: &str) -> &str {
-    const MODIFIERS: &[&str] = &[
-        "public",
-        "protected",
-        "private",
-        "static",
-        "abstract",
-        "final",
-    ];
-
-    let mut current = s;
-    loop {
-        let trimmed = current.trim_end();
-        let mut found = false;
-        for &modifier in MODIFIERS {
-            if let Some(before) = trimmed.strip_suffix(modifier) {
-                // Make sure the modifier is preceded by whitespace or
-                // start of string (not part of a longer identifier).
-                let before_trimmed = before.trim_end();
-                if before.len() == before_trimmed.len() && !before.is_empty() {
-                    // No whitespace before the modifier — it could be
-                    // part of an identifier.  Skip.
-                    continue;
-                }
-                current = before;
-                found = true;
-                break;
-            }
-        }
-        if !found {
-            break;
-        }
-    }
-    current.trim_end()
 }
 
 // ─── Type Override Logic ────────────────────────────────────────────────────
@@ -1393,40 +1351,7 @@ pub fn get_docblock_text_for_node<'a>(
     content: &str,
     node: &impl HasSpan,
 ) -> Option<&'a str> {
-    let node_start = node.span().start.offset;
-    let candidate_idx = trivia.partition_point(|t| t.span.start.offset < node_start);
-    if candidate_idx == 0 {
-        return None;
-    }
-
-    let content_bytes = content.as_bytes();
-    let mut covered_from = node_start;
-
-    for i in (0..candidate_idx).rev() {
-        let t = &trivia[i];
-        let t_end = t.span.end.offset;
-
-        // Check for non-whitespace content in the gap between this trivia
-        // and the region we've already covered.
-        let gap = content_bytes
-            .get(t_end as usize..covered_from as usize)
-            .unwrap_or(&[]);
-        if !gap.iter().all(u8::is_ascii_whitespace) {
-            return None;
-        }
-
-        match t.kind {
-            TriviaKind::DocBlockComment => return Some(t.value),
-            TriviaKind::WhiteSpace
-            | TriviaKind::SingleLineComment
-            | TriviaKind::MultiLineComment
-            | TriviaKind::HashComment => {
-                covered_from = t.span.start.offset;
-            }
-        }
-    }
-
-    None
+    get_docblock_text_with_offset(trivia, content, node).map(|(text, _)| text)
 }
 
 /// Locate the docblock for an AST node and return it as a parsed

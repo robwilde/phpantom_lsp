@@ -23,7 +23,7 @@ use crate::Backend;
 use crate::types::{
     ClassInfo, ClassLikeKind, ConstantInfo, FunctionInfo, MethodInfo, PropertyInfo, Visibility,
 };
-use crate::util::offset_to_position;
+use crate::util::{offset_to_position, short_name};
 
 impl Backend {
     /// Build the `DocumentSymbol` tree for a single file.
@@ -457,11 +457,6 @@ fn build_function_detail(func: &FunctionInfo) -> Option<String> {
     }
 
     Some(detail)
-}
-
-/// Extract the short (unqualified) name from a potentially qualified name.
-fn short_name(name: &str) -> &str {
-    name.rsplit('\\').next().unwrap_or(name)
 }
 
 /// Find the start of a class/interface/trait/enum name token after the

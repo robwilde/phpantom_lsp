@@ -35,6 +35,7 @@ use crate::completion::use_edit::{analyze_use_block, build_use_edit, use_import_
 use crate::parser::with_parsed_program;
 use crate::util::offset_to_position;
 use crate::util::ranges_overlap;
+use crate::util::strip_trailing_modifiers;
 
 /// The PHPStan identifier we match on.
 const CHECKED_EXCEPTION_ID: &str = "missingType.checkedException";
@@ -378,43 +379,6 @@ fn find_enclosing_docblock(content: &str, diag_line: usize) -> Option<DocblockIn
         indent,
         sig_line_start: sig_line_byte_start,
     })
-}
-
-/// Strip trailing PHP modifier keywords from a string.
-fn strip_trailing_modifiers(s: &str) -> &str {
-    let modifiers = [
-        "public",
-        "protected",
-        "private",
-        "static",
-        "abstract",
-        "final",
-        "readonly",
-    ];
-    let mut result = s;
-    loop {
-        let trimmed = result.trim_end();
-        let mut found = false;
-        for kw in &modifiers {
-            if let Some(prefix) = trimmed.strip_suffix(kw) {
-                // Make sure the keyword isn't part of a larger identifier.
-                if prefix.is_empty()
-                    || prefix
-                        .as_bytes()
-                        .last()
-                        .is_some_and(|&b| !b.is_ascii_alphanumeric() && b != b'_')
-                {
-                    result = prefix;
-                    found = true;
-                    break;
-                }
-            }
-        }
-        if !found {
-            break;
-        }
-    }
-    result
 }
 
 /// Check if the existing docblock already documents a `@throws` for

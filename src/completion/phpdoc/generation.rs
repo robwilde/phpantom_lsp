@@ -46,6 +46,7 @@ use std::sync::Arc;
 use tower_lsp::lsp_types::*;
 
 use super::context::{DocblockContext, SymbolInfo};
+use super::helpers::{find_keyword_pos, find_matching_paren, split_params};
 use crate::completion::resolver::FunctionLoaderFn;
 use crate::completion::source::comment_position::position_to_byte_offset;
 use crate::completion::source::throws_analysis::{self, ThrowsContext};
@@ -743,42 +744,6 @@ fn extract_class_supertypes(decl: &str) -> (Vec<String>, Vec<String>) {
     (parents, interfaces)
 }
 
-/// Find a whole-word keyword position in a declaration string.
-fn find_keyword_pos(decl: &str, keyword: &str) -> Option<usize> {
-    let lower = decl.to_lowercase();
-    let mut start = 0;
-    while let Some(pos) = lower[start..].find(keyword) {
-        let abs_pos = start + pos;
-        let before_ok = abs_pos == 0 || !decl.as_bytes()[abs_pos - 1].is_ascii_alphanumeric();
-        let after_pos = abs_pos + keyword.len();
-        let after_ok =
-            after_pos >= decl.len() || !decl.as_bytes()[after_pos].is_ascii_alphanumeric();
-        if before_ok && after_ok {
-            return Some(abs_pos);
-        }
-        start = abs_pos + keyword.len();
-    }
-    None
-}
-
-/// Find the matching `)` for the first `(`, handling nesting.
-fn find_matching_paren(s: &str) -> Option<usize> {
-    let mut depth = 0i32;
-    for (i, c) in s.char_indices() {
-        match c {
-            '(' => depth += 1,
-            ')' => {
-                if depth == 0 {
-                    return Some(i);
-                }
-                depth -= 1;
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
 /// Parse a comma-separated parameter list into `(type_hint, $name)` pairs.
 fn parse_params(params_str: &str) -> Vec<(Option<String>, String)> {
     if params_str.trim().is_empty() {
@@ -835,29 +800,6 @@ fn parse_params(params_str: &str) -> Vec<(Option<String>, String)> {
         }
     }
 
-    result
-}
-
-/// Split parameter string on commas, respecting nested parens and
-/// angle brackets.
-fn split_params(params_str: &str) -> Vec<&str> {
-    let mut result = Vec::new();
-    let mut depth = 0i32;
-    let mut start = 0;
-    let bytes = params_str.as_bytes();
-
-    for (i, &b) in bytes.iter().enumerate() {
-        match b {
-            b'(' | b'<' | b'[' | b'{' => depth += 1,
-            b')' | b'>' | b']' | b'}' => depth -= 1,
-            b',' if depth == 0 => {
-                result.push(&params_str[start..i]);
-                start = i + 1;
-            }
-            _ => {}
-        }
-    }
-    result.push(&params_str[start..]);
     result
 }
 

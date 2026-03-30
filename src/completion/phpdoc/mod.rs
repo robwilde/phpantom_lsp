@@ -66,6 +66,7 @@ pub use super::source::comment_position::{is_inside_docblock, is_inside_non_doc_
 // working without path changes.
 mod context;
 pub(crate) mod generation;
+mod helpers;
 pub use context::{
     DocblockContext, DocblockTypingContext, SymbolInfo, detect_context,
     detect_docblock_typing_position, extract_phpdoc_prefix, extract_symbol_info,

@@ -21,6 +21,7 @@ use crate::completion::resolver::Loaders;
 use crate::diagnostics::offset_range_to_lsp_range;
 use crate::symbol_map::SymbolKind;
 use crate::types::{ClassInfo, ResolvedType};
+use crate::util::resolve_to_fqn;
 use crate::virtual_members::resolve_class_fully_cached;
 
 /// File-level context needed for subject resolution.
@@ -531,13 +532,13 @@ fn resolve_subject_to_class(
                 .iter()
                 .find(|c| !c.name.starts_with("__anonymous@") && c.parent_class.is_some())?;
             let parent = cls.parent_class.as_ref()?;
-            let fqn = resolve_name_to_fqn(parent, ctx.use_map, ctx.namespace);
+            let fqn = resolve_to_fqn(parent, ctx.use_map, ctx.namespace);
             backend
                 .find_or_load_class(&fqn)
                 .map(|arc| ClassInfo::clone(&arc))
         }
         _ if is_static && !trimmed.starts_with('$') => {
-            let fqn = resolve_name_to_fqn(trimmed, ctx.use_map, ctx.namespace);
+            let fqn = resolve_to_fqn(trimmed, ctx.use_map, ctx.namespace);
             backend
                 .find_or_load_class(&fqn)
                 .map(|arc| ClassInfo::clone(&arc))
@@ -575,39 +576,6 @@ fn resolve_subject_to_class(
         }
         _ => None,
     }
-}
-
-/// Resolve a class name to a fully-qualified name using the use map and
-/// namespace context.
-fn resolve_name_to_fqn(
-    name: &str,
-    use_map: &HashMap<String, String>,
-    namespace: &Option<String>,
-) -> String {
-    // Input boundary: name from AST may be fully-qualified with leading `\`.
-    if let Some(stripped) = name.strip_prefix('\\') {
-        return stripped.to_string();
-    }
-
-    if !name.contains('\\') {
-        if let Some(fqn) = use_map.get(name) {
-            return fqn.clone();
-        }
-        if let Some(ns) = namespace {
-            return format!("{}\\{}", ns, name);
-        }
-        return name.to_string();
-    }
-
-    let first_segment = name.split('\\').next().unwrap_or(name);
-    if let Some(fqn_prefix) = use_map.get(first_segment) {
-        let rest = &name[first_segment.len()..];
-        return format!("{}{}", fqn_prefix, rest);
-    }
-    if let Some(ns) = namespace {
-        return format!("{}\\{}", ns, name);
-    }
-    name.to_string()
 }
 
 #[cfg(test)]

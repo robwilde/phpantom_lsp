@@ -3,7 +3,6 @@
 //! Functions and types that are used by multiple diagnostic modules live
 //! here to avoid duplication.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use tower_lsp::lsp_types::*;
@@ -86,38 +85,9 @@ pub(crate) fn is_offset_in_ranges(offset: u32, ranges: &[ByteRange]) -> bool {
         .any(|&(start, end)| offset >= start && offset < end)
 }
 
-/// Resolve an unqualified/qualified class name to a fully-qualified name
-/// using the use map and namespace context.
-///
-/// This mirrors the logic in `Backend::resolve_class_name` but only
-/// produces the FQN string without loading the class.
-pub(crate) fn resolve_to_fqn(
-    name: &str,
-    use_map: &HashMap<String, String>,
-    namespace: &Option<String>,
-) -> String {
-    // Unqualified (no backslash) — check use map first
-    if !name.contains('\\') {
-        if let Some(fqn) = use_map.get(name) {
-            return fqn.clone();
-        }
-        if let Some(ns) = namespace {
-            return format!("{}\\{}", ns, name);
-        }
-        return name.to_string();
-    }
-
-    // Qualified (contains backslash, no leading backslash)
-    let first_segment = name.split('\\').next().unwrap_or(name);
-    if let Some(fqn_prefix) = use_map.get(first_segment) {
-        let rest = &name[first_segment.len()..];
-        return format!("{}{}", fqn_prefix, rest);
-    }
-    if let Some(ns) = namespace {
-        return format!("{}\\{}", ns, name);
-    }
-    name.to_string()
-}
+// Re-export the canonical `resolve_to_fqn` from `crate::util` so that
+// existing `use super::helpers::resolve_to_fqn` imports keep working.
+pub(crate) use crate::util::resolve_to_fqn;
 
 /// Find the innermost class whose body span contains `offset`.
 ///

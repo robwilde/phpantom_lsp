@@ -442,6 +442,8 @@ fn line_has_ignore_for(content: &str, diag_line: u32, identifier: &str) -> bool 
 /// `/** ... */` block.  Returns the raw docblock text (from `/**` to
 /// `*/` inclusive) if found, or an empty string if no docblock exists.
 fn enclosing_docblock_text(content: &str, diag_line: usize) -> String {
+    use crate::util::{contains_function_keyword, strip_trailing_modifiers};
+
     let lines: Vec<&str> = content.lines().collect();
     if diag_line >= lines.len() {
         return String::new();
@@ -459,7 +461,7 @@ fn enclosing_docblock_text(content: &str, diag_line: usize) -> String {
     //      pragmatic fallback we also scan forward a few lines.
     let mut func_line: Option<usize> = None;
     for idx in (0..=diag_line).rev() {
-        if line_has_function_keyword(lines[idx]) {
+        if contains_function_keyword(lines[idx]) {
             func_line = Some(idx);
             break;
         }
@@ -471,7 +473,7 @@ fn enclosing_docblock_text(content: &str, diag_line: usize) -> String {
         let start = diag_line + 1;
         let limit = (diag_line + 10).min(lines.len());
         for (i, line) in lines[start..limit].iter().enumerate() {
-            if line_has_function_keyword(line) {
+            if contains_function_keyword(line) {
                 func_line = Some(start + i);
                 break;
             }
@@ -496,39 +498,7 @@ fn enclosing_docblock_text(content: &str, diag_line: usize) -> String {
     let before_func = &content[..func_kw_pos];
     let trimmed = before_func.trim_end();
 
-    // Strip trailing modifier keywords.
-    let modifiers = [
-        "public",
-        "protected",
-        "private",
-        "static",
-        "abstract",
-        "final",
-        "readonly",
-    ];
-    let mut result = trimmed;
-    loop {
-        let t = result.trim_end();
-        let mut found = false;
-        for kw in &modifiers {
-            if let Some(prefix) = t.strip_suffix(kw)
-                && (prefix.is_empty()
-                    || prefix
-                        .as_bytes()
-                        .last()
-                        .is_some_and(|&b| !b.is_ascii_alphanumeric() && b != b'_'))
-            {
-                result = prefix;
-                found = true;
-                break;
-            }
-        }
-        if !found {
-            break;
-        }
-    }
-
-    let after_mods = result.trim_end();
+    let after_mods = strip_trailing_modifiers(trimmed);
     if after_mods.ends_with("*/")
         && let Some(open) = after_mods.rfind("/**")
     {
@@ -536,23 +506,6 @@ fn enclosing_docblock_text(content: &str, diag_line: usize) -> String {
     }
 
     String::new()
-}
-
-#[cfg(test)]
-#[allow(dead_code)]
-/// Check whether `line` contains the `function` keyword (not part of
-/// a larger identifier like `myfunction`).
-fn line_has_function_keyword(line: &str) -> bool {
-    let Some(pos) = line.find("function") else {
-        return false;
-    };
-    let before_ok = pos == 0 || line.as_bytes()[pos - 1].is_ascii_whitespace();
-    let after_pos = pos + "function".len();
-    let after_ok = after_pos >= line.len() || {
-        let b = line.as_bytes()[after_pos];
-        !b.is_ascii_alphanumeric() && b != b'_'
-    };
-    before_ok && after_ok
 }
 
 #[cfg(test)]

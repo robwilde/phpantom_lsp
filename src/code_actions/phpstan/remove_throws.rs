@@ -22,7 +22,7 @@ use tower_lsp::lsp_types::*;
 use crate::Backend;
 use crate::code_actions::CodeActionData;
 use crate::code_actions::make_code_action_data;
-use crate::util::ranges_overlap;
+use crate::util::{ranges_overlap, short_name};
 
 /// PHPStan identifiers we match on.
 const UNUSED_TYPE_ID: &str = "throws.unusedType";
@@ -63,7 +63,7 @@ impl Backend {
                 None => continue,
             };
 
-            let short_name = short_name_from_type(&type_name);
+            let short_name = short_name(&type_name);
 
             // Find the docblock above the diagnostic line (validation only).
             let diag_line = diag.range.start.line as usize;
@@ -168,12 +168,6 @@ fn extract_throws_type(message: &str, identifier: &str) -> Option<String> {
     Some(raw)
 }
 
-/// Get the short (unqualified) name from a potentially-qualified type.
-fn short_name_from_type(type_name: &str) -> &str {
-    let trimmed = type_name.trim_start_matches('\\');
-    trimmed.rsplit('\\').next().unwrap_or(trimmed)
-}
-
 /// Information about a docblock found above a given line.
 struct DocblockAbove {
     /// Byte offset of the `/**`.
@@ -270,7 +264,7 @@ fn build_remove_throws_edit(
     docblock: &DocblockAbove,
     type_name: &str,
 ) -> Option<TextEdit> {
-    let short = short_name_from_type(type_name);
+    let short = short_name(type_name);
 
     // Find the @throws line(s) to remove.
     let doc_lines: Vec<&str> = docblock.text.lines().collect();
@@ -291,7 +285,7 @@ fn build_remove_throws_edit(
         if let Some(rest) = trimmed.strip_prefix("@throws") {
             let rest = rest.trim_start();
             let tag_type = rest.split_whitespace().next().unwrap_or("");
-            let tag_short = short_name_from_type(tag_type);
+            let tag_short = short_name(tag_type);
 
             // Match by short name (case-insensitive) — the docblock
             // might use the short name, the FQN, or a leading-backslash
@@ -450,30 +444,24 @@ mod tests {
 
     #[test]
     fn short_name_simple() {
-        assert_eq!(short_name_from_type("RuntimeException"), "RuntimeException");
+        assert_eq!(short_name("RuntimeException"), "RuntimeException");
     }
 
     #[test]
     fn short_name_namespaced() {
-        assert_eq!(
-            short_name_from_type("App\\Exceptions\\FooException"),
-            "FooException"
-        );
+        assert_eq!(short_name("App\\Exceptions\\FooException"), "FooException");
     }
 
     #[test]
     fn short_name_leading_backslash() {
-        assert_eq!(
-            short_name_from_type("\\TheSeer\\Tokenizer\\Exception"),
-            "Exception"
-        );
+        assert_eq!(short_name("\\TheSeer\\Tokenizer\\Exception"), "Exception");
     }
 
     #[test]
     fn short_name_non_class() {
         // "not even correct" — the short name is the whole thing
         // since there are no backslashes.
-        assert_eq!(short_name_from_type("not"), "not");
+        assert_eq!(short_name("not"), "not");
     }
 
     // ── find_docblock_above_line ────────────────────────────────────

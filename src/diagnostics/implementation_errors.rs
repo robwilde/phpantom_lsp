@@ -14,6 +14,7 @@ use crate::Backend;
 use crate::code_actions::implement_methods::collect_missing_methods;
 use crate::symbol_map::SymbolKind;
 use crate::types::ClassLikeKind;
+use crate::util::short_name;
 
 impl Backend {
     /// Collect implementation-error diagnostics for a single file.
@@ -250,11 +251,6 @@ fn has_abstract_method_in_chain(
     }
 
     false
-}
-
-/// Extract the short name from a possibly-qualified class name.
-fn short_name(fqn: &str) -> &str {
-    fqn.rsplit('\\').next().unwrap_or(fqn)
 }
 
 #[cfg(test)]

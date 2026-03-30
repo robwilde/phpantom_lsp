@@ -13,7 +13,7 @@ use crate::Backend;
 use crate::code_actions::{CodeActionData, make_code_action_data};
 use crate::parser::with_parsed_program;
 use crate::scope_collector::{ScopeMap, collect_function_scope, collect_scope};
-use crate::util::{offset_to_position, position_to_byte_offset};
+use crate::util::{find_identical_occurrences, offset_to_position, position_to_byte_offset};
 
 // ─── Name generation ────────────────────────────────────────────────────────
 
@@ -651,50 +651,6 @@ fn build_scope_map(content: &str, offset: u32) -> ScopeMap {
         let body_end = content.len() as u32;
         collect_scope(program.statements.as_slice(), 0, body_end)
     })
-}
-
-// ─── Duplicate occurrence search ────────────────────────────────────────────
-
-/// Find all occurrences of `needle` in `content` within the byte range
-/// `[scope_start, scope_end)` that are textually identical to the selected
-/// expression, excluding the original selection `[sel_start, sel_end)`.
-/// Returns `(start, end)` byte offset pairs.
-fn find_identical_occurrences(
-    content: &str,
-    needle: &str,
-    sel_start: usize,
-    sel_end: usize,
-    scope_start: usize,
-    scope_end: usize,
-) -> Vec<(usize, usize)> {
-    if needle.is_empty() || scope_start >= scope_end || scope_end > content.len() {
-        return Vec::new();
-    }
-    let haystack = &content[scope_start..scope_end];
-    let mut results = Vec::new();
-    let mut search_from = 0;
-    while let Some(pos) = haystack[search_from..].find(needle) {
-        let abs_start = scope_start + search_from + pos;
-        let abs_end = abs_start + needle.len();
-        // Skip the original selection.
-        if abs_start != sel_start || abs_end != sel_end {
-            // Verify this occurrence is not a substring of a longer
-            // identifier.  Check that the characters immediately before
-            // and after are not word chars.
-            let before_ok = abs_start == 0
-                || !content.as_bytes()[abs_start - 1].is_ascii_alphanumeric()
-                    && content.as_bytes()[abs_start - 1] != b'_'
-                    && content.as_bytes()[abs_start - 1] != b'$';
-            let after_ok = abs_end >= content.len()
-                || !content.as_bytes()[abs_end].is_ascii_alphanumeric()
-                    && content.as_bytes()[abs_end] != b'_';
-            if before_ok && after_ok {
-                results.push((abs_start, abs_end));
-            }
-        }
-        search_from = search_from + pos + 1;
-    }
-    results
 }
 
 // ─── Code action ────────────────────────────────────────────────────────────

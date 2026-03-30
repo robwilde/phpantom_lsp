@@ -22,7 +22,7 @@ use crate::Backend;
 use crate::code_actions::cursor_context::{CursorContext, MemberContext, find_cursor_context};
 use crate::code_actions::{CodeActionData, make_code_action_data};
 use crate::types::PhpVersion;
-use crate::util::{offset_to_position, position_to_byte_offset};
+use crate::util::{find_identical_occurrences, offset_to_position, position_to_byte_offset};
 
 // ─── Literal detection ──────────────────────────────────────────────────────
 
@@ -567,44 +567,6 @@ fn has_blank_line(text: &str) -> bool {
     false
 }
 
-/// Find all occurrences of `needle` within the class body
-/// `[scope_start, scope_end)`, excluding the original selection.
-fn find_identical_literal_occurrences(
-    content: &str,
-    needle: &str,
-    sel_start: usize,
-    sel_end: usize,
-    scope_start: usize,
-    scope_end: usize,
-) -> Vec<(usize, usize)> {
-    if needle.is_empty() || scope_start >= scope_end || scope_end > content.len() {
-        return Vec::new();
-    }
-    let haystack = &content[scope_start..scope_end];
-    let mut results = Vec::new();
-    let mut search_from = 0;
-    while let Some(pos) = haystack[search_from..].find(needle) {
-        let abs_start = scope_start + search_from + pos;
-        let abs_end = abs_start + needle.len();
-        // Skip the original selection.
-        if abs_start != sel_start || abs_end != sel_end {
-            // Check word boundaries to avoid matching substrings.
-            let before_ok = abs_start == 0
-                || !content.as_bytes()[abs_start - 1].is_ascii_alphanumeric()
-                    && content.as_bytes()[abs_start - 1] != b'_'
-                    && content.as_bytes()[abs_start - 1] != b'$';
-            let after_ok = abs_end >= content.len()
-                || !content.as_bytes()[abs_end].is_ascii_alphanumeric()
-                    && content.as_bytes()[abs_end] != b'_';
-            if before_ok && after_ok {
-                results.push((abs_start, abs_end));
-            }
-        }
-        search_from = search_from + pos + 1;
-    }
-    results
-}
-
 /// Determine the indentation used for members inside the class body.
 /// Looks at the line after the opening brace to detect the indent.
 fn detect_member_indent(content: &str, body_start: usize) -> String {
@@ -857,7 +819,7 @@ impl Backend {
             let trimmed_start = start_offset + trim_start_delta;
             let trimmed_end = end_offset - trim_end_delta;
 
-            let other_occurrences = find_identical_literal_occurrences(
+            let other_occurrences = find_identical_occurrences(
                 content,
                 trimmed,
                 trimmed_start,

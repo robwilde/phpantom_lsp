@@ -589,48 +589,14 @@ impl Backend {
     /// Resolve a short or partially-qualified name to a fully-qualified name
     /// using the file's `use` map and namespace context.
     ///
-    /// Rules:
-    ///   - If the name contains `\` it is already (partially) qualified.
-    ///     Check if the first segment is in the use_map; if so, expand it.
-    ///     Otherwise prefix with the current namespace.
-    ///   - If the name is unqualified (no `\`):
-    ///     1. Check the use_map for a direct mapping.
-    ///     2. Prefix with the current namespace.
-    ///     3. Fall back to the bare name (global namespace).
+    /// This is a thin wrapper around [`crate::util::resolve_to_fqn`] kept
+    /// for API compatibility with callers that use `Self::resolve_to_fqn`.
     pub fn resolve_to_fqn(
         name: &str,
         use_map: &HashMap<String, String>,
         namespace: &Option<String>,
     ) -> String {
-        // Already fully-qualified (leading `\` was stripped earlier).
-        // If name contains `\`, check if the first segment is aliased.
-        if name.contains('\\') {
-            let first_segment = name.split('\\').next().unwrap_or(name);
-            if let Some(fqn_prefix) = use_map.get(first_segment) {
-                // Replace the first segment with the FQN prefix.
-                let rest = &name[first_segment.len()..];
-                return format!("{}{}", fqn_prefix, rest);
-            }
-            // Not in use map — might already be fully-qualified, or
-            // needs current namespace prepended.
-            if let Some(ns) = namespace {
-                return format!("{}\\{}", ns, name);
-            }
-            return name.to_string();
-        }
-
-        // Unqualified name — try use_map first.
-        if let Some(fqn) = use_map.get(name) {
-            return fqn.clone();
-        }
-
-        // Try current namespace.
-        if let Some(ns) = namespace {
-            return format!("{}\\{}", ns, name);
-        }
-
-        // Fall back to global / bare name.
-        name.to_string()
+        crate::util::resolve_to_fqn(name, use_map, namespace)
     }
 
     /// Resolve a class definition in a file on disk.

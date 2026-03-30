@@ -27,6 +27,7 @@ use mago_syntax::ast::*;
 use tower_lsp::lsp_types::*;
 
 use super::cursor_context::{CursorContext, MemberContext, find_cursor_context};
+use super::detect_indent_from_members;
 use crate::Backend;
 use crate::docblock::{extract_var_type, get_docblock_text_for_node};
 use crate::parser::extract_hint_string;
@@ -584,33 +585,6 @@ fn find_line_end(content: &str, offset: usize) -> usize {
     } else {
         content.len()
     }
-}
-
-/// Detect indentation from the first class member's position in the source.
-///
-/// Looks at the line containing the first member to determine the
-/// indent string.  Falls back to four spaces.
-fn detect_indent_from_members<'a>(
-    members: &Sequence<'a, ClassLikeMember<'a>>,
-    content: &str,
-) -> String {
-    if let Some(first) = members.first() {
-        let offset = first.span().start.offset as usize;
-        let line_start = content[..offset]
-            .rfind('\n')
-            .map(|pos| pos + 1)
-            .unwrap_or(0);
-        let line_prefix = &content[line_start..offset];
-        let indent: String = line_prefix
-            .chars()
-            .take_while(|c| c.is_whitespace())
-            .collect();
-        if !indent.is_empty() {
-            return indent;
-        }
-    }
-
-    "    ".to_string()
 }
 
 /// Check if the modifier list includes `readonly`.

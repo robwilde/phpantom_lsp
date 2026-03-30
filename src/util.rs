@@ -10,11 +10,58 @@
 /// Subject-extraction helpers (walking backwards through characters to
 /// find variables, call expressions, balanced parentheses, `new`
 /// expressions, etc.) live in [`crate::subject_extraction`].
+use std::collections::HashMap;
 use std::panic::{self, AssertUnwindSafe, UnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tower_lsp::lsp_types::*;
+
+/// Resolve an unqualified or partially-qualified PHP class/function name
+/// to a fully-qualified name using the file's `use` map and namespace.
+///
+/// Rules:
+///   - Leading `\` — strip it and return (already fully-qualified).
+///   - Unqualified (no `\`):
+///     1. Check the `use_map` for a direct mapping.
+///     2. Prefix with the current namespace.
+///     3. Fall back to the bare name (global namespace).
+///   - Qualified (contains `\`, no leading `\`):
+///     1. Check if the first segment is in the `use_map`; if so, expand it.
+///     2. Prefix with the current namespace.
+///     3. Fall back to the bare name.
+pub(crate) fn resolve_to_fqn(
+    name: &str,
+    use_map: &HashMap<String, String>,
+    namespace: &Option<String>,
+) -> String {
+    // Already fully-qualified with leading `\` — strip and return.
+    if let Some(stripped) = name.strip_prefix('\\') {
+        return stripped.to_string();
+    }
+
+    // Unqualified name (no backslash) — try use_map, then namespace, then bare.
+    if !name.contains('\\') {
+        if let Some(fqn) = use_map.get(name) {
+            return fqn.clone();
+        }
+        if let Some(ns) = namespace {
+            return format!("{}\\{}", ns, name);
+        }
+        return name.to_string();
+    }
+
+    // Qualified name (contains `\` but no leading `\`).
+    let first_segment = name.split('\\').next().unwrap_or(name);
+    if let Some(fqn_prefix) = use_map.get(first_segment) {
+        let rest = &name[first_segment.len()..];
+        return format!("{}{}", fqn_prefix, rest);
+    }
+    if let Some(ns) = namespace {
+        return format!("{}\\{}", ns, name);
+    }
+    name.to_string()
+}
 
 /// Check whether two LSP ranges overlap (share at least one character
 /// position).
@@ -283,6 +330,50 @@ pub(crate) fn position_to_byte_offset(content: &str, position: Position) -> usiz
 /// and `"Collection"` → `"Collection"`.
 pub(crate) fn short_name(name: &str) -> &str {
     name.rsplit('\\').next().unwrap_or(name)
+}
+
+/// Strip trailing PHP visibility/modifier keywords from a string.
+///
+/// Given a string like `"  /** ... */\n    public static"`, returns
+/// `"  /** ... */"` (after stripping `static` and `public`).
+///
+/// Recognised modifiers: `public`, `protected`, `private`, `static`,
+/// `abstract`, `final`, `readonly`.
+pub(crate) fn strip_trailing_modifiers(s: &str) -> &str {
+    const MODIFIERS: &[&str] = &[
+        "public",
+        "protected",
+        "private",
+        "static",
+        "abstract",
+        "final",
+        "readonly",
+    ];
+
+    let mut result = s;
+    loop {
+        let trimmed = result.trim_end();
+        let mut found = false;
+        for &kw in MODIFIERS {
+            if let Some(prefix) = trimmed.strip_suffix(kw) {
+                // Make sure the keyword isn't part of a larger identifier.
+                if prefix.is_empty()
+                    || prefix
+                        .as_bytes()
+                        .last()
+                        .is_some_and(|&b| !b.is_ascii_alphanumeric() && b != b'_')
+                {
+                    result = prefix;
+                    found = true;
+                    break;
+                }
+            }
+        }
+        if !found {
+            break;
+        }
+    }
+    result.trim_end()
 }
 
 /// Find the first `;` in `s` that is not nested inside `()`, `[]`,
@@ -1146,4 +1237,98 @@ impl Backend {
             })
             .await;
     }
+}
+
+// ─── Shared helpers for code actions and diagnostics ────────────────────────
+
+/// Check if a line contains the `function` keyword as a standalone word
+/// (not part of a larger identifier like `$functionality`).
+pub(crate) fn contains_function_keyword(line: &str) -> bool {
+    let trimmed = line.trim();
+    let Some(pos) = trimmed.find("function") else {
+        return false;
+    };
+    let before_ok = pos == 0 || trimmed.as_bytes()[pos - 1].is_ascii_whitespace();
+    let after_pos = pos + "function".len();
+    let after_ok = after_pos >= trimmed.len()
+        || !trimmed.as_bytes()[after_pos].is_ascii_alphanumeric()
+            && trimmed.as_bytes()[after_pos] != b'_';
+    before_ok && after_ok
+}
+
+/// Check if a `#[...]` line contains a specific PHP attribute name.
+///
+/// Matches patterns like `#[Override]`, `#[\Override]`,
+/// `#[Override, SomethingElse]`, `#[SomethingElse, \Override]`, etc.
+/// The attribute name is matched as a standalone token: preceded by
+/// `[`, `\`, `,`, or whitespace and followed by `]`, `,`, `(`, or
+/// whitespace.
+pub(crate) fn contains_php_attribute(line: &str, attr_name: &[u8]) -> bool {
+    let bytes = line.as_bytes();
+    let target_len = attr_name.len();
+
+    let mut i = 0;
+    while i + target_len <= bytes.len() {
+        if &bytes[i..i + target_len] == attr_name {
+            let ok_before = if i == 0 {
+                false
+            } else {
+                let prev = bytes[i - 1];
+                prev == b'[' || prev == b'\\' || prev == b',' || prev == b' ' || prev == b'\t'
+            };
+            let ok_after = if i + target_len >= bytes.len() {
+                true
+            } else {
+                let next = bytes[i + target_len];
+                next == b']' || next == b',' || next == b'(' || next == b' ' || next == b'\t'
+            };
+            if ok_before && ok_after {
+                return true;
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Find all occurrences of `needle` in `content` within the byte range
+/// `[scope_start, scope_end)` that are textually identical to the selected
+/// expression, excluding the original selection `[sel_start, sel_end)`.
+///
+/// Returns `(start, end)` byte offset pairs. Word boundaries are checked
+/// so that substrings of longer identifiers are not matched.
+pub(crate) fn find_identical_occurrences(
+    content: &str,
+    needle: &str,
+    sel_start: usize,
+    sel_end: usize,
+    scope_start: usize,
+    scope_end: usize,
+) -> Vec<(usize, usize)> {
+    if needle.is_empty() || scope_start >= scope_end || scope_end > content.len() {
+        return Vec::new();
+    }
+    let haystack = &content[scope_start..scope_end];
+    let mut results = Vec::new();
+    let mut search_from = 0;
+    while let Some(pos) = haystack[search_from..].find(needle) {
+        let abs_start = scope_start + search_from + pos;
+        let abs_end = abs_start + needle.len();
+        // Skip the original selection.
+        if abs_start != sel_start || abs_end != sel_end {
+            // Check word boundaries to avoid matching substrings.
+            let before_ok = abs_start == 0
+                || !content.as_bytes()[abs_start - 1].is_ascii_alphanumeric()
+                    && content.as_bytes()[abs_start - 1] != b'_'
+                    && content.as_bytes()[abs_start - 1] != b'$';
+            let after_ok = abs_end >= content.len()
+                || !content.as_bytes()[abs_end].is_ascii_alphanumeric()
+                    && content.as_bytes()[abs_end] != b'_';
+            if before_ok && after_ok {
+                results.push((abs_start, abs_end));
+            }
+        }
+        search_from = search_from + pos + 1;
+    }
+    results
 }

@@ -22,15 +22,14 @@ use std::collections::HashMap;
 
 use bumpalo::Bump;
 use mago_span::HasSpan;
-use mago_syntax::ast::class_like::member::ClassLikeMember;
 use mago_syntax::ast::class_like::property::Property;
 use mago_syntax::ast::modifier::Modifier;
-use mago_syntax::ast::*;
 use tower_lsp::lsp_types::*;
 
 use super::cursor_context::{
     ClassLikeContextKind, CursorContext, MemberContext, find_cursor_context,
 };
+use super::detect_indent_from_members;
 use crate::Backend;
 use crate::util::offset_to_position;
 
@@ -191,30 +190,6 @@ fn build_single_hook(
 /// spaces (matching the most common convention).
 fn detect_indent_unit(indent: &str) -> &str {
     if indent.contains('\t') { "\t" } else { "    " }
-}
-
-/// Detect indentation from the first class member's position in the source.
-fn detect_indent_from_members<'a>(
-    members: &Sequence<'a, ClassLikeMember<'a>>,
-    content: &str,
-) -> String {
-    if let Some(first) = members.first() {
-        let offset = first.span().start.offset as usize;
-        let line_start = content[..offset]
-            .rfind('\n')
-            .map(|pos| pos + 1)
-            .unwrap_or(0);
-        let line_prefix = &content[line_start..offset];
-        let indent: String = line_prefix
-            .chars()
-            .take_while(|c| c.is_whitespace())
-            .collect();
-        if !indent.is_empty() {
-            return indent;
-        }
-    }
-
-    "    ".to_string()
 }
 
 // ── Public API ──────────────────────────────────────────────────────────────

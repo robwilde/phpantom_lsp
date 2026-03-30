@@ -24,7 +24,7 @@ use tower_lsp::lsp_types::*;
 
 use crate::Backend;
 use crate::code_actions::{CodeActionData, make_code_action_data};
-use crate::util::ranges_overlap;
+use crate::util::{contains_function_keyword, contains_php_attribute, ranges_overlap};
 
 /// The PHPStan identifier we match on.
 const TENTATIVE_RETURN_TYPE_ID: &str = "method.tentativeReturnType";
@@ -294,7 +294,8 @@ fn already_has_return_type_will_change(content: &str, insertion: &InsertionPoint
         let attr_region = &content[insertion.first_token_offset..insertion.attrs_end_offset];
         for line in attr_region.lines() {
             let trimmed = line.trim();
-            if trimmed.starts_with("#[") && contains_rtwc_attr(trimmed) {
+            if trimmed.starts_with("#[") && contains_php_attribute(trimmed, b"ReturnTypeWillChange")
+            {
                 return true;
             }
         }
@@ -312,58 +313,14 @@ fn already_has_return_type_will_change(content: &str, insertion: &InsertionPoint
     for i in search_start..=insert_line {
         if i < lines.len() {
             let trimmed = lines[i].trim();
-            if trimmed.starts_with("#[") && contains_rtwc_attr(trimmed) {
+            if trimmed.starts_with("#[") && contains_php_attribute(trimmed, b"ReturnTypeWillChange")
+            {
                 return true;
             }
         }
     }
 
     false
-}
-
-/// Check if a `#[...]` line contains `ReturnTypeWillChange` as an
-/// attribute name.
-fn contains_rtwc_attr(line: &str) -> bool {
-    let bytes = line.as_bytes();
-    let target = b"ReturnTypeWillChange";
-    let target_len = target.len();
-
-    let mut i = 0;
-    while i + target_len <= bytes.len() {
-        if &bytes[i..i + target_len] == target {
-            let ok_before = if i == 0 {
-                false
-            } else {
-                let prev = bytes[i - 1];
-                prev == b'[' || prev == b'\\' || prev == b',' || prev == b' ' || prev == b'\t'
-            };
-            let ok_after = if i + target_len >= bytes.len() {
-                true
-            } else {
-                let next = bytes[i + target_len];
-                next == b']' || next == b',' || next == b'(' || next == b' ' || next == b'\t'
-            };
-            if ok_before && ok_after {
-                return true;
-            }
-        }
-        i += 1;
-    }
-    false
-}
-
-/// Check if a line contains the `function` keyword as a standalone word.
-fn contains_function_keyword(line: &str) -> bool {
-    let trimmed = line.trim();
-    let Some(pos) = trimmed.find("function") else {
-        return false;
-    };
-    let before_ok = pos == 0 || trimmed.as_bytes()[pos - 1].is_ascii_whitespace();
-    let after_pos = pos + "function".len();
-    let after_ok = after_pos >= trimmed.len()
-        || (!trimmed.as_bytes()[after_pos].is_ascii_alphanumeric()
-            && trimmed.as_bytes()[after_pos] != b'_');
-    before_ok && after_ok
 }
 
 /// Check if a trimmed line starts with a PHP modifier keyword.
@@ -423,7 +380,7 @@ pub(crate) fn is_add_return_type_will_change_stale(content: &str, diag_line: usi
     let search_start = diag_line.saturating_sub(10);
     for i in (search_start..=diag_line).rev() {
         let trimmed = lines[i].trim();
-        if trimmed.starts_with("#[") && contains_rtwc_attr(trimmed) {
+        if trimmed.starts_with("#[") && contains_php_attribute(trimmed, b"ReturnTypeWillChange") {
             return true;
         }
     }
@@ -456,29 +413,50 @@ mod tests {
         assert_eq!(extract_method_name(msg), None);
     }
 
-    // ── contains_rtwc_attr ──────────────────────────────────────────
+    // ── contains_php_attribute ──────────────────────────────────────
 
     #[test]
     fn finds_rtwc_simple() {
-        assert!(contains_rtwc_attr("#[ReturnTypeWillChange]"));
+        assert!(contains_php_attribute(
+            "#[ReturnTypeWillChange]",
+            b"ReturnTypeWillChange"
+        ));
     }
 
     #[test]
     fn finds_rtwc_with_backslash() {
-        assert!(contains_rtwc_attr("#[\\ReturnTypeWillChange]"));
+        assert!(contains_php_attribute(
+            "#[\\ReturnTypeWillChange]",
+            b"ReturnTypeWillChange"
+        ));
     }
 
     #[test]
     fn finds_rtwc_in_list() {
-        assert!(contains_rtwc_attr("#[ReturnTypeWillChange, Deprecated]"));
-        assert!(contains_rtwc_attr("#[Deprecated, ReturnTypeWillChange]"));
-        assert!(contains_rtwc_attr("#[Deprecated, \\ReturnTypeWillChange]"));
+        assert!(contains_php_attribute(
+            "#[ReturnTypeWillChange, Deprecated]",
+            b"ReturnTypeWillChange"
+        ));
+        assert!(contains_php_attribute(
+            "#[Deprecated, ReturnTypeWillChange]",
+            b"ReturnTypeWillChange"
+        ));
+        assert!(contains_php_attribute(
+            "#[Deprecated, \\ReturnTypeWillChange]",
+            b"ReturnTypeWillChange"
+        ));
     }
 
     #[test]
     fn does_not_match_partial() {
-        assert!(!contains_rtwc_attr("#[ReturnTypeWillChangeSomething]"));
-        assert!(!contains_rtwc_attr("#[MyReturnTypeWillChange]"));
+        assert!(!contains_php_attribute(
+            "#[ReturnTypeWillChangeSomething]",
+            b"ReturnTypeWillChange"
+        ));
+        assert!(!contains_php_attribute(
+            "#[MyReturnTypeWillChange]",
+            b"ReturnTypeWillChange"
+        ));
     }
 
     // ── find_method_insertion_point ──────────────────────────────────

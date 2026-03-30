@@ -88,10 +88,43 @@ mod replace_deprecated;
 mod simplify_null;
 mod update_docblock;
 
+use mago_span::HasSpan;
+use mago_syntax::ast::class_like::member::ClassLikeMember;
+use mago_syntax::ast::sequence::Sequence;
 use serde::{Deserialize, Serialize};
 use tower_lsp::lsp_types::*;
 
 use crate::Backend;
+
+// ─── Shared helpers ─────────────────────────────────────────────────────────
+
+/// Detect indentation from the first class member's position in the source.
+///
+/// Looks at the line containing the first member to determine the
+/// indent string.  Falls back to four spaces.
+pub(super) fn detect_indent_from_members<'a>(
+    members: &Sequence<'a, ClassLikeMember<'a>>,
+    content: &str,
+) -> String {
+    if let Some(first) = members.first() {
+        let offset = first.span().start.offset as usize;
+        let line_start = content[..offset]
+            .rfind('\n')
+            .map(|pos| pos + 1)
+            .unwrap_or(0);
+        let line_prefix = &content[line_start..offset];
+        let indent: String = line_prefix
+            .chars()
+            .take_while(|c| c.is_whitespace())
+            .collect();
+        if !indent.is_empty() {
+            return indent;
+        }
+    }
+
+    // Fallback: four spaces.
+    "    ".to_string()
+}
 
 // ─── Resolve data ───────────────────────────────────────────────────────────
 
