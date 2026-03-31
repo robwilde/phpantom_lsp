@@ -325,6 +325,14 @@ impl Backend {
         // ── Subject resolution cache for this diagnostic pass ───────────
         let mut subject_cache: SubjectCache = HashMap::new();
 
+        // ── Chain error propagation (D2) ────────────────────────────────
+        // When a member access is flagged as broken, subsequent links
+        // in the same fluent chain are suppressed because their failure
+        // is a direct consequence of the first break.  We record
+        // "broken chain prefixes" and skip any span whose subject_text
+        // starts with one of them.
+        let mut broken_chain_prefixes: Vec<String> = Vec::new();
+
         // ── Walk every symbol span ──────────────────────────────────────
         for span in &symbol_map.spans {
             let (subject_text, member_name, is_static, is_method_call, is_docblock_ref) =
@@ -456,6 +464,15 @@ impl Backend {
                 })
                 .clone();
 
+            // ── Chain error propagation: suppress downstream links ──────
+            // If the subject of this access is downstream of an
+            // already-flagged broken chain, skip it entirely.  The
+            // original broken prefix propagates to all further links
+            // naturally (it is a prefix of every subsequent subject).
+            if is_downstream_of_broken_chain(subject_text, &broken_chain_prefixes) {
+                continue;
+            }
+
             // ── Emit diagnostics based on the cached outcome ────────────
             match outcome {
                 SubjectOutcome::Scalar(ref scalar) => {
@@ -477,6 +494,12 @@ impl Backend {
                         DiagnosticSeverity::ERROR,
                         SCALAR_MEMBER_ACCESS_CODE,
                         message,
+                    ));
+                    broken_chain_prefixes.push(broken_chain_prefix(
+                        subject_text,
+                        member_name,
+                        is_static,
+                        is_method_call,
                     ));
                 }
 
@@ -500,6 +523,12 @@ impl Backend {
                         UNKNOWN_MEMBER_CODE,
                         message,
                     ));
+                    broken_chain_prefixes.push(broken_chain_prefix(
+                        subject_text,
+                        member_name,
+                        is_static,
+                        is_method_call,
+                    ));
                 }
 
                 SubjectOutcome::UnresolvableChain => {
@@ -521,6 +550,12 @@ impl Backend {
                         DiagnosticSeverity::WARNING,
                         UNKNOWN_MEMBER_CODE,
                         message,
+                    ));
+                    broken_chain_prefixes.push(broken_chain_prefix(
+                        subject_text,
+                        member_name,
+                        is_static,
+                        is_method_call,
                     ));
                 }
 
@@ -559,7 +594,7 @@ impl Backend {
                 }
 
                 SubjectOutcome::Resolved(ref base_classes) => {
-                    self.check_member_on_resolved_classes(
+                    let emitted = self.check_member_on_resolved_classes(
                         base_classes,
                         member_name,
                         is_static,
@@ -572,6 +607,14 @@ impl Backend {
                         span.end,
                         out,
                     );
+                    if emitted {
+                        broken_chain_prefixes.push(broken_chain_prefix(
+                            subject_text,
+                            member_name,
+                            is_static,
+                            is_method_call,
+                        ));
+                    }
                 }
             }
         }
@@ -579,6 +622,9 @@ impl Backend {
 
     /// Check whether a member exists on the resolved classes and emit
     /// a diagnostic if it does not.
+    ///
+    /// Returns `true` if a diagnostic was emitted (the member was not
+    /// found), `false` otherwise.
     ///
     /// Extracted from the main loop to keep `collect_unknown_member_diagnostics`
     /// readable.
@@ -596,7 +642,7 @@ impl Backend {
         start: u32,
         end: u32,
         out: &mut Vec<Diagnostic>,
-    ) {
+    ) -> bool {
         // ── Quick check on pre-resolved base classes ────────────────
         // `resolve_target_classes` already returns fully-resolved
         // classes in many code paths (e.g. `type_hint_to_classes`
@@ -612,16 +658,16 @@ impl Backend {
             .iter()
             .any(|c| has_magic_method_for_access(c, is_static, is_method_call))
         {
-            return;
+            return false;
         }
         if base_classes.iter().any(|c| c.name == "stdClass") {
-            return;
+            return false;
         }
         if base_classes.iter().any(|c| {
             member_exists(c, member_name, is_static, is_method_call)
                 || (is_docblock_ref && member_exists_relaxed(c, member_name, is_method_call))
         }) {
-            return;
+            return false;
         }
 
         // ── Fully resolve each class (inheritance + virtual members) ─
@@ -645,12 +691,12 @@ impl Backend {
             .iter()
             .any(|c| has_magic_method_for_access(c, is_static, is_method_call))
         {
-            return;
+            return false;
         }
 
         // ── Skip stdClass (universal object container) ──────────────
         if resolved_classes.iter().any(|c| c.name == "stdClass") {
-            return;
+            return false;
         }
 
         // ── Check whether the member exists on ANY branch ───────────
@@ -658,13 +704,13 @@ impl Backend {
             member_exists(c, member_name, is_static, is_method_call)
                 || (is_docblock_ref && member_exists_relaxed(c, member_name, is_method_call))
         }) {
-            return;
+            return false;
         }
 
         // ── Member is unresolved on ALL branches — emit diagnostic ──
         let range = match offset_range_to_lsp_range(content, start as usize, end as usize) {
             Some(r) => r,
-            None => return,
+            None => return false,
         };
 
         let kind_label = if is_method_call {
@@ -706,7 +752,73 @@ impl Backend {
             UNKNOWN_MEMBER_CODE,
             message,
         ));
+        true
     }
+}
+
+// ─── Chain error propagation ────────────────────────────────────────────────
+
+/// Build the "broken chain prefix" for a flagged member access.
+///
+/// When a member access is flagged as broken (unknown member, scalar access,
+/// etc.), downstream links in the same chain should be suppressed because
+/// their failure is a consequence of the first break.
+///
+/// The prefix is constructed so that downstream `subject_text` values
+/// (produced by `expr_to_subject_text`) will start with this prefix.
+///
+/// For method calls the prefix ends with `(` — this prevents ambiguity
+/// with similarly-named methods (e.g. `callHome(` vs `callHomeLate(`).
+/// For property accesses the prefix is the bare expression; callers use
+/// [`is_downstream_of_broken_chain`] which checks for a chain-operator
+/// boundary after the prefix to avoid false matches with longer property
+/// names (e.g. `value` vs `value_extra`).
+fn broken_chain_prefix(
+    subject_text: &str,
+    member_name: &str,
+    is_static: bool,
+    is_method_call: bool,
+) -> String {
+    let normalized = subject_text.replace("?->", "->");
+    let operator = if is_static { "::" } else { "->" };
+    if is_method_call {
+        // Trailing `(` ensures "callHome(" does not match "callHomeLate(".
+        format!("{}{}{}{}", normalized, operator, member_name, "(")
+    } else {
+        format!("{}{}{}", normalized, operator, member_name)
+    }
+}
+
+/// Check whether `subject_text` is downstream of any previously flagged
+/// broken chain expression.
+///
+/// Normalises null-safe operators (`?->` → `->`) so that chains mixing
+/// `->` and `?->` are handled correctly.
+fn is_downstream_of_broken_chain(subject_text: &str, broken_prefixes: &[String]) -> bool {
+    if broken_prefixes.is_empty() {
+        return false;
+    }
+    let normalized = subject_text.replace("?->", "->");
+    broken_prefixes.iter().any(|prefix| {
+        if prefix.ends_with('(') {
+            // Method-call prefix: `starts_with` is sufficient because
+            // the trailing `(` prevents name-prefix ambiguity.
+            normalized.starts_with(prefix.as_str())
+        } else {
+            // Property prefix: the subject must equal the prefix or
+            // the prefix must be followed by a chain operator to avoid
+            // matching longer property names (e.g. `value` matching
+            // `value_extra`).
+            if normalized == *prefix {
+                return true;
+            }
+            if !normalized.starts_with(prefix.as_str()) {
+                return false;
+            }
+            let rest = &normalized[prefix.len()..];
+            rest.starts_with("->") || rest.starts_with("::") || rest.starts_with('[')
+        }
+    })
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -4139,6 +4251,384 @@ class LoggedConnection extends BaseConnector {
         assert!(
             diags.is_empty(),
             "expected no diagnostics for parent::call() return type chain, got: {diags:?}",
+        );
+    }
+
+    // ── Chain error propagation (D2) ────────────────────────────────────
+
+    #[test]
+    fn chain_propagation_flags_only_first_broken_method() {
+        // $m->callHome()->callMom()->callDad() — only callHome should
+        // be flagged; callMom and callDad are downstream of the break.
+        let php = r#"<?php
+class Machine {
+    public function knownMethod(): self { return $this; }
+}
+
+function test(): void {
+    $m = new Machine();
+    $m->callHome()->callMom()->callDad();
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly 1 diagnostic (first broken link only), got: {diags:?}"
+        );
+        assert!(
+            diags[0].message.contains("callHome"),
+            "expected diagnostic for callHome, got: {:?}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn chain_propagation_separate_statements_flag_both() {
+        // $m->callHome(); $m->callMom(); — separate statements, both
+        // should be flagged independently.
+        let php = r#"<?php
+class Machine {
+    public function knownMethod(): self { return $this; }
+}
+
+function test(): void {
+    $m = new Machine();
+    $m->callHome();
+    $m->callMom();
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert_eq!(
+            diags.len(),
+            2,
+            "expected 2 diagnostics (separate statements), got: {diags:?}"
+        );
+        let messages: Vec<&str> = diags.iter().map(|d| d.message.as_str()).collect();
+        assert!(
+            messages.iter().any(|m| m.contains("callHome")),
+            "expected callHome diagnostic"
+        );
+        assert!(
+            messages.iter().any(|m| m.contains("callMom")),
+            "expected callMom diagnostic"
+        );
+    }
+
+    #[test]
+    fn chain_propagation_scalar_suppresses_downstream() {
+        // $user->getAge()->value->deep — only ->value should be flagged
+        // (scalar access on int), ->deep is downstream of the scalar break.
+        let php = r#"<?php
+class User {
+    public function getAge(): int { return 30; }
+}
+
+function test(): void {
+    $user = new User();
+    $user->getAge()->value->deep;
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly 1 diagnostic (scalar access only), got: {diags:?}"
+        );
+        assert!(
+            diags[0].message.contains("int"),
+            "expected scalar type 'int' in message, got: {:?}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn chain_propagation_second_link_broken_suppresses_rest() {
+        // $o->getInner()->fakeMethod()->next() — only fakeMethod should
+        // be flagged; next() is downstream.
+        let php = r#"<?php
+class Inner {
+    public function known(): void {}
+}
+class Outer {
+    public function getInner(): Inner { return new Inner(); }
+}
+
+function test(): void {
+    $o = new Outer();
+    $o->getInner()->fakeMethod()->next()->deep();
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly 1 diagnostic (first broken link), got: {diags:?}"
+        );
+        assert!(
+            diags[0].message.contains("fakeMethod"),
+            "expected diagnostic for fakeMethod, got: {:?}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn chain_propagation_scalar_method_return_suppresses_chain() {
+        // $o->getMiddle()->getInner()->getValue()->nonexistent()->another()
+        // — only nonexistent() should be flagged (scalar access on string).
+        let php = r#"<?php
+class Inner {
+    public function getValue(): string { return ''; }
+}
+
+class Middle {
+    public function getInner(): Inner { return new Inner(); }
+}
+
+class Outer {
+    public function getMiddle(): Middle { return new Middle(); }
+}
+
+class Test {
+    public function run(): void {
+        $o = new Outer();
+        $o->getMiddle()->getInner()->getValue()->nonexistent()->another();
+    }
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly 1 diagnostic (scalar access), got: {diags:?}"
+        );
+        assert!(
+            diags[0].message.contains("nonexistent"),
+            "expected diagnostic for nonexistent, got: {:?}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn chain_propagation_property_does_not_match_longer_name() {
+        // Ensure that a broken property `value` does not suppress a
+        // separate property `value_extra` on the same subject.
+        let php = r#"<?php
+class Foo {
+    public int $value = 0;
+    public string $value_extra = '';
+}
+
+function test(): void {
+    $f = new Foo();
+    $f->value->nope;
+    $f->value_extra->nope;
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert_eq!(
+            diags.len(),
+            2,
+            "expected 2 diagnostics (value and value_extra are independent), got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn chain_propagation_static_method_chain() {
+        // Foo::create()->unknown()->next() — only unknown() should be
+        // flagged; next() is downstream.
+        let php = r#"<?php
+class Foo {
+    public static function create(): self { return new self(); }
+    public function known(): self { return $this; }
+}
+
+function test(): void {
+    Foo::create()->unknown()->next();
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly 1 diagnostic (first broken link), got: {diags:?}"
+        );
+        assert!(
+            diags[0].message.contains("unknown"),
+            "expected diagnostic for unknown, got: {:?}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn chain_propagation_null_safe_operator() {
+        // $m?->callHome()?->callMom() — only callHome should be flagged.
+        let php = r#"<?php
+class Machine {
+    public function knownMethod(): self { return $this; }
+}
+
+function test(?Machine $m): void {
+    $m?->callHome()?->callMom();
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly 1 diagnostic (null-safe chain), got: {diags:?}"
+        );
+        assert!(
+            diags[0].message.contains("callHome"),
+            "expected diagnostic for callHome, got: {:?}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn chain_propagation_this_method_chain() {
+        // $this->unknownMethod()->next() inside a class — only
+        // unknownMethod should be flagged.
+        let php = r#"<?php
+class Foo {
+    public function test(): void {
+        $this->unknownMethod()->next()->deep();
+    }
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly 1 diagnostic ($this chain), got: {diags:?}"
+        );
+        assert!(
+            diags[0].message.contains("unknownMethod"),
+            "expected diagnostic for unknownMethod, got: {:?}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn chain_propagation_property_chain_suppresses_downstream() {
+        // $o->getInner()->label->nonexistent->deep — only ->nonexistent
+        // should be flagged (scalar access on string from label).
+        let php = r#"<?php
+class Inner {
+    public string $label = '';
+}
+class Outer {
+    public function getInner(): Inner { return new Inner(); }
+}
+class Test {
+    public function run(): void {
+        $o = new Outer();
+        $o->getInner()->label->nonexistent->deep;
+    }
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly 1 diagnostic (scalar property access), got: {diags:?}"
+        );
+        assert!(
+            diags[0].message.contains("nonexistent") || diags[0].message.contains("string"),
+            "expected diagnostic about scalar access on string, got: {:?}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn chain_propagation_mixed_arrow_and_static_chain() {
+        // $o->getInner()::staticMissing()->next() — only staticMissing
+        // should be flagged.
+        let php = r#"<?php
+class Inner {
+    public function known(): void {}
+}
+class Outer {
+    public function getInner(): Inner { return new Inner(); }
+}
+
+function test(): void {
+    $o = new Outer();
+    $o->getInner()::staticMissing()->next();
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        // staticMissing is unknown on Inner; next() is downstream.
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly 1 diagnostic (first broken static link), got: {diags:?}"
+        );
+        assert!(
+            diags[0].message.contains("staticMissing"),
+            "expected diagnostic for staticMissing, got: {:?}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn chain_propagation_does_not_suppress_errors_inside_closure_arguments() {
+        // Errors inside closure/arrow-function arguments are independent
+        // expressions — they must NOT be suppressed by a broken link in
+        // the outer chain.
+        //
+        // $joe::whereInvalid()->where(fn() => $showThisError->unknown())->hideMe()->hideMe();
+        //
+        // Expected diagnostics:
+        //   1. whereInvalid  (unknown static method on Joe)
+        //   2. unknown       (unknown method on ShowThisError — inside the closure)
+        // NOT expected:
+        //   - hideMe (downstream of whereInvalid in the outer chain)
+        let php = r#"<?php
+class Joe {
+    public function where(callable $cb): self { return $this; }
+}
+
+class ShowThisError {
+    public function valid(): void {}
+}
+
+function test(): void {
+    $joe = new Joe();
+    $showThisError = new ShowThisError();
+    $joe::whereInvalid()->where(fn() => $showThisError->unknown())->hideMe()->hideMe();
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        let messages: Vec<&str> = diags.iter().map(|d| d.message.as_str()).collect();
+        assert!(
+            messages.iter().any(|m| m.contains("whereInvalid")),
+            "expected diagnostic for whereInvalid (outer chain), got: {messages:?}"
+        );
+        assert!(
+            messages.iter().any(|m| m.contains("unknown")),
+            "expected diagnostic for unknown (inside closure), got: {messages:?}"
+        );
+        assert!(
+            !messages.iter().any(|m| m.contains("hideMe")),
+            "hideMe should be suppressed (downstream of whereInvalid), got: {messages:?}"
+        );
+        assert_eq!(
+            diags.len(),
+            2,
+            "expected exactly 2 diagnostics (whereInvalid + unknown), got: {messages:?}"
         );
     }
 }

@@ -23,47 +23,6 @@ PHPantom assigns diagnostic severity based on runtime consequences:
 
 ---
 
-## D2. Chain error propagation (flag only the first broken link)
-
-**Impact: Medium · Effort: Medium**
-
-In a fluent chain like `$m->callHome()->callMom()->callDad()`, only the
-first broken link should be flagged. Subsequent links in the chain
-depend on the return type of the broken call, so flagging them adds
-noise without actionable information.
-
-### Current state
-
-- Fluent chains on `mixed` subjects: only the first link is flagged
-  (the chain members have no `MemberAccess` spans because the parser
-  can't resolve the subject). This works by accident.
-- Fluent chains on known types where the first method is unknown:
-  only the first is flagged (same reason, parser stops). Also works
-  by accident.
-- Scalar chains (`$user->getAge()->value->deep`): the scalar member
-  access at `->value` should be flagged but `->deep` should be silent.
-  Currently `->value` is not flagged at all (see D1).
-
-### Desired behavior
-
-- `$m->callHome()->callMom()->callDad()` — flag only `callHome`.
-- `$m->callHome(); $m->callMom();` — flag both (separate statements).
-- `$user->fakeMethod()->next()->deep()` — flag only `fakeMethod`.
-- `$user->getAge()->value->deep` — flag only `->value` (scalar error).
-
-### Cross-assignment propagation (nice to have)
-
-```
-$home = $m->callHome();  // flagged
-$home->callMom();        // ideally silent
-```
-
-This is harder because it requires tracking that `$home` was assigned
-from an already-flagged expression. Acceptable if not implemented in
-the first pass.
-
----
-
 ## D3. Deprecated rendering — chain subject resolution
 
 **Impact: Low-Medium · Effort: Medium**
